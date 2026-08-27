@@ -1,0 +1,13 @@
+{
+  "network": { "hub": "cc3-testnet", "hubChainId": 102031, "source": "sepolia", "sourceChainId": 11155111 },
+  "sourceChainKey": 1,
+  "deployer": "0xFD1222e35a536A62f180aA44826656940e86bD5E",
+  "contracts": {
+    "EvmV1Decoder":      "0xff3558704c75ed69e1D657474210365b24d31938",
+    "ProofmarkASC":      "0x93C62D3016123Da0aBdB4AC1857564c30CbE5629",
+    "ProofmarkRegistry": "0x874e0Fd030a8Fe6c7a06835354531b68A31f5FCc",
+    "ComplianceSource":  "0x93C62D3016123Da0aBdB4AC1857564c30CbE5629",
+    "GatedRwaNote":      "0xA8Dfe6f5063a8159524DedbBAc75f034C3BF0625"
+  },
+  "demo": { "krPolicyId": 1 }
+}

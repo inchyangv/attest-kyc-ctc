@@ -1,0 +1,27 @@
+{
+  "name": "proofmark",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "build": "forge build",
+    "test": "forge test -vv",
+    "worker": "tsx worker/index.ts",
+    "worker:test": "tsx --test worker/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "test:pipeline": "tsx --test pipeline/*.test.ts",
+    "test:ts": "tsx --test worker/*.test.ts pipeline/*.test.ts",
+    "test:all": "forge test && tsx --test worker/*.test.ts pipeline/*.test.ts"
+  },
+  "dependencies": {
+    "@gluwa/usc-contracts": "0.1.2",
+    "@gluwa/usc-sdk": "0.18.0",
+    "@openzeppelin/contracts": "5.4.0",
+    "ethers": "^6.17.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.23.13",
+    "typescript": "^5.9.3"
+  },
+  "type": "module"
+}
