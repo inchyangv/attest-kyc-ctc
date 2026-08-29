@@ -27,7 +27,7 @@ const regAbi = parseAbi([
 
 export async function GET(req: Request) {
   const subject = (new URL(req.url).searchParams.get('subject') ??
-    '0xFD1222e35a536A62f180aA44826656940e86bD5E') as Address;
+    '0xb8FEBEaB3705793474fA05b91Bf5D205855dD3c1') as Address;
 
   const [chainKey, source, tomb, mark, p1, p2, v1, v2, block] = await Promise.all([
     client.readContract({ address: ASC, abi: ascAbi, functionName: 'expectedChainKey' }),

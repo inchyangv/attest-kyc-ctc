@@ -2,9 +2,9 @@ import type { NextConfig } from 'next';
 import path from 'node:path';
 
 /**
- * aml/ 과 pipeline/ 은 저장소 루트의 NodeNext 모듈이라 내부 import 가 `.js` 확장자를 쓴다.
- * 번들러가 그것을 `.ts` 로 되짚게 해야 소스를 그대로 공유할 수 있다.
- * 사본을 만들지 않는 이유: 사본은 언젠가 원본과 갈라진다.
+ * aml/ and pipeline/ are NodeNext modules at the repository root, so their internal imports
+ * carry the `.js` extension. The bundler has to resolve those back to `.ts` for the web app to
+ * share the source as-is. We do not copy the files: a copy drifts from the original.
  */
 const nextConfig: NextConfig = {
   outputFileTracingRoot: path.join(process.cwd(), '..'),

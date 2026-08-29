@@ -1,4 +1,190 @@
 @import "tailwindcss";
 
-:root { color-scheme: dark; }
-body { font-feature-settings: "tnum" 1; }
+/*
+ * Proofmark design tokens.
+ * Derived from the Creditcoin block explorer (Blockscout / Chakra scale):
+ * light canvas, gray.50 fills, blue.600 interaction, black plate with mint (#B3FCB2)
+ * as the only brand colour. Dark theme mirrors Blockscout's dark mode.
+ * Semantic tokens live on :root / [data-theme=dark]; Tailwind utilities read them inline.
+ */
+
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+:root {
+  color-scheme: light;
+
+  --canvas: #ffffff;
+  --surface: #f7fafc;            /* gray.50  — stat cards, form panels */
+  --surface-2: #edf2f7;          /* gray.100 — table heads, chips */
+  --surface-hover: #edf2f7;
+  --line: #e2e8f0;               /* gray.200 — 2px input/outline borders */
+  --line-strong: #cbd5e0;        /* gray.300 — hover */
+  --divider: rgba(16, 17, 18, 0.06);
+
+  --fg: rgba(16, 17, 18, 0.8);
+  --fg-strong: #101112;
+  --fg-muted: #718096;           /* gray.500 */
+  --fg-subtle: #a0aec0;          /* gray.400 */
+  --fg-inverse: #ffffff;
+
+  --link: #2b6cb0;               /* blue.600 */
+  --link-hover: #3182ce;         /* blue.500 */
+  --accent: #2b6cb0;
+  --accent-hover: #3182ce;
+  --accent-tint: #ebf8ff;        /* blue.50 */
+  --accent-fg: #2b6cb0;
+  --focus: #4299e1;              /* blue.400 */
+
+  --plate: #000000;
+  --plate-fg: #ffffff;
+  --plate-muted: rgba(255, 255, 255, 0.64);
+  --plate-line: rgba(255, 255, 255, 0.12);
+  --mint: #b3fcb2;
+
+  --ok: #38a169;                 /* green.500 */
+  --ok-fg: #25855a;              /* green.600 */
+  --ok-tint: #f0fff4;            /* green.50 */
+  --warn: #dd6b20;               /* orange.500 */
+  --warn-fg: #c05621;            /* orange.600 */
+  --warn-tint: #fffaf0;          /* orange.50 */
+  --bad: #e53e3e;                /* red.500 */
+  --bad-fg: #c53030;             /* red.600 */
+  --bad-tint: #fff5f5;           /* red.50 */
+  --note-tint: #fffaf0;          /* the "scanning new transactions" band */
+
+  --shadow-pop: 0 4px 16px rgba(16, 17, 18, 0.08);
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --canvas: #101112;
+  --surface: rgba(255, 255, 255, 0.06);
+  --surface-2: rgba(255, 255, 255, 0.08);
+  --surface-hover: rgba(255, 255, 255, 0.1);
+  --line: rgba(255, 255, 255, 0.1);
+  --line-strong: rgba(255, 255, 255, 0.2);
+  --divider: rgba(255, 255, 255, 0.08);
+
+  --fg: rgba(255, 255, 255, 0.8);
+  --fg-strong: #ffffff;
+  --fg-muted: #a0aec0;
+  --fg-subtle: #718096;
+  --fg-inverse: #101112;
+
+  --link: #63b3ed;               /* blue.300 */
+  --link-hover: #90cdf4;         /* blue.200 */
+  --accent: #2b6cb0;
+  --accent-hover: #3182ce;
+  --accent-tint: #2a4365;        /* blue.800 */
+  --accent-fg: #bee3f8;          /* blue.100 */
+  --focus: #63b3ed;
+
+  --plate: #000000;
+  --plate-fg: #ffffff;
+  --plate-muted: rgba(255, 255, 255, 0.64);
+  --plate-line: rgba(255, 255, 255, 0.12);
+  --mint: #b3fcb2;
+
+  --ok: #38a169;
+  --ok-fg: #c6f6d5;              /* green.100 */
+  --ok-tint: #22543d;            /* green.800 */
+  --warn: #dd6b20;
+  --warn-fg: #feebcb;            /* orange.100 */
+  --warn-tint: #7b341e;          /* orange.800 */
+  --bad: #e53e3e;
+  --bad-fg: #fed7d7;             /* red.100 */
+  --bad-tint: #822727;           /* red.800 */
+  --note-tint: rgba(123, 52, 30, 0.44);
+
+  --shadow-pop: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+@theme inline {
+  --font-sans: var(--font-inter), "Apple SD Gothic Neo", Pretendard, "Malgun Gothic", ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-poppins), var(--font-inter), "Apple SD Gothic Neo", ui-sans-serif, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-hover: var(--surface-hover);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-divider: var(--divider);
+
+  --color-fg: var(--fg);
+  --color-fg-strong: var(--fg-strong);
+  --color-fg-muted: var(--fg-muted);
+  --color-fg-subtle: var(--fg-subtle);
+  --color-fg-inverse: var(--fg-inverse);
+
+  --color-link: var(--link);
+  --color-link-hover: var(--link-hover);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-tint: var(--accent-tint);
+  --color-accent-fg: var(--accent-fg);
+  --color-focus: var(--focus);
+
+  --color-plate: var(--plate);
+  --color-plate-fg: var(--plate-fg);
+  --color-plate-muted: var(--plate-muted);
+  --color-plate-line: var(--plate-line);
+  --color-mint: var(--mint);
+
+  --color-ok: var(--ok);
+  --color-ok-fg: var(--ok-fg);
+  --color-ok-tint: var(--ok-tint);
+  --color-warn: var(--warn);
+  --color-warn-fg: var(--warn-fg);
+  --color-warn-tint: var(--warn-tint);
+  --color-bad: var(--bad);
+  --color-bad-fg: var(--bad-fg);
+  --color-bad-tint: var(--bad-tint);
+  --color-note-tint: var(--note-tint);
+
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
+  --shadow-pop: var(--shadow-pop);
+}
+
+@layer base {
+  html { font-family: var(--font-sans); }
+  body {
+    background: var(--canvas);
+    color: var(--fg);
+    font-size: 14px;
+    line-height: 1.5;
+    font-feature-settings: "tnum" 1, "cv11" 1;
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection { background: var(--mint); color: #101112; }
+  h1, h2, h3 { color: var(--fg-strong); }
+  code, kbd, pre { font-family: var(--font-mono); }
+  a { color: inherit; }
+  button, input { font: inherit; color: inherit; }
+  :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 4px; }
+  input:focus-visible { outline: none; }
+}
+
+@layer components {
+  /* Blockscout-style link: blue, no underline, brightens on hover */
+  .link { color: var(--link); text-decoration: none; }
+  .link:hover { color: var(--link-hover); }
+
+  /* Table primitive: gray head with rounded top corners, hairline rows */
+  .tbl { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 14px; }
+  .tbl th {
+    background: var(--surface-2); color: var(--fg-muted); font-weight: 500; text-align: left;
+    padding: 10px 12px; white-space: nowrap;
+  }
+  .tbl th:first-child { border-top-left-radius: var(--radius-md); }
+  .tbl th:last-child { border-top-right-radius: var(--radius-md); }
+  .tbl td { padding: 12px; border-bottom: 1px solid var(--divider); vertical-align: top; font-weight: 500; }
+  .tbl tr:last-child td { border-bottom-color: var(--divider); }
+  .tbl .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .tbl tr.group td { background: var(--surface); color: var(--fg-strong); font-weight: 600; padding: 8px 12px; }
+}

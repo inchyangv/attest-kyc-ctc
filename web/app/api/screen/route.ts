@@ -2,12 +2,13 @@ import { NextResponse } from 'next/server';
 import { getEngine } from '@/lib/aml-server';
 import { evidenceDigest } from '@aml/engine.js';
 import { Methods } from '@pipeline/methods.js';
+import { ENGINE_VERSION } from '@aml/normalize.js';
 
 export const runtime = 'nodejs';
 
 /**
- * 이 API 는 AML 심사만 한다. 신원확인 비트는 발급 파이프라인 소관이므로
- * 여기서 전부 "미연동"으로 뭉뚱그리면 격차를 과장하게 된다. 책임 주체별로 나눈다.
+ * This endpoint runs AML screening only. Identity bits belong to the issuance pipeline, so
+ * lumping them all under "not integrated" here would overstate the gap. Group by who owns each check.
  */
 const GROUPS: { group: string; note: string; items: [keyof typeof Methods, string][] }[] = [
   {
@@ -44,11 +45,17 @@ const GROUPS: { group: string; note: string; items: [keyof typeof Methods, strin
   },
 ];
 
+/** What is loaded right now — shown on the page before the first screening runs. */
+export async function GET() {
+  const { meta } = getEngine();
+  return NextResponse.json({ engineVersion: ENGINE_VERSION, listVersions: meta.listVersions, listCounts: meta.counts });
+}
+
 export async function POST(req: Request) {
   const body = await req.json();
   const { fullName, dateOfBirth, nationality, residence, walletAddress } = body ?? {};
   if (!fullName || typeof fullName !== 'string') {
-    return NextResponse.json({ error: '이름이 필요합니다' }, { status: 400 });
+    return NextResponse.json({ error: 'Full name is required' }, { status: 400 });
   }
 
   const { engine, meta } = getEngine();
