@@ -27,7 +27,7 @@ export async function fetchProof(
     `getProof(${txHash.slice(0, 10)}…)`,
     async () => {
       const res: any = await builder.getProof(txHash);
-      if (!res?.success) throw new Error(res?.error ?? '증명 생성 실패 (사유 미상)');
+      if (!res?.success) throw new Error(res?.error ?? 'proof generation failed with no reason given');
       return res.data as ProofData;
     },
     { attempts: 5, backoff: new Backoff(2_000, 30_000), signal },

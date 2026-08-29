@@ -1,13 +1,13 @@
 import { ethers } from 'ethers';
 
 /**
- * `src/lib/MarkAttrs.sol` 의 팩킹을 **바이트 단위로** 미러링한다.
- * 어긋나면 온체인 마크의 모든 필드가 밀려서 들어간다 — 조용히 깨지는 종류의 버그다.
- * `pipeline/pipeline.test.ts` 가 Solidity 가 만든 고정 벡터로 대조한다.
+ * Mirrors the packing in `src/lib/MarkAttrs.sol`, byte for byte.
+ * A drift shifts every field of the on-chain mark. It fails quietly.
+ * `pipeline/pipeline.test.ts` checks it against a fixed vector produced by Solidity.
  *
  *  bit 255..248 kind(8) · 247..240 assurance(8) · 239..224 regime(16)
  *      223..208 jurisdiction(16) · 207..176 methods(32)
- *      175..136 issuedAt(40) · 135..96 expiry(40) · 95..64 epoch(32) · 63..0 예약
+ *      175..136 issuedAt(40)  135..96 expiry(40)  95..64 epoch(32)  63..0 reserved
  */
 export interface MarkAttrsInput {
   kind: number;          // 1 INDIVIDUAL · 2 ENTITY · 3 SANCTION
@@ -28,7 +28,7 @@ const LIMITS: Record<keyof MarkAttrsInput, bigint> = {
 export function packAttrs(a: MarkAttrsInput): string {
   for (const [k, max] of Object.entries(LIMITS) as [keyof MarkAttrsInput, bigint][]) {
     const v = BigInt(a[k]);
-    if (v < 0n || v > max) throw new Error(`packAttrs: ${k}=${a[k]} 가 범위를 벗어났습니다 (max ${max})`);
+    if (v < 0n || v > max) throw new Error(`packAttrs: ${k}=${a[k]} is out of range (max ${max})`);
   }
   const v =
     (BigInt(a.kind)         << 248n) |

@@ -1,10 +1,10 @@
 import { ethers } from 'ethers';
 
 /**
- * OpenZeppelin `MerkleProof` 호환 머클 트리.
+ * Merkle tree compatible with OpenZeppelin `MerkleProof`.
  *
- * 내부 노드 = keccak256(정렬된 두 자식) — 정렬하므로 좌우 구분(위치 비트)이 불필요하고,
- * 나중에 온체인에서 `MerkleProof.verify()` 로 선택공개를 검증할 수 있다.
+ * An internal node is keccak256 of the two sorted children. Sorting removes the need for
+ * position bits and lets `MerkleProof.verify()` check selective disclosure on chain later.
  */
 export function hashPair(a: string, b: string): string {
   return a.toLowerCase() <= b.toLowerCase()
@@ -14,7 +14,7 @@ export function hashPair(a: string, b: string): string {
 
 export function merkleRoot(leaves: readonly string[]): string {
   if (leaves.length === 0) return ethers.ZeroHash;
-  let level = [...leaves].sort();          // 결정적 순서
+  let level = [...leaves].sort();   //    // deterministic order
   while (level.length > 1) {
     const next: string[] = [];
     for (let i = 0; i < level.length; i += 2) {
@@ -25,11 +25,11 @@ export function merkleRoot(leaves: readonly string[]): string {
   return level[0];
 }
 
-/** 특정 리프의 증명 경로. 선택공개(§6.1)에 쓴다. */
+/** Proof path for one leaf, used by selective disclosure. */
 export function merkleProof(leaves: readonly string[], leaf: string): string[] {
   let level = [...leaves].sort();
   let idx = level.indexOf(leaf);
-  if (idx < 0) throw new Error('merkleProof: 리프를 찾을 수 없습니다');
+  if (idx < 0) throw new Error('merkleProof: leaf not found');
 
   const proof: string[] = [];
   while (level.length > 1) {

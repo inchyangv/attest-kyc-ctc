@@ -62,7 +62,7 @@ export class ProofmarkWorker {
       await sleep(cfg.pollMs);
     }
 
-    log.info('종료 대기 중…');
+    log.info('waiting for in-flight work...');
     while (this.inFlight.size > 0) await sleep(200);
     log.info(`worker stopped. State: ${JSON.stringify(this.store.counts())}`);
   }
@@ -83,7 +83,7 @@ export class ProofmarkWorker {
     if (srcAddr.toLowerCase() !== cfg.sourceAddress.toLowerCase()) {
       throw new Error(`ASC sourceContract (${srcAddr}) does not match worker config (${cfg.sourceAddress})`);
     }
-    log.ok('ASC 설정 일치 확인');
+    log.ok('ASC configuration matches');
   }
 
   // Scan

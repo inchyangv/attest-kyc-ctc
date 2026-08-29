@@ -13,11 +13,11 @@ export interface IssueRequest {
   declared: { fullName: string; dateOfBirth: string; nationality: string; residence: string };
   idImage: Uint8Array | null;
   bank?: { bankCode: string; accountNumber: string };
-  /** EIP-4361 지갑 소유권 서명 검증 결과 */
+  /** Result of verifying the EIP-4361 wallet ownership signature */
   walletControlProven: boolean;
   jurisdiction: number;   // ISO-3166 numeric (KR = 410)
   kind?: number;          // 1 INDIVIDUAL
-  assurance: number;      // 발급사 자체 등급 1..5
+  assurance: number;   // issuer's own grade, 1..5
 }
 
 export type IssueOutcome =
@@ -29,11 +29,11 @@ export type IssueOutcome =
   | { status: 'REJECTED'; reason: string; evidenceHash: string; evidence: unknown };
 
 /**
- * 발급 오케스트레이션.
+ * Issuance orchestration.
  *
- * 0 지갑 소유권 → 1 신분증 → 2 계좌 → 3 맵핑 대사 → 4 AML → 5 커밋먼트 → 6 attrs
+ * 0 wallet control, 1 ID document, 2 bank account, 3 reconciliation, 4 AML,
  *
- * 각 단계는 증적 체인에 append 된다. **PII 원문은 증적에도 넣지 않는다** — 해시와 판정만.
+ * Every step appends to the evidence chain. Cleartext PII stays out of the evidence too:
  */
 export async function runIssuance(
   req: IssueRequest,
@@ -50,10 +50,10 @@ export async function runIssuance(
     payload: { wallet: req.wallet.toLowerCase(), proven: req.walletControlProven },
   });
   if (!req.walletControlProven) {
-    return { status: 'REJECTED', reason: '지갑 소유권 미증명', evidenceHash: chain.hash, evidence: chain.export() };
+    return { status: 'REJECTED', reason: 'wallet control not proven', evidenceHash: chain.hash, evidence: chain.export() };
   }
 
-  // 1·2. 관할 어댑터 (신분증 · 계좌)
+  // 1 and 2. jurisdiction adapter: ID document and bank account
   const adapterResult = await adapter.run({
     idImage: req.idImage,
     bank: req.bank,
@@ -61,7 +61,7 @@ export async function runIssuance(
   });
   chain.append({ step: 'jurisdiction_adapter', at, payload: adapterResult.evidence });
 
-  // 3. 맵핑 대사 — 세 축이 모두 일치해야 한다
+  // 3. reconciliation: all three axes must agree
   const recInput: ReconcileInput = {
     declared: { fullName: req.declared.fullName, dateOfBirth: req.declared.dateOfBirth },
     idDocument: adapterResult.idDocument,
@@ -70,11 +70,11 @@ export async function runIssuance(
   const rec = reconcile(recInput);
   chain.append({ step: 'reconcile', at, payload: { axes: rec.axes, digests: rec.digests, passed: rec.passed } });
   if (!rec.passed) {
-    return { status: 'REJECTED', reason: `맵핑 대사 실패: ${JSON.stringify(rec.axes)}`,
+    return { status: 'REJECTED', reason: `reconciliation failed: ${JSON.stringify(rec.axes)}`,
              evidenceHash: chain.hash, evidence: chain.export() };
   }
 
-  // 4. AML 심사
+  // 4. AML screening
   const subject: ScreeningSubject = {
     fullName: req.declared.fullName,
     dateOfBirth: req.declared.dateOfBirth,
@@ -95,7 +95,7 @@ export async function runIssuance(
   });
 
   if (screening.decision === 'BLOCK') {
-    return { status: 'DENIED', reason: `제재/고위험 판정 (밴드 ${screening.riskBand})`,
+    return { status: 'DENIED', reason: `sanctions or high-risk decision (band ${screening.riskBand})`,
              evidenceHash: chain.hash, evidence: chain.export() };
   }
   if (screening.decision === 'REVIEW') {
@@ -103,7 +103,7 @@ export async function runIssuance(
              evidenceHash: chain.hash, evidence: chain.export() };
   }
 
-  // 5. 클레임 커밋먼트 — salt 는 이용자 브라우저에만 남는다
+  // 5. claim commitment. The salts stay in the user's browser.
   const claims: Claim[] = [
     { key: 'fullName',    value: req.declared.fullName,    salt: newSalt() },
     { key: 'dateOfBirth', value: req.declared.dateOfBirth, salt: newSalt() },
@@ -119,7 +119,7 @@ export async function runIssuance(
   const root = claimsRoot(claims);
   chain.append({ step: 'commitment', at, payload: { claimsRoot: root, claimCount: claims.length } });
 
-  // 6. attrs 팩킹 — 확인 행위 ∪ 심사 행위
+  // 6. pack attrs: identity checks plus screening checks
   const methods = adapterResult.methods | screening.methodsApplied;
   const issuedAt = Math.floor(at / 1000);
   const expiry = issuedAt + EXPIRY_DAYS_BY_BAND[screening.riskBand] * 86_400;
@@ -132,7 +132,7 @@ export async function runIssuance(
     methods,
     issuedAt,
     expiry,
-    epoch: 0,                       // Mode A(개별 증명) — 에폭 없음
+    epoch: 0,   // Mode A, individual proof, no epoch
   });
 
   const evidenceHash = chain.append({ step: 'issue', at, payload: { attrs, claimsRoot: root } });
@@ -146,7 +146,7 @@ export async function runIssuance(
   };
 }
 
-/** 발급 결과를 Sepolia `ComplianceSource.issue()` 인자로 변환한다. */
+/** Turns an issuance result into arguments for Sepolia `ComplianceSource.issue()`. */
 export function toIssueCall(wallet: string, out: Extract<IssueOutcome, { status: 'ISSUED' }>) {
   return {
     subject: ethers.getAddress(wallet),

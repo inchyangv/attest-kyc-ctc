@@ -30,7 +30,7 @@ export class AttestationWatcher {
           );
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           const body = (await res.json()) as { attestedHeight: number };
-          if (typeof body.attestedHeight !== 'number') throw new Error('attestedHeight 필드 없음');
+          if (typeof body.attestedHeight !== 'number') throw new Error('attestedHeight field missing');
           return body.attestedHeight;
         } finally {
           clearTimeout(timer);

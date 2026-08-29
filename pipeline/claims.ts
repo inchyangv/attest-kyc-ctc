@@ -2,11 +2,11 @@ import { ethers } from 'ethers';
 import { merkleRoot, merkleProof, verifyProof } from './merkle.js';
 
 /**
- * 클레임 커밋먼트.
+ * Claim commitments.
  *
- * ★ 개인정보는 온체인에 1바이트도 올리지 않는다 (§15-1).
- *   각 클레임에 salt 를 붙여 해시하고, 그 루트만 마크에 싣는다.
- *   salt 는 이용자 브라우저에만 남으므로 온체인 값에서 원문을 역산할 수 없다.
+ * Not one byte of personal data goes on chain.
+ * Each claim is salted and hashed, and only the root travels with the mark.
+ * The salts stay in the user's browser, so the on-chain value cannot be reversed.
  *
  *   leaf_i     = keccak256(abi.encode(key, value, salt_i))
  *   claimsRoot = MerkleRoot(sorted(leaf_1..leaf_n))
@@ -31,10 +31,10 @@ export function claimsRoot(claims: readonly Claim[]): string {
   return merkleRoot(claims.map(claimLeaf));
 }
 
-/** 선택공개 — 특정 클레임 하나만 공개하고 나머지는 숨긴다. */
+/** Selective disclosure: reveal one claim and keep the rest hidden. */
 export function discloseClaim(claims: readonly Claim[], key: string): { claim: Claim; proof: string[] } {
   const claim = claims.find((c) => c.key === key);
-  if (!claim) throw new Error(`discloseClaim: '${key}' 클레임이 없습니다`);
+  if (!claim) throw new Error(`discloseClaim: no claim named '${key}'`);
   return { claim, proof: merkleProof(claims.map(claimLeaf), claimLeaf(claim)) };
 }
 

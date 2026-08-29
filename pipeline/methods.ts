@@ -1,9 +1,9 @@
 /**
- * 확인 행위 비트맵 — `src/lib/ProofmarkTypes.sol` 의 `Methods` 라이브러리와 **반드시 일치**해야 한다.
- * (pipeline/pipeline.test.ts 가 두 정의를 대조한다)
+ * Bitmap of checks. Must match the `Methods` library in `src/lib/ProofmarkTypes.sol`.
+ * pipeline/pipeline.test.ts compares the two definitions.
  */
 export const Methods = {
-  // 확인 행위
+  //   // Identity checks
   WALLET_CONTROL:      1 << 0,
   ID_DOC_IMAGE:        1 << 1,
   ID_DOC_AUTHENTICITY: 1 << 2,
@@ -15,7 +15,7 @@ export const Methods = {
   IN_PERSON:           1 << 8,
   EPASSPORT_NFC:       1 << 9,
   GOV_EID:             1 << 10,
-  // 심사 행위
+  //   // Screening checks
   SANCTIONS_SCREENED:  1 << 16,
   PEP_SCREENED:        1 << 17,
   ADVERSE_MEDIA:       1 << 18,

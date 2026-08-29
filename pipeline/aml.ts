@@ -1,10 +1,10 @@
 /**
- * AML 계약 — **단일 정본은 `aml/types.ts` 다.**
+ * AML contract. `aml/types.ts` owns these types.
  *
- * ★ `Methods` 와 같은 원칙: 같은 타입을 두 곳에 정의하면 언젠가 갈라진다.
- *   실제로 갈라졌었다 — 파이프라인 쪽 `MatchType` 에 `'wallet'` 이 없어서
- *   지갑 주소 대조(ONCHAIN_EXPOSURE)를 표현할 수 없었고 타입체크가 잡았다.
- *   심사 엔진이 계약의 주인이므로 그쪽을 정본으로 삼고 여기서는 재수출만 한다.
+ * Same rule as `Methods`: define a type twice and the two copies drift.
+ * They already had. The pipeline's `MatchType` was missing `'wallet'`, so wallet-address
+ * matching had no way to be expressed. The typechecker caught it.
+ * The screening engine owns the contract, so this file only re-exports.
  */
 export type {
   ScreeningSubject,
@@ -23,20 +23,20 @@ import { Methods } from './methods.js';
 import { hmacDigest } from './evidence-key.js';
 
 /**
- * riskBand → 마크 유효기간(일). 위험이 높을수록 짧게 재검증한다.
- * 이건 발급 정책이므로 심사 엔진이 아니라 파이프라인의 책임이다.
+ * riskBand to mark lifetime in days. Higher risk means shorter, so it is re-checked sooner.
+ * This is issuance policy, so the pipeline decides it, not the screening engine.
  */
 export const EXPIRY_DAYS_BY_BAND: Record<1 | 2 | 3 | 4 | 5, number> = {
   1: 365, 2: 180, 3: 90, 4: 60, 5: 30,
 };
 
 /**
- * 모의 AML 엔진 — 실물 명단 원본(`data/raw/`)이 없는 환경에서 파이프라인을 돌리기 위한 것.
+ * Mock AML engine, for running the pipeline where the source lists in `data/raw/` are absent.
  *
- * ⚠️ **실제 제재 명단을 조회하지 않는다.** 따라서 `SANCTIONS_SCREENED` 비트를 세우지 않는다 —
- *    세우면 거짓말이다(§4.2 · §15-4). 비트가 0이면 소비자 정책이 자동으로 거르므로,
- *    **모의 엔진으로 발급한 마크는 제재 스크리닝을 요구하는 게이트를 열지 못한다.**
- *    이것이 의도한 동작이다. 실물은 `aml/engine.ts` 의 `ListBackedAmlEngine`.
+ * It reads no real sanctions list, so it does not set `SANCTIONS_SCREENED`.
+ * Setting it would be a lie. With the bit at zero a consumer policy filters the mark out,
+ * so a mark issued through the mock cannot open a gate that requires sanctions screening.
+ * That is the intended behaviour. The real engine is `ListBackedAmlEngine` in `aml/engine.ts`.
  */
 export class MockAmlEngine implements AmlEngine {
   readonly engineVersion = 'mock-0.1.0';
@@ -44,11 +44,11 @@ export class MockAmlEngine implements AmlEngine {
   private readonly keyId: string;
 
   /**
-   * @param opts.evidenceKey 증적 가명화 키. **기본값 없음** — 실물 엔진과 같은 원칙이다.
-   *        모의 엔진만 무염 해시를 쓰면, 증적이 보호된 것처럼 보이지만 아닌 상태가 생긴다.
+   * Evidence pseudonymisation key.
+   * If only the mock used an unsalted hash, the evidence would look protected without being so.
    */
   constructor(opts: { evidenceKey: string; keyId?: string }) {
-    if (!opts?.evidenceKey) throw new Error('MockAmlEngine: evidenceKey 는 필수입니다');
+    if (!opts?.evidenceKey) throw new Error('MockAmlEngine: evidenceKey is required');
     this.evidenceKey = opts.evidenceKey;
     this.keyId = opts.keyId ?? 'mock-k1';
   }
@@ -62,7 +62,7 @@ export class MockAmlEngine implements AmlEngine {
       decision: isHighRisk ? 'BLOCK' : 'ALLOW',
       riskBand: isHighRisk ? 5 : 2,
       hits: [],
-      // 관할 확인만 실제로 수행했다 → 그 비트만 세운다
+      // only the jurisdiction check actually ran, so only that bit is set
       methodsApplied: Methods.JURISDICTION_CHECK,
       listVersions: {},
       engineVersion: this.engineVersion,
@@ -70,11 +70,11 @@ export class MockAmlEngine implements AmlEngine {
       evidence: {
         engineVersion: this.engineVersion,
         listVersions: {},
-        // ⚠️ 이름 원문이 아니라 **키드 HMAC** 을 넣는다.
-        //    ① 증적에 PII 를 넣으면 삭제권(PIPA/GDPR)과 감사추적이 충돌한다 —
-        //       금고에서 원문을 지우는 순간 evidenceHash 를 재계산할 수 없게 된다.
-        //    ② 무염 해시로는 부족하다 — 이름은 엔트로피가 낮아 사전공격에 뚫린다.
-        //    자세한 근거는 evidence-key.ts 주석 참조.
+        // A keyed HMAC goes in, never the cleartext name.
+        // PII in the evidence puts the right to erasure against the audit trail: erase the
+        // vault and evidenceHash can no longer be recomputed.
+        // An unsalted hash is not enough either. Names carry too little entropy.
+        // evidence-key.ts carries the full reasoning.
         keyId: this.keyId,
         nameDigest: hmacDigest(this.evidenceKey, subject.fullName),
         tokenDigests: [],
@@ -82,8 +82,8 @@ export class MockAmlEngine implements AmlEngine {
         checks: [
           { id: 'jurisdiction', applied: true, passed: !isHighRisk },
           { id: 'sanctions_list', applied: false, passed: false,
-            note: '모의 엔진 — 실제 명단 미조회. SANCTIONS_SCREENED 비트 미설정' },
-          { id: 'onchain_exposure', applied: false, passed: false, note: '모의 엔진 — 제재 지갑 목록 미조회' },
+            note: 'mock engine, no list consulted, SANCTIONS_SCREENED left unset' },
+          { id: 'onchain_exposure', applied: false, passed: false, note: 'mock engine, sanctioned wallet list not consulted' },
         ],
         hitDigests: [],
       },

@@ -11,6 +11,6 @@ for (const sig of ['SIGINT', 'SIGTERM'] as const) {
 }
 
 worker.run().catch((e) => {
-  log.error('워커 기동 실패:', e?.message ?? e);
+  log.error('worker failed to start:', e?.message ?? e);
   process.exit(1);
 });
