@@ -10,15 +10,15 @@ function abiOf(file: string, name: string): any[] {
   try {
     return JSON.parse(readFileSync(p, 'utf8')).abi;
   } catch {
-    throw new Error(`ABI 를 찾을 수 없습니다: ${p} — 먼저 'forge build' 를 실행하세요`);
+    throw new Error(`ABI not found: ${p}. Run 'forge build' first.`);
   }
 }
 
-/** 컨트랙트 산출물을 단일 정본으로 쓴다 — ABI 를 손으로 복사하면 반드시 어긋난다. */
+/** Read ABIs from the build output. Hand-copied ABIs drift. */
 export const COMPLIANCE_SOURCE_ABI = abiOf('ComplianceSource.sol', 'ComplianceSource');
 export const PROOFMARK_ASC_ABI     = abiOf('ProofmarkASC.sol', 'ProofmarkASC');
 
-/** 이벤트 → ASC 액션 코드 (docs/04-event-schema.md §1) */
+/** Event name to ASC action code. See docs/04-event-schema.md section 1. */
 export const EVENT_TO_ACTION: Record<string, number> = {
   MarkIssued: 0,
   MarkRevoked: 1,

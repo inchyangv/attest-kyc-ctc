@@ -5,7 +5,7 @@ const worker = new ProofmarkWorker();
 
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {
   process.on(sig, () => {
-    log.info(`${sig} 수신 — 진행 중 작업을 마치고 종료합니다`);
+    log.info(`${sig} received. Finishing in-flight work, then exiting.`);
     worker.stop();
   });
 }

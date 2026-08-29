@@ -4,8 +4,8 @@ pragma solidity ^0.8.30;
 import {Test} from "forge-std/Test.sol";
 import {RosterProof} from "../src/lib/RosterProof.sol";
 
-/// @notice `pipeline/roster.ts` 와 바이트 단위 일치를 고정한다.
-/// @dev 벡터는 TypeScript 가 5건 명부로 생성했다. 한쪽만 고치면 이 테스트가 깨진다.
+/// @notice Pins byte-level agreement with `pipeline/roster.ts`.
+/// @dev TypeScript generated the vectors from a five-entry roster. Fix one side and this breaks.
 contract RosterProofTest is Test {
     bytes32 constant ROOT = 0x765ddbec0ab20e3913c344b3f1c3ecca87b6567b65f5946ae51f4c3a9905fc69;
 
@@ -38,7 +38,7 @@ contract RosterProofTest is Test {
         bytes32 leaf = 0x403d0f0839541c259f599993a09de0177357022d45a6753c3372e16936cf0dc2;
 
         assertTrue(RosterProof.verifyInclusion(ROOT, leaf, p));
-        assertFalse(RosterProof.verifyInclusion(ROOT, keccak256("fake"), p), unicode"위조 리프가 통과했다");
+        assertFalse(RosterProof.verifyInclusion(ROOT, keccak256("fake"), p), "a forged leaf passed");
     }
 
     function _nonInclusion() private pure returns (RosterProof.NonInclusion memory) {
@@ -62,24 +62,24 @@ contract RosterProofTest is Test {
         });
     }
 
-    /// @dev 명부에 없는 주체의 비포함이 검증된다 — 폐기 표현의 근거
+    /// @dev Non-membership verifies for a subject absent from the roster, which is how revocation is expressed
     function test_VerifyNonInclusion() public pure {
         bytes32 targetKey = 0xf546978472b6cbaee6c96f8f5afc15c2ee71e09339a97cae2e243cda496b9b96;
         assertTrue(RosterProof.verifyNonInclusion(ROOT, targetKey, _nonInclusion()));
     }
 
-    /// @dev 대상이 두 키 사이에 없으면 거부
+    /// @dev Reject when the target does not fall between the two keys
     function test_RejectsTargetOutsideGap() public pure {
         bytes32 outside = 0x0000000000000000000000000000000000000000000000000000000000000001;
         assertFalse(RosterProof.verifyNonInclusion(ROOT, outside, _nonInclusion()));
     }
 
-    /// @dev ★ 두 리프가 인접하지 않으면 거부 — 없으면 중간을 건너뛴 위조가 통과한다
+    /// @dev Reject when the leaves are not adjacent. Without this a forged gap that skips entries passes.
     function test_RejectsNonAdjacentLeaves() public pure {
         RosterProof.NonInclusion memory p = _nonInclusion();
-        p.right.index = p.left.index + 2;   // 인접성을 깬다
+        p.right.index = p.left.index + 2;   // break adjacency
         bytes32 targetKey = 0xf546978472b6cbaee6c96f8f5afc15c2ee71e09339a97cae2e243cda496b9b96;
-        assertFalse(RosterProof.verifyNonInclusion(ROOT, targetKey, p), unicode"비인접 리프가 통과했다");
+        assertFalse(RosterProof.verifyNonInclusion(ROOT, targetKey, p), "non-adjacent leaves passed");
     }
 
     function test_SentinelConstantsMatchTypeScript() public pure {

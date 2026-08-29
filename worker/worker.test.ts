@@ -13,39 +13,39 @@ function tmpStore(): { path: string; cleanup: () => void } {
   return { path: join(dir, 'worker.json'), cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
-describe('queryId — ASC 와 바이트 단위 일치', () => {
-  test('고정 벡터가 Solidity 결과와 같다', () => {
-    // test/QueryId.t.sol:test_QueryIdKnownVector 의 기대값
+describe('queryId matches the ASC byte for byte', () => {
+  test('fixed vector matches the Solidity result', () => {
+    // expected value from test/QueryId.t.sol:test_QueryIdKnownVector
     assert.equal(
       computeQueryId(1, 11597452, 7),
       '0x6ca17d0e6939c57d0d71f9b17302db50a70d50e09c6144c362cadd1850a36159',
     );
   });
 
-  test('chainKey 가 다르면 queryId 도 다르다', () => {
+  test('a different chainKey gives a different queryId', () => {
     assert.notEqual(computeQueryId(1, 100, 5), computeQueryId(3, 100, 5));
   });
 
-  test('blockHeight 가 다르면 queryId 도 다르다', () => {
+  test('a different blockHeight gives a different queryId', () => {
     assert.notEqual(computeQueryId(1, 100, 5), computeQueryId(1, 101, 5));
   });
 });
 
 describe('txIndexFromProof', () => {
-  test('빈 증명은 인덱스 0', () => {
+  test('an empty proof means index 0', () => {
     assert.equal(txIndexFromProof([]), 0n);
   });
 
-  test('isLeft 비트열을 인덱스로 복원한다', () => {
-    // siblings[0] 이 최하위 비트
+  test('recovers the index from the isLeft bits', () => {
+    // siblings[0] is the least significant bit
     assert.equal(txIndexFromProof([{ isLeft: true }]), 1n);
     assert.equal(txIndexFromProof([{ isLeft: false }, { isLeft: true }]), 2n);
     assert.equal(txIndexFromProof([{ isLeft: true }, { isLeft: true }]), 3n);
   });
 });
 
-describe('Store — 영속성', () => {
-  test('재시작 후 커서와 작업이 복원된다', () => {
+describe('Store persistence', () => {
+  test('cursor and jobs survive a restart', () => {
     const { path, cleanup } = tmpStore();
     try {
       const a = new Store(path);
@@ -53,7 +53,7 @@ describe('Store — 영속성', () => {
       a.add({ txHash: '0xaa', blockNumber: 900, action: 0, eventName: 'MarkIssued',
               logCount: 2, state: 'discovered', attempts: 0 });
 
-      // 프로세스가 죽었다고 가정하고 새 인스턴스로 읽는다
+      // pretend the process died and read with a fresh instance
       const b = new Store(path);
       assert.equal(b.cursor, 1000);
       assert.equal(b.get('0xaa')?.eventName, 'MarkIssued');
@@ -62,17 +62,17 @@ describe('Store — 영속성', () => {
     } finally { cleanup(); }
   });
 
-  test('커서는 되돌아가지 않는다', () => {
+  test('the cursor never moves backwards', () => {
     const { path, cleanup } = tmpStore();
     try {
       const s = new Store(path);
       s.setCursor(500);
-      s.setCursor(400);          // 되돌리기 시도
+      s.setCursor(400);   // attempt to rewind
       assert.equal(s.cursor, 500);
     } finally { cleanup(); }
   });
 
-  test('done/dead/skipped 는 pending 에서 빠진다', () => {
+  test('done, dead and skipped drop out of pending', () => {
     const { path, cleanup } = tmpStore();
     try {
       const s = new Store(path);
@@ -85,18 +85,18 @@ describe('Store — 영속성', () => {
     } finally { cleanup(); }
   });
 
-  test('쓰기는 원자적이다 — tmp 파일이 남지 않는다', () => {
+  test('writes are atomic and leave no tmp file behind', () => {
     const { path, cleanup } = tmpStore();
     try {
       const s = new Store(path);
       s.setCursor(1);
       assert.ok(existsSync(path));
-      assert.ok(!existsSync(`${path}.tmp`), 'tmp 파일이 남아 있으면 안 된다');
-      JSON.parse(readFileSync(path, 'utf8'));   // 항상 파싱 가능해야 한다
+      assert.ok(!existsSync(`${path}.tmp`), 'a leftover tmp file means the write was not atomic');
+      JSON.parse(readFileSync(path, 'utf8'));   // must always parse
     } finally { cleanup(); }
   });
 
-  test('상태 전이가 영속화된다', () => {
+  test('state transitions persist', () => {
     const { path, cleanup } = tmpStore();
     try {
       const s = new Store(path);
@@ -112,15 +112,15 @@ describe('Store — 영속성', () => {
 });
 
 describe('Backoff', () => {
-  test('지수적으로 증가하고 상한을 넘지 않는다', () => {
+  test('grows exponentially and stays under the ceiling', () => {
     const b = new Backoff(1000, 10_000, 2);
     for (let i = 0; i < 12; i++) {
       const d = b.delayFor(i);
-      assert.ok(d > 0, '양수여야 한다');
-      assert.ok(d <= 10_000, `상한 초과: ${d}`);
+      assert.ok(d > 0, 'must be positive');
+      assert.ok(d <= 10_000, `above ceiling: ${d}`);
     }
-    // 지터가 있으므로 여러 번 뽑아 평균 경향을 본다
+    // jitter is in play, so sample a few and compare averages
     const avg = (n: number) => Array.from({ length: 50 }, () => b.delayFor(n)).reduce((a, c) => a + c) / 50;
-    assert.ok(avg(3) > avg(0), '시도가 늘면 대기도 늘어야 한다');
+    assert.ok(avg(3) > avg(0), 'more attempts should mean a longer wait');
   });
 });

@@ -1,13 +1,13 @@
 /**
- * AmlEngine 구현. 실제 명단 3종으로 심사한다.
+ * AmlEngine implementation, screening against the three real lists.
  *
- * 판정 규칙 — 격상은 무조건, 완화는 없다:
- *   지갑 적중 또는 뒷받침된 이름 적중        → BLOCK (밴드 5)
- *   뒷받침 없는 고득점 이름 적중             → REVIEW (밴드 4) — 사람이 본다
- *   FATF 대응조치 관할                       → REVIEW (밴드 4)
- *   FATF 강화 모니터링 관할                  → ALLOW  (밴드 3)
- *   생년월일 없음                            → REVIEW
- *   그 외                                    → ALLOW  (밴드 1)
+ * Decision rules. Escalation is unconditional; nothing softens a hit.
+ *   wallet hit, or a corroborated name hit   -> BLOCK  (band 5)
+ *   high-scoring name hit, no corroboration  -> REVIEW (band 4), a human looks
+ *   FATF call-for-action jurisdiction        -> REVIEW (band 4)
+ *   FATF increased-monitoring jurisdiction   -> ALLOW  (band 3)
+ *   no date of birth                         -> REVIEW
+ *   otherwise                                -> ALLOW  (band 1)
  */
 import { createHash, createHmac } from 'node:crypto';
 import { ENGINE_VERSION, normalizeName, normalizeDob, tokenize, contentTokens, normalizeCountry } from './normalize.js';
@@ -23,12 +23,12 @@ import {
 export interface EngineOptions {
   entries: SanctionEntry[];
   listVersions: Record<string, number>;
-  /** 증적 키. **필수** — 이름은 엔트로피가 낮아 무염 해시로는 보호되지 않는다.
-   *  기본값을 두지 않는 이유: 기본값이 있으면 누군가 그대로 배포한다. */
+  /** Evidence key. Required, because names carry too little entropy for an unsalted hash
+   *  to protect. No default: a default is what someone ships to production. */
   evidenceKey: string;
-  /** 키 식별자. 로테이션 시 어느 키로 만든 증적인지 구분한다. */
+  /** Key identifier, so rotation stays traceable. */
   keyId?: string;
-  /** PEP·adverse media 데이터가 없으면 그 비트를 세우지 않는다 (기본 false) */
+  /** With no PEP or adverse-media data, those bits stay unset. Defaults to false. */
   hasPepData?: boolean;
   hasAdverseMedia?: boolean;
 }
@@ -39,7 +39,7 @@ export class ListBackedAmlEngine implements AmlEngine {
   private opts: EngineOptions;
 
   constructor(opts: EngineOptions) {
-    if (!opts.evidenceKey) throw new Error('evidenceKey 가 필요하다 — 증적에 이름 원문을 남기지 않기 위한 HMAC 키');
+    if (!opts.evidenceKey) throw new Error('evidenceKey is required. It is the HMAC key that keeps names out of the evidence.');
     this.opts = opts;
     this.corpus = buildCorpus(opts.entries);
     this.versions = opts.listVersions;
@@ -58,11 +58,11 @@ export class ListBackedAmlEngine implements AmlEngine {
       dob, nationality: nat, walletAddress: subject.walletAddress,
     }).map(h => ({ ...h, listVersion: this.versions[h.listId] ?? 0 }));
 
-    // ── 판정 ──
+    // Decision
     const blocking = hits.filter(h => h.corroborated && (h.matchType === 'wallet' || h.score >= 0.88));
-    // 뒷받침 없는 **로마자 전개** 적중은 판정을 움직이지 않는다.
-    // 전개 표기는 우리가 만든 추론이지 명단에 실린 사실이 아니다 — 이걸로 사람을 붙잡으면
-    // 흔한 한국 이름이 무더기로 걸린다(평가에서 실측됨). 적중은 증적에 그대로 남는다.
+    // An uncorroborated romanised hit does not move the decision.
+    // Expansion is our inference, not something the list says. Holding people on it catches
+    // ordinary Korean names in bulk, as the evaluation showed. The hit still lands in evidence.
     const drivesDecision = (h: ScreeningHit) =>
       h.matchType !== 'romanized' || h.corroborated;
     const suspicious = hits.filter(h => !blocking.includes(h) && h.score >= 0.82 && drivesDecision(h));
@@ -86,7 +86,7 @@ export class ListBackedAmlEngine implements AmlEngine {
       decision = 'ALLOW'; band = hits.length ? 2 : 1;
     }
 
-    // ── 실제로 수행한 심사만 비트를 세운다 ──
+    // Set a bit only for screening that actually ran
     let methodsApplied = M.SANCTIONS_SCREENED | M.JURISDICTION_CHECK | M.ONCHAIN_EXPOSURE;
     if (this.opts.hasPepData) methodsApplied |= M.PEP_SCREENED;
     if (this.opts.hasAdverseMedia) methodsApplied |= M.ADVERSE_MEDIA;
@@ -107,10 +107,10 @@ export class ListBackedAmlEngine implements AmlEngine {
       checks: [
         { id: 'sanctions.name',     applied: true,  passed: blocking.length === 0, note: `${hits.length} candidate hit(s)` },
         { id: 'sanctions.wallet',   applied: true,  passed: !hits.some(h => h.matchType === 'wallet') },
-        { id: 'jurisdiction.fatf',  applied: true,  passed: jr.level === 0, note: FATF.verified ? jr.reason : `미검증 표(${FATF.asOf}) ${jr.reason}`.trim() },
+        { id: 'jurisdiction.fatf',  applied: true,  passed: jr.level === 0, note: FATF.verified ? jr.reason : `unverified table (${FATF.asOf}) ${jr.reason}`.trim() },
         { id: 'identity.dob',       applied: true,  passed: !!dob },
-        { id: 'pep',                applied: !!this.opts.hasPepData,      passed: true, note: this.opts.hasPepData ? undefined : '데이터 미연동 — 비트 미설정' },
-        { id: 'adverseMedia',       applied: !!this.opts.hasAdverseMedia, passed: true, note: this.opts.hasAdverseMedia ? undefined : '데이터 미연동 — 비트 미설정' },
+        { id: 'pep',                applied: !!this.opts.hasPepData,      passed: true, note: this.opts.hasPepData ? undefined : 'no data source connected, bit left unset' },
+        { id: 'adverseMedia',       applied: !!this.opts.hasAdverseMedia, passed: true, note: this.opts.hasAdverseMedia ? undefined : 'no data source connected, bit left unset' },
       ],
       hitDigests: hits.map(h => `${h.listId}:${h.entryId}:${h.matchType}:${h.score.toFixed(3)}:${h.corroborated ? 'c' : 'u'}`).sort(),
     };
@@ -122,7 +122,7 @@ export class ListBackedAmlEngine implements AmlEngine {
   }
 }
 
-/** 증적 사본으로 재계산해 대조할 수 있어야 한다 — 키 정렬 고정 직렬화 */
+/** An auditor recomputes this from their copy, so serialisation sorts keys and stays fixed. */
 export function evidenceDigest(e: ScreeningEvidence): string {
   const canon = (v: unknown): unknown =>
     Array.isArray(v) ? v.map(canon)

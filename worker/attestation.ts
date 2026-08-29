@@ -2,13 +2,13 @@ import { log } from './log.js';
 import { Backoff, sleep, withRetry } from './retry.js';
 
 /**
- * 어테스트 높이 조회.
+ * Attested-height polling.
  *
- * ★ SDK 의 `waitUntilHeightAttested()` 를 쓰지 않는다.
- *   그 함수는 15초 폴링 루프를 돌지만 내부 HTTP 호출(10초 타임아웃)이 실패하면
- *   예외가 루프 밖으로 튀어나온다 — 재시도가 없다.
- *   실측: 8분 대기 후 `AxiosError: timeout of 10000ms exceeded` 로 전량 손실.
- *   여기서는 **폴링 호출 하나하나를 재시도로 감싼다.**
+ * We do not use the SDK's `waitUntilHeightAttested()`.
+ * It polls every 15 seconds, but when the inner HTTP call (10s timeout) fails the exception
+ * escapes the loop. There is no retry.
+ * Measured: eight minutes of waiting lost to a single `AxiosError: timeout of 10000ms exceeded`.
+ * Here every individual poll is wrapped in a retry.
  */
 export class AttestationWatcher {
   constructor(
@@ -41,8 +41,8 @@ export class AttestationWatcher {
   }
 
   /**
-   * 대상 높이가 어테스트될 때까지 기다린다.
-   * 개별 폴링 실패는 흡수한다 — 어테스트는 체인의 성질이므로 계속 기다리면 결국 도달한다.
+   * Waits until the target height is attested.
+   * Individual poll failures are absorbed. Attestation is a property of the chain, so waiting works.
    */
   async waitFor(height: number, signal?: AbortSignal): Promise<void> {
     let logged = false;
@@ -53,19 +53,19 @@ export class AttestationWatcher {
       try {
         latest = await this.latestAttestedHeight(signal);
       } catch (e: any) {
-        // 재시도를 모두 소진해도 포기하지 않는다. 다음 폴링 주기에 다시 시도한다.
-        log.warn(`어테스트 높이 조회 일시 실패, ${this.pollMs}ms 후 재시도: ${e?.message ?? e}`);
+        // Exhausting the retries is not giving up. The next poll cycle tries again.
+        log.warn(`attested-height poll failed, retrying in ${this.pollMs}ms: ${e?.message ?? e}`);
         await sleep(this.pollMs);
         continue;
       }
 
       if (latest >= height) {
-        log.ok(`블록 ${height} 어테스트 완료 (최신 ${latest})`);
+        log.ok(`block ${height} attested (latest ${latest})`);
         return;
       }
       if (!logged) {
         const behind = height - latest;
-        log.info(`블록 ${height} 어테스트 대기 — 현재 ${latest}, ${behind}블록 뒤 (약 ${(behind * 12 / 60).toFixed(1)}분)`);
+        log.info(`waiting for block ${height} to be attested. Latest ${latest}, ${behind} blocks behind (~${(behind * 12 / 60).toFixed(1)} min)`);
         logged = true;
       }
       await sleep(this.pollMs);

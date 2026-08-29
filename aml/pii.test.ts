@@ -7,28 +7,28 @@ import { containsPii } from '../pipeline/pii-guard.js';
 
 const HAVE = existsSync('data/raw/ofac_sdn.xml');
 
-// 탐지기는 pipeline/pii-guard.ts 가 정본이다 — 중복 정의는 언젠가 갈라진다.
+// pipeline/pii-guard.ts owns the detector. A second copy would drift.
 const leaks = (h: unknown, n: string) => containsPii(h, n);
 
-test('★ 증적에 이름 원문이 없다 — NFC/NFD 가로질러 확인', { skip: !HAVE }, async () => {
+test('evidence carries no cleartext name, checked across NFC and NFD', { skip: !HAVE }, async () => {
   const { entries, listVersions } = await loadLists();
   const e = new ListBackedAmlEngine({ entries, listVersions, evidenceKey: 'k', keyId: 't' });
   const name = '박서준';
   const r = await e.screen({ fullName: name, dateOfBirth: '1990-05-05', nationality: 'KR', residence: 'KR', walletAddress: '0x'+'9'.repeat(40) });
   const ev = JSON.stringify(r.evidence);
-  assert.equal(leaks(ev, name), false, '증적에 이름 원문이 남아 있다');
-  for (const t of ['bak','seo','jun','park']) assert.equal(leaks(ev, t), false, `로마자 조각 "${t}" 유출`);
+  assert.equal(leaks(ev, name), false, 'a cleartext name survived in the evidence');
+  for (const t of ['bak','seo','jun','park']) assert.equal(leaks(ev, t), false, 'romanised fragment "${t}" leaked');
   assert.ok(r.evidence.nameDigest.startsWith('0x'));
-  assert.ok(r.evidence.variantDigests.length > 0, '전개 다이제스트는 남아야 재현 가능하다');
+  assert.ok(r.evidence.variantDigests.length > 0, 'expansion digests must survive or matching is not reproducible');
 });
 
-test('★ 탐지기 자체 검증 — 순진한 includes 는 NFD 를 놓친다', () => {
+test('the detector itself works: a naive includes misses NFD', () => {
   const nfd = '박서준'.normalize('NFD');
-  assert.equal(nfd.includes('박서준'), false, '전제: 단순 비교는 실패한다');
-  assert.equal(leaks(nfd, '박서준'), true, '탐지기는 잡아야 한다');
+  assert.equal(nfd.includes('박서준'), false, 'premise: the naive comparison fails');
+  assert.equal(leaks(nfd, '박서준'), true, 'the detector must catch it');
 });
 
-test('증적 키가 다르면 다이제스트가 다르다 (무염 해시가 아니다)', { skip: !HAVE }, async () => {
+test('a different evidence key gives a different digest, so these are not unsalted hashes', { skip: !HAVE }, async () => {
   const { entries, listVersions } = await loadLists();
   const s = { fullName: '홍길동', dateOfBirth: '1990-01-01', nationality: 'KR', residence: 'KR', walletAddress: '0x'+'8'.repeat(40) };
   const a = await new ListBackedAmlEngine({ entries, listVersions, evidenceKey: 'key-A' }).screen(s);
@@ -36,6 +36,6 @@ test('증적 키가 다르면 다이제스트가 다르다 (무염 해시가 아
   assert.notEqual(a.evidence.nameDigest, b.evidence.nameDigest);
 });
 
-test('키 없이는 엔진을 만들 수 없다', () => {
+test('the engine refuses to start without a key', () => {
   assert.throws(() => new ListBackedAmlEngine({ entries: [], listVersions: {}, evidenceKey: '' }));
 });

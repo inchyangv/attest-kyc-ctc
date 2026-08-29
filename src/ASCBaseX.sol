@@ -4,26 +4,30 @@ pragma solidity ^0.8.30;
 import {INativeQueryVerifier, NativeQueryVerifierLib} from "./lib/VerifierInterface.sol";
 
 /// @title ASCBaseX
-/// @notice Attestcoin `ASCBase` 의 포크. 증명 검증·queryId·재생 방지 로직은 원본을 그대로 따르되,
-///         핸들러에 `chainKey` 와 `blockHeight` 를 **추가로 전달**한다.
+/// @notice A fork of Attestcoin's `ASCBase`. Proof verification, queryId derivation and replay
+///         protection follow the original exactly; the handler additionally receives `chainKey`
+///         and `blockHeight`.
 ///
-/// @dev 포크 사유 — docs/05-asc-integration-review.md §1·§2
+/// @dev Why the fork. See docs/05-asc-integration-review.md sections 1 and 2.
 ///
-///  원본: _processAndEmitEvent(action, queryId, encodedTransaction)
-///  포크: _processAndEmitEvent(action, chainKey, blockHeight, queryId, encodedTransaction)
+///  original: _processAndEmitEvent(action, queryId, encodedTransaction)
+///  fork:     _processAndEmitEvent(action, chainKey, blockHeight, queryId, encodedTransaction)
 ///
-///  ① chainKey 미전달 → 소스 체인을 고정할 수 없다. CC3 Testnet 은 chainKey 1(Sepolia)과
-///     3(Ethereum 메인넷)을 동시에 지원하므로, log.address_ 검증만으로는 다른 체인의
-///     동일 주소 컨트랙트가 발행한 위조 이벤트를 막지 못한다 (CREATE2 결정적 배포 시 현실적 위험).
-///  ② blockHeight 미전달 → 순서 보장 불가. 증명 제출은 permissionless 이고 순서 강제가 없어
-///     오래된 MarkIssued 를 나중에 제출해 폐기된 마크를 되살릴 수 있다.
+///  Without chainKey the handler cannot pin the source chain. CC3 Testnet supports chainKey 1
+///  (Sepolia) and 3 (Ethereum mainnet) at the same time, so checking log.address_ alone still
+///  accepts a forged event from a same-address contract on the other chain. CREATE2 deployment
+///  makes that address collision cheap to arrange.
 ///
-///  검증 로직 자체(verifyAndEmit·_computeQueryId·processedQueries)는 **원본을 신뢰하고 손대지 않는다.**
+///  Without blockHeight the handler cannot order anything. Proof submission is permissionless
+///  and unordered, so an old MarkIssued submitted after a MarkRevoked resurrects a dead mark.
+///
+///  The verification path itself (verifyAndEmit, _computeQueryId, processedQueries) is left
+///  untouched.
 abstract contract ASCBaseX {
-    /// @notice BlockProver 프리컴파일 (0x…0FD2)
+    /// @notice BlockProver precompile at 0x...0FD2
     INativeQueryVerifier public immutable VERIFIER;
 
-    /// @notice 재생 방지 — queryId = keccak256(chainKey, blockHeight, txIndex)
+    /// @notice Replay guard. queryId = keccak256(chainKey, blockHeight, txIndex)
     mapping(bytes32 => bool) public processedQueries;
 
     error InvalidAction(uint8 action);
@@ -32,12 +36,13 @@ abstract contract ASCBaseX {
         VERIFIER = NativeQueryVerifierLib.getVerifier();
     }
 
-    /// @notice 파생 컨트랙트가 구현하는 유일한 확장 지점.
-    /// @param action        호출자가 지정한 액션 코드 (증명에서 유도되지 않음 — 불일치 시 안전하게 revert)
-    /// @param chainKey      증명이 검증된 소스 체인 (★ 원본에는 없음)
-    /// @param blockHeight   소스 체인 블록 높이 (★ 원본에는 없음)
-    /// @param queryId       (chainKey, blockHeight, txIndex) 해시
-    /// @param encodedTransaction RLP 인코딩된 소스 트랜잭션 + 영수증
+    /// @notice The only extension point a derived contract implements.
+    /// @param action        Action code supplied by the caller, not derived from the proof.
+    ///                      A mismatch must revert rather than fall through.
+    /// @param chainKey      Source chain the proof verified against. Not present in the original.
+    /// @param blockHeight   Source chain block height. Not present in the original.
+    /// @param queryId       keccak256(chainKey, blockHeight, txIndex)
+    /// @param encodedTransaction ABI-encoded source transaction and receipt
     function _processAndEmitEvent(
         uint8 action,
         uint64 chainKey,
@@ -46,8 +51,8 @@ abstract contract ASCBaseX {
         bytes memory encodedTransaction
     ) internal virtual;
 
-    /// @notice 증명을 검증하고 액션을 실행한다. **permissionless** — 누구나 호출할 수 있다.
-    /// @dev 발급사가 게을러도 제3자가 상태를 반영할 수 있게 하려는 의도적 설계.
+    /// @notice Verifies a proof and runs the action. Permissionless by design: anyone may call it.
+    /// @dev A third party can push state forward when the issuer does not.
     function execute(
         uint8 action,
         uint64 chainKey,
@@ -92,7 +97,7 @@ abstract contract ASCBaseX {
         verified = VERIFIER.verifyAndEmit(chainKey, blockHeight, encodedTransaction, merkleProof, continuityProof);
     }
 
-    /// @dev 원본 ASCBase 와 **바이트 단위로 동일한** 계산이어야 한다. 수정 금지.
+    /// @dev Must stay byte-identical to the original ASCBase. Do not change.
     function _computeQueryId(
         uint64 chainKey,
         uint64 blockHeight,

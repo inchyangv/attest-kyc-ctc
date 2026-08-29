@@ -2,12 +2,12 @@ import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from '
 import { dirname } from 'node:path';
 
 export type JobState =
-  | 'discovered'    // 소스 체인에서 발견, 아직 어테스트 안 됨
-  | 'attested'      // 해당 블록이 어테스트됨
-  | 'submitted'     // ASC 제출 완료
-  | 'done'          // 확정
-  | 'skipped'       // ASC 가 이미 처리한 쿼리 (가스 낭비 회피)
-  | 'dead';         // 영구 실패 — 사람이 봐야 한다
+  | 'discovered'   // seen on the source chain, not yet attested
+  | 'attested'   // the block is attested
+  | 'submitted'   // submitted to the ASC
+  | 'done'   // confirmed
+  | 'skipped'   // the ASC already processed this query, so no gas was spent
+  | 'dead';   // permanently failed, needs a human
 
 export interface Job {
   txHash: string;
@@ -26,19 +26,19 @@ export interface Job {
 
 interface Data {
   version: 1;
-  /** 완전히 스캔이 끝난 마지막 소스 블록. 이 블록까지는 모든 작업이 영속화되어 있다. */
+  /** Last fully scanned source block. Every job up to here is persisted. */
   cursor: number;
   jobs: Record<string, Job>;
 }
 
 /**
- * 파일 기반 영속 상태.
+ * File-backed persistent state.
  *
- * ★ 존재 이유: 예제 워커는 `loanTracker` 를 메모리에만 두고 시작 블록을 `getBlockNumber()` 로 잡는다.
- *   재시작하면 추적 상태가 사라지고 다운타임 중 발생한 이벤트를 **영원히 놓친다**.
+ * Why this exists: the example worker keeps `loanTracker` in memory and starts from
+ * `getBlockNumber()`. A restart loses tracking and misses everything that happened while down.
  *   (docs/02-loan-flow-analysis.md §7)
  *
- * 쓰기는 tmp 파일 → rename 으로 원자적으로 한다. 중간에 죽어도 반쪽 파일이 남지 않는다.
+ * Writes go to a tmp file then rename, so a crash never leaves half a file.
  */
 export class Store {
   private data: Data;
@@ -47,7 +47,7 @@ export class Store {
     mkdirSync(dirname(path), { recursive: true });
     if (existsSync(path)) {
       const parsed = JSON.parse(readFileSync(path, 'utf8')) as Data;
-      if (parsed.version !== 1) throw new Error(`알 수 없는 상태 파일 버전: ${parsed.version}`);
+      if (parsed.version !== 1) throw new Error(`unknown state file version: ${parsed.version}`);
       this.data = parsed;
     } else {
       this.data = { version: 1, cursor: 0, jobs: {} };
@@ -56,9 +56,9 @@ export class Store {
 
   get cursor(): number { return this.data.cursor; }
 
-  /** 커서는 해당 블록의 작업이 모두 영속화된 뒤에만 전진시킨다. */
+  /** Advance the cursor only once every job for that block is persisted. */
   setCursor(block: number): void {
-    if (block < this.data.cursor) return;   // 되돌리지 않는다
+    if (block < this.data.cursor) return;   // never rewind
     this.data.cursor = block;
     this.flush();
   }
@@ -81,7 +81,7 @@ export class Store {
     this.flush();
   }
 
-  /** 아직 끝나지 않은 작업들 */
+  /** Jobs that have not finished */
   pending(): Job[] {
     return Object.values(this.data.jobs).filter(
       (j) => j.state !== 'done' && j.state !== 'dead' && j.state !== 'skipped',
@@ -97,6 +97,6 @@ export class Store {
   private flush(): void {
     const tmp = `${this.path}.tmp`;
     writeFileSync(tmp, JSON.stringify(this.data, null, 2));
-    renameSync(tmp, this.path);   // 원자적 교체
+    renameSync(tmp, this.path);   // atomic replace
   }
 }

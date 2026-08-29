@@ -1,8 +1,8 @@
 /**
- * 최소 XML 요소 추출기.
- * 대상 태그(sdnEntry·INDIVIDUAL·ENTITY·sanctionEntity)는 자기 자신을 중첩하지 않으므로
- * 여는 태그 → 대응 닫는 태그 구간을 잘라 작은 트리로 파싱한다.
- * 범용 XML 파서가 아니다 — 이 세 피드에 한정한다.
+ * Minimal XML element extractor.
+ * The target tags (sdnEntry, INDIVIDUAL, ENTITY, sanctionEntity) never nest inside themselves,
+ * so we slice from the opening tag to its closing tag and parse that span into a small tree.
+ * This is not a general XML parser. It handles these three feeds and nothing else.
  */
 import { readFileSync } from 'node:fs';
 
@@ -24,7 +24,7 @@ function decode(s: string): string {
 
 const localName = (t: string) => { const i = t.indexOf(':'); return i < 0 ? t : t.slice(i + 1); };
 
-/** 요소 하나(여는 태그부터 닫는 태그까지)를 트리로 */
+/** One element, opening tag through closing tag, as a tree */
 function parseElement(src: string, start: number): { el: El; end: number } {
   const openEnd = src.indexOf('>', start);
   const head = src.slice(start + 1, openEnd);
@@ -63,10 +63,10 @@ function parseElement(src: string, start: number): { el: El; end: number } {
   return { el, end: i };
 }
 
-/** 파일에서 특정 태그의 요소를 순차 추출 */
+/** Walks a file and yields every element with the given tag */
 export async function streamElements(path: string, tag: string, cb: (el: El) => void): Promise<void> {
   const src = readFileSync(path, 'utf8');
-  // <tag 뒤에 공백/>/`/` 가 와야 한다 — <ENTITY 가 <ENTITY_ALIAS 를 잡지 않게
+  // Require whitespace, > or / after <tag, so <ENTITY does not swallow <ENTITY_ALIAS
   const open = new RegExp(`<(?:[\\w.-]+:)?${tag}(?=[\\s/>])`, 'g');
   let m: RegExpExecArray | null;
   while ((m = open.exec(src)) !== null) {
@@ -76,18 +76,18 @@ export async function streamElements(path: string, tag: string, cb: (el: El) => 
   }
 }
 
-// ── 접근 헬퍼 ──
+// Accessors
 export const self = (el: El) => el.text;
 export const attr = (el: El, name: string) => el.attrs[name] ?? '';
 export const direct = (el: El, tag: string) => el.kids.filter(k => k.tag === tag);
 
-/** 직계 자식 중 tag 의 텍스트 (없으면 1단계 더 내려가 탐색) */
+/** Text of a direct child with this tag */
 export function text(el: El, tag: string): string {
   for (const k of el.kids) if (k.tag === tag) return k.text;
   return '';
 }
 
-/** el > parentTag > childTag 목록 */
+/** el > parentTag > childTag */
 export function children(el: El, parentTag: string, childTag: string): El[] {
   const out: El[] = [];
   for (const p of el.kids) if (p.tag === parentTag) for (const c of p.kids) if (c.tag === childTag) out.push(c);

@@ -1,12 +1,13 @@
 /**
- * 지원 체인 조회 — preflight 에서 `configureSource(chainKey, …)` 의 chainKey 가 맞는지 확인한다.
+ * Reads the supported chain list so preflight can confirm the chainKey that
+ * `configureSource(chainKey, ...)` will be given.
  *
- * chainKey 는 chainId 와 다르다(Sepolia: chainKey 1, chainId 11155111).
- * 하드코딩하지 않고 런타임에 확인하는 것이 원칙이므로(docs/01-env-verification.md §3.3),
- * 배포 직전에 실제 체인에 물어본다.
+ * chainKey is not chainId. Sepolia is chainKey 1, chainId 11155111.
+ * We never hardcode it (docs/01-env-verification.md section 3.3), so this asks the chain
+ * directly, right before deployment.
  *
- * 사용: npx tsx script/check_chains.ts <expectedChainKey> <expectedChainId>
- * 종료코드 0 = 일치, 1 = 불일치/조회실패
+ * Usage: npx tsx script/check_chains.ts <expectedChainKey> <expectedChainId>
+ * Exit 0 on a match, 1 on a mismatch or a failed lookup.
  */
 import { ethers } from 'ethers';
 import { chainInfo } from '@gluwa/usc-sdk';
@@ -17,17 +18,17 @@ async function main() {
   const wantId = Number(wantIdArg);
   const rpc = process.env.CREDITCOIN_RPC_URL;
 
-  if (!rpc) throw new Error('CREDITCOIN_RPC_URL 미설정');
+  if (!rpc) throw new Error('CREDITCOIN_RPC_URL is not set');
   if (!Number.isFinite(wantKey) || !Number.isFinite(wantId)) {
-    throw new Error('사용법: check_chains.ts <expectedChainKey> <expectedChainId>');
+    throw new Error('usage: check_chains.ts <expectedChainKey> <expectedChainId>');
   }
 
   const provider = new ethers.JsonRpcProvider(rpc);
-  // SDK 가 자체 ethers 사본을 번들해 타입 식별자가 갈린다. 런타임 객체는 동일하다.
+  // The SDK bundles its own copy of ethers, so the type identities differ. The runtime object is the same.
   const info = new chainInfo.PrecompileChainInfoProvider(provider as any);
   const chains = await info.getSupportedChains();
 
-  console.log('  지원 체인:');
+  console.log('  supported chains:');
   for (const c of chains) {
     const name = c.chainName?.startsWith?.('0x')
       ? Buffer.from(c.chainName.slice(2), 'hex').toString('utf8')
@@ -37,21 +38,21 @@ async function main() {
 
   const hit = chains.find((c: any) => Number(c.chainKey) === wantKey);
   if (!hit) {
-    console.error(`  ✗ chainKey ${wantKey} 가 지원 목록에 없습니다`);
+    console.error(`  x chainKey ${wantKey} is not in the supported list`);
     process.exit(1);
   }
   if (Number(hit.chainId) !== wantId) {
-    console.error(`  ✗ chainKey ${wantKey} 의 chainId 가 ${hit.chainId} 입니다 (기대 ${wantId})`);
+    console.error(`  x chainKey ${wantKey} maps to chainId ${hit.chainId}, expected ${wantId}`);
     process.exit(1);
   }
 
-  // 어테스트가 실제로 진행 중인지도 함께 본다 — 멈춰 있으면 배포해도 E2E 가 안 돈다
+  // Also check attestation is moving. If it has stalled, deploying gets you nowhere.
   const attested = await info.getLatestAttestedHeightAndHash(wantKey);
-  console.log(`  ✓ chainKey ${wantKey} = chainId ${wantId} 확인 · 최신 어테스트 높이 ${attested.height}`);
+  console.log(`  ok chainKey ${wantKey} = chainId ${wantId}, latest attested height ${attested.height}`);
   process.exit(0);
 }
 
 main().catch((e) => {
-  console.error('  ✗ 지원 체인 조회 실패:', e?.shortMessage ?? e?.message ?? e);
+  console.error('  x could not read the supported chain list:', e?.shortMessage ?? e?.message ?? e);
   process.exit(1);
 });

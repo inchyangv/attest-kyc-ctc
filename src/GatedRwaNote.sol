@@ -9,19 +9,21 @@ interface IProofmarkRegistry {
 }
 
 /// @title GatedRwaNote
-/// @notice 정책을 통과한 지갑끼리만 이전되는 RWA 데모 토큰 (신용채권 노트).
-/// @dev docs/03-product-plan.md §5.1 L3 — "Attestcoin 을 빼면 무너진다"를 눈으로 보여주는 컨트랙트.
+/// @notice A demo RWA token, a credit note, transferable only between wallets that pass a policy.
+/// @dev docs/03-product-plan.md section 5.1, layer L3. This contract is where removing Attestcoin
+///      becomes visible: the gate stops working.
 ///
-/// 토큰화 자산은 **보유자 자격 심사가 법적 요건**이다. 이 컨트랙트는 그 요건을
-/// 이전(transfer) 시점에 강제한다. 판정 근거는 이더리움에서 발급되고 Attestcoin 으로
-/// 검증되어 Creditcoin 에 물질화된 마크다 — 중앙 서명 서버가 아니다.
+/// Tokenised assets carry a legal requirement to screen holders. This contract enforces that at
+/// transfer time. What backs the decision is a mark issued on Ethereum, verified through Attestcoin
+/// and materialised on Creditcoin, rather than a signing server we operate.
 ///
-/// 정책은 **생성자에서 고정**한다. 어느 정책으로 게이팅하는지가 이 토큰의 성질이기 때문이다.
-/// KR 정책과 EU 정책으로 각각 배포하면 같은 마크가 서로 다르게 판정되는 것을 보여줄 수 있다.
+/// The policy is fixed in the constructor because which policy gates the token is a property of the
+/// token. Deploy one instance under a KR policy and another under an EU policy and the same mark
+/// gets two different answers.
 contract GatedRwaNote is ERC20, Ownable2Step {
     IProofmarkRegistry public immutable REGISTRY;
 
-    /// @notice 이 토큰이 요구하는 컴플라이언스 정책. 불변이다.
+    /// @notice The compliance policy this token requires. Immutable.
     uint256 public immutable POLICY_ID;
 
     error SenderNotVerified(address from, uint256 policyId);
@@ -36,23 +38,22 @@ contract GatedRwaNote is ERC20, Ownable2Step {
         POLICY_ID = policyId;
     }
 
-    /// @notice 발행. 수취인은 정책을 통과해야 한다 (아래 _update 가 강제).
+    /// @notice Mint. The recipient must pass the policy; _update below enforces it.
     function mint(address to, uint256 amount) external onlyOwner {
         _mint(to, amount);
     }
 
-    /// @notice 상환/소각.
+    /// @notice Redeem and burn.
     function burn(uint256 amount) external {
         _burn(msg.sender, amount);
     }
 
-    /// @dev OZ 5.x 의 단일 이전 훅. mint(from=0)·burn(to=0)·transfer 가 모두 여기를 지난다.
+    /// @dev OpenZeppelin 5.x routes mint (from == 0), burn (to == 0) and transfer through this hook.
     ///
-    ///      ★ 양방향 검사 — 송신자와 수신자 **둘 다** 통과해야 한다.
-    ///        한쪽만 걸면 제재 지갑이 토큰을 *받는* 것을 막지 못한다.
+    ///      Both sides are checked. Gate only the sender and a sanctioned wallet can still receive.
     ///
-    ///      ★ 0주소 예외 — mint 는 from == 0, burn 은 to == 0 이다.
-    ///        여기서 isVerified(address(0)) 를 부르면 발행·소각이 전부 막힌다.
+    ///      The zero address is exempt. Calling isVerified(address(0)) here would block every mint
+    ///      and every burn.
     function _update(address from, address to, uint256 value) internal override {
         if (from != address(0) && !REGISTRY.isVerified(from, POLICY_ID)) {
             revert SenderNotVerified(from, POLICY_ID);
@@ -63,7 +64,7 @@ contract GatedRwaNote is ERC20, Ownable2Step {
         super._update(from, to, value);
     }
 
-    /// @notice 이전 가능 여부를 미리 조회한다 (프론트엔드가 버튼을 비활성화할 때 쓴다).
+    /// @notice Preflight check a frontend can use to disable the transfer button.
     function canTransfer(address from, address to) external view returns (bool) {
         return REGISTRY.isVerified(from, POLICY_ID) && REGISTRY.isVerified(to, POLICY_ID);
     }

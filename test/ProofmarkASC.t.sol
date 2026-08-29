@@ -12,13 +12,13 @@ import {Action, Mark, MarkStatus, Methods} from "../src/lib/ProofmarkTypes.sol";
 import {MockBlockProver, MockBlockProverFailing} from "./mocks/MockBlockProver.sol";
 import {ReceiptFixture} from "./ReceiptFixture.sol";
 
-/// @notice 로컬 모의 하네스 — 어테스트 8분 대기 없이 ASC 방어 로직 전량을 검증한다.
-/// @dev docs/05-asc-integration-review.md 의 발견 사항들을 **실제로 증명**하는 것이 목적.
+/// @notice Local mock harness. Exercises every ASC guard without the eight-minute attestation wait.
+/// @dev Exists to prove the findings in docs/05-asc-integration-review.md, not to assert them.
 contract ProofmarkASCTest is Test {
     address constant PRECOMPILE = 0x0000000000000000000000000000000000000FD2;
 
-    uint64 constant SEPOLIA_KEY = 1;   // 실측 확인: chainKey 1 = Sepolia
-    uint64 constant MAINNET_KEY = 3;   // 실측 확인: chainKey 3 = Ethereum mainnet
+    uint64 constant SEPOLIA_KEY = 1;   // measured: chainKey 1 is Sepolia
+    uint64 constant MAINNET_KEY = 3;   // measured: chainKey 3 is Ethereum mainnet
 
     ProofmarkASC     asc;
     ComplianceSource src;
@@ -44,7 +44,7 @@ contract ProofmarkASCTest is Test {
         vm.stopPrank();
     }
 
-    // ───────────────────────── 헬퍼 ─────────────────────────
+    // Helpers
 
     function _attrs(uint32 methods_, uint40 expiry_) internal pure returns (bytes32) {
         return MarkAttrs.pack(1, 3, 410, 410, methods_, 1_700_000_000, expiry_, 1);
@@ -77,16 +77,16 @@ contract ProofmarkASCTest is Test {
         a[0] = l;
     }
 
-    /// @dev merkleRoot 를 salt 로 써서 서로 다른 queryId 를 만든다.
+    /// @dev Uses merkleRoot as a salt so each call gets a distinct queryId.
     function _exec(uint8 action, uint64 chainKey, uint64 height, bytes memory encTx, uint256 salt) internal {
         INativeQueryVerifier.MerkleProofEntry[] memory sib = new INativeQueryVerifier.MerkleProofEntry[](0);
         bytes32[] memory roots = new bytes32[](0);
         asc.execute(action, chainKey, height, encTx, bytes32(salt), sib, bytes32(0), roots);
     }
 
-    // ═══════════════ 1. 시그니처 상수 — 오타 방지 ═══════════════
+    // 1. Signature constants, guarding against typos
 
-    /// @dev 하드코딩한 상수가 실제 keccak 과 일치하는지. 오타 1건 = 온체인 8분 낭비.
+    /// @dev Do the hardcoded constants match the real keccak. One typo costs eight minutes on chain.
     function test_EventSignatureConstantsAreCorrect() public pure {
         assertEq(keccak256("MarkIssued(address,bytes32,address,bytes32,bytes32)"),
                  0xffac883eea6676651044a7e28ee0527defa8e3fce7558142c598e6569ef5a5f3);
@@ -98,7 +98,7 @@ contract ProofmarkASCTest is Test {
                  0x984d6a4d0b5705f143158aad863f7a4f77abd36d272098cda48adbcbd40b0dc3);
     }
 
-    // ═══════════════ 2. MarkAttrs 팩킹 왕복 ═══════════════
+    // 2. MarkAttrs packing round trip
 
     function testFuzz_AttrsRoundtrip(
         uint8 kind_, uint8 assurance_, uint16 regime_, uint16 juris_,
@@ -115,7 +115,7 @@ contract ProofmarkASCTest is Test {
         assertEq(MarkAttrs.epoch(a),        epoch_);
     }
 
-    // ═══════════════ 3. 정상 경로 ═══════════════
+    // 3. Happy path
 
     function test_IssueMaterializesMark() public {
         bytes32 a = _attrs(Methods.ID_DOC_AUTHENTICITY | Methods.BANK_ACCOUNT, 2_000_000_000);
@@ -131,32 +131,32 @@ contract ProofmarkASCTest is Test {
         assertEq(asc.lastAppliedHeight(alice), 100);
     }
 
-    // ═══════════════ 4. 🔴 발견 1 — chainKey 고정 ═══════════════
+    // 4. Finding 1: chainKey pinning
 
-    /// @dev 이 테스트가 포크의 존재 이유다. 원본 ASCBase 로는 이 방어가 **불가능**하다.
+    /// @dev This test is why the fork exists. The original ASCBase cannot express this guard.
     function test_RejectsProofFromWrongChain() public {
         bytes32 a = _attrs(Methods.ID_DOC_AUTHENTICITY, 2_000_000_000);
         bytes memory encTx = fx.tx2(_one(_issuedLog(address(src), alice, a)));
 
-        // 메인넷(chainKey 3)에서 온 증명 — 로그의 emitter 주소는 정상이다.
+        // A proof from mainnet (chainKey 3). The emitter address in the log looks correct.
         vm.expectRevert(abi.encodeWithSelector(ProofmarkASC.UnexpectedChainKey.selector, MAINNET_KEY, SEPOLIA_KEY));
         _exec(uint8(Action.MarkIssued), MAINNET_KEY, 100, encTx, 2);
 
         assertEq(asc.getMark(alice).status, uint8(MarkStatus.None));
     }
 
-    // ═══════════════ 5. 발견 C4 — 발행자 고정 ═══════════════
+    // 5. Finding C4: emitter pinning
 
     function test_RejectsUntrustedEmitter() public {
         bytes32 a = _attrs(Methods.ID_DOC_AUTHENTICITY, 2_000_000_000);
-        // 공격자가 자기 컨트랙트에서 동일한 이벤트를 발행 — 증명 자체는 유효하다.
+        // The attacker emits the same event from their own contract. The proof itself is valid.
         bytes memory encTx = fx.tx2(_one(_issuedLog(evilSrc, alice, a)));
 
         vm.expectRevert(abi.encodeWithSelector(ProofmarkASC.UntrustedEmitter.selector, evilSrc, address(src)));
         _exec(uint8(Action.MarkIssued), SEPOLIA_KEY, 100, encTx, 3);
     }
 
-    // ═══════════════ 6. 영수증 상태 검증 ═══════════════
+    // 6. Receipt status
 
     function test_RejectsFailedSourceTx() public {
         bytes32 a = _attrs(Methods.ID_DOC_AUTHENTICITY, 2_000_000_000);
@@ -166,33 +166,33 @@ contract ProofmarkASCTest is Test {
         _exec(uint8(Action.MarkIssued), SEPOLIA_KEY, 100, encTx, 4);
     }
 
-    // ═══════════════ 7. 🔴 발견 2 — 순서 역전으로 부활 방지 ═══════════════
+    // 7. Finding 2: no resurrection through reordering
 
-    /// @dev 핵심 시나리오: 폐기(block 200)를 먼저 반영한 뒤,
-    ///      오래된 발급(block 100)을 제출해 마크를 되살리려는 시도.
-    ///      queryId 가 다르므로 재생 방지에 걸리지 않는다 — 순서 커서만이 막는다.
+    /// @dev The scenario that matters: apply the revocation from block 200 first, then submit the
+    ///      older issuance from block 100 to bring the mark back.
+    ///      The queryIds differ, so replay protection does not catch it. Only the cursor does.
     function test_StaleIssueCannotResurrectRevokedMark() public {
         bytes32 a = _attrs(Methods.ID_DOC_AUTHENTICITY, 2_000_000_000);
         bytes memory issueTx  = fx.tx2(_one(_issuedLog(address(src), alice, a)));
         bytes memory revokeTx = fx.tx2(_one(_revokedLog(alice)));
 
-        // 1) 폐기가 먼저 반영된다 (block 200)
+        // 1) the revocation lands first, at block 200
         _exec(uint8(Action.MarkRevoked), SEPOLIA_KEY, 200, revokeTx, 10);
         assertTrue(asc.tombstone(alice));
         assertEq(asc.getMark(alice).status, uint8(MarkStatus.Revoked));
 
-        // 2) 공격자가 오래된 발급 증명(block 100)을 제출 — 정당한 증명이다
+        // 2) the attacker submits the older issuance from block 100. It is a valid proof.
         _exec(uint8(Action.MarkIssued), SEPOLIA_KEY, 100, issueTx, 11);
 
-        // 3) 부활하지 않는다
+        // 3) the mark stays dead
         assertEq(asc.getMark(alice).status, uint8(MarkStatus.Revoked), "stale proof resurrected the mark");
         assertTrue(asc.tombstone(alice), "tombstone cleared");
         assertEq(asc.lastAppliedHeight(alice), 200);
     }
 
-    // ═══════════════ 8. 발견 3 — 한 tx 다중 로그 배치 ═══════════════
+    // 8. Finding 3: batching through multiple logs in one tx
 
-    /// @dev verifyBatch 없이 배치를 얻는다: 한 tx 에 N개 로그 → execute() 1회로 N건 반영.
+    /// @dev Batching without verifyBatch: N logs in one tx, applied by a single execute().
     function test_BatchIssueProcessesAllLogs() public {
         bytes32 a = _attrs(Methods.BANK_ACCOUNT, 2_000_000_000);
 
@@ -208,19 +208,19 @@ contract ProofmarkASCTest is Test {
         assertEq(asc.getMark(address(0xC0FFEE)).status, uint8(MarkStatus.Active));
     }
 
-    // ═══════════════ 9. 재생 방지 ═══════════════
+    // 9. Replay protection
 
     function test_ReplayProtection() public {
         bytes32 a = _attrs(Methods.BANK_ACCOUNT, 2_000_000_000);
         bytes memory encTx = fx.tx2(_one(_issuedLog(address(src), alice, a)));
 
         _exec(uint8(Action.MarkIssued), SEPOLIA_KEY, 100, encTx, 30);
-        // 동일 (chainKey, height, merkleRoot) → 동일 queryId
+        // same (chainKey, height, merkleRoot) yields the same queryId
         vm.expectRevert("Query already processed");
         _exec(uint8(Action.MarkIssued), SEPOLIA_KEY, 100, encTx, 30);
     }
 
-    // ═══════════════ 10. 증명 검증 실패 ═══════════════
+    // 10. Proof verification failure
 
     function test_RejectsInvalidProof() public {
         vm.etch(PRECOMPILE, address(new MockBlockProverFailing()).code);
@@ -232,18 +232,18 @@ contract ProofmarkASCTest is Test {
         _exec(uint8(Action.MarkIssued), SEPOLIA_KEY, 100, encTx, 40);
     }
 
-    // ═══════════════ 11. 액션/이벤트 불일치는 안전하게 실패 ═══════════════
+    // 11. Action and event mismatch fails safely
 
     function test_ActionMismatchFailsSafely() public {
         bytes32 a = _attrs(Methods.BANK_ACCOUNT, 2_000_000_000);
         bytes memory issueTx = fx.tx2(_one(_issuedLog(address(src), alice, a)));
 
-        // MarkIssued 로그만 있는 tx 에 MarkRevoked 액션을 지정
+        // Point a MarkRevoked action at a tx that only carries MarkIssued logs
         vm.expectRevert(ProofmarkASC.NoMatchingEvent.selector);
         _exec(uint8(Action.MarkRevoked), SEPOLIA_KEY, 100, issueTx, 50);
     }
 
-    // ═══════════════ 12. 소스 미설정 시 전면 거부 ═══════════════
+    // 12. Nothing is accepted before the source is configured
 
     function test_RejectsBeforeSourceConfigured() public {
         ProofmarkASC fresh = new ProofmarkASC(owner);
@@ -257,7 +257,7 @@ contract ProofmarkASCTest is Test {
         fresh.execute(uint8(Action.MarkIssued), SEPOLIA_KEY, 100, encTx, bytes32(uint256(60)), sib, bytes32(0), roots);
     }
 
-    // ═══════════════ 13. 소스 컨트랙트 권한 ═══════════════
+    // 13. Source contract roles
 
     function test_SourceOnlyIssuerCanIssue() public {
         vm.expectRevert(abi.encodeWithSelector(ComplianceSource.NotIssuer.selector, address(this)));

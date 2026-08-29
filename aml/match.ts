@@ -1,9 +1,9 @@
 /**
- * 매칭 — 토큰 블로킹 인덱스 + 어순 무관 점수.
+ * Matching: token blocking index plus an order-independent score.
  *
- * 설계 원칙 두 가지:
- *  1) 재현율 우선으로 후보를 넓게 잡고, 차단 결정은 뒷받침(corroboration)으로 좁힌다.
- *  2) 로마자 전개는 우리가 만든 추론이므로 단독 차단 근거가 되지 못한다.
+ * Two rules shape this:
+ *  1) cast a wide net for recall, then narrow the blocking decision with corroboration.
+ *  2) romanised expansion is our inference, so it cannot block on its own.
  */
 import { normalizeName, tokenize, contentTokens } from './normalize.js';
 import { romanizeVariants, hasHangul } from './romanize.js';
@@ -20,13 +20,13 @@ export interface IndexedName {
 export interface Corpus {
   entries: SanctionEntry[];
   names: IndexedName[];
-  /** 토큰 → 이름 인덱스 목록. 전수 비교(78k×N)를 피하는 유일한 수단. */
+  /** Token to name-index list. The only thing keeping this off a 78k x N comparison. */
   byToken: Map<string, number[]>;
-  /** 소문자 EVM 주소 → 엔트리 인덱스 */
+  /** Lowercase EVM address to entry index */
   byWallet: Map<string, number>;
 }
 
-/** 흔한 토큰은 블로킹 키로 쓸모가 없다 — 후보를 수천 개로 부풀린다. */
+/** Common tokens make poor blocking keys. They pull in thousands of candidates. */
 const STOP_TOKENS = new Set(['al','bin','abu','mohammad','mohamed','muhammad','ahmad','ahmed','ali','hassan','hussein','abd','abdul','company','co','ltd','limited','llc','inc','corp','trading','general','international','group','holding','bank','oil','gas','shipping']);
 
 export function buildCorpus(entries: SanctionEntry[]): Corpus {
@@ -53,19 +53,19 @@ export function buildCorpus(entries: SanctionEntry[]): Corpus {
   return { entries, names, byToken, byWallet };
 }
 
-/** 자카드 + 완전포함 보정. 어순에 의존하지 않는다. */
+/** Jaccard plus a containment bonus. Word order does not matter. */
 export function nameScore(a: string[], b: string[]): number {
   const A = new Set(a), B = new Set(b);
   let inter = 0; for (const t of A) if (B.has(t)) inter++;
   if (inter === 0) return 0;
   const jac = inter / (A.size + B.size - inter);
-  // 포함 보정은 **짧은 쪽이 3토큰 이상**일 때만 준다.
-  // 2토큰끼리 겹치면 contain=1.0 이 되어 'ji' 같은 흔한 조각이 만점을 받는다 —
-  // 한국 이름 평가에서 오탐 33%가 전부 여기서 나왔다.
+  // Give the containment bonus only when the smaller side has three or more tokens.
+  // With two tokens on each side containment hits 1.0 and a common fragment like 'ji' scores
+  // full marks. Every one of the 33% false positives on Korean names came from this.
   const small = Math.min(A.size, B.size);
   if (small < 3) return jac;
   const contain = (inter / small) * 0.95;
-  // 길이 차가 크면 포함 보정을 깎는다 (2토큰 ⊂ 6토큰은 우연일 확률이 높다)
+  // Discount the bonus when the lengths differ a lot. Two tokens inside six is usually chance.
   const ratio = small / Math.max(A.size, B.size);
   return Math.max(jac, contain * (0.6 + 0.4 * ratio));
 }
@@ -77,12 +77,12 @@ export interface Candidate {
   matchType: MatchType;
 }
 
-/** 블로킹으로 후보를 좁힌 뒤 점수. minScore 미만은 버린다. */
+/** Narrow with blocking, then score. Anything under minScore is dropped. */
 function candidatesFor(corpus: Corpus, tokens: string[], matchType: MatchType, minScore: number): Candidate[] {
   const counts = new Map<number, number>();
   for (const t of new Set(tokens)) {
     const l = corpus.byToken.get(t); if (!l) continue;
-    if (l.length > 4000) continue;                      // 과도하게 흔한 토큰은 건너뛴다
+    if (l.length > 4000) continue;   // skip tokens that are too common to narrow anything
     for (const ni of l) counts.set(ni, (counts.get(ni) ?? 0) + 1);
   }
   const best = new Map<number, Candidate>();
@@ -109,7 +109,7 @@ export interface MatchInput {
   walletAddress: string;
 }
 
-/** 생년월일 대조 — 연도만 있는 명단 항목도 연 단위로 맞춘다. */
+/** Date of birth comparison. List entries that carry only a year match at year granularity. */
 function dobCorroborates(subject: string | null, entryDobs: string[]): boolean {
   if (!subject || entryDobs.length === 0) return false;
   const sy = subject.slice(0, 4);
@@ -125,7 +125,7 @@ export function screenNames(corpus: Corpus, input: MatchInput): ScreeningHit[] {
     const corro: ('dob' | 'nationality' | 'wallet')[] = [];
     if (dobCorroborates(input.dob, c.entry.dobs)) corro.push('dob');
     if (input.nationality && c.entry.countries.includes(input.nationality)) corro.push('nationality');
-    // 전개 표기(추론)로 잡힌 적중은 뒷받침이 있어야 확정으로 본다
+    // A hit found through expansion is an inference, so it needs corroboration to count
     const corroborated = inferred ? corro.length > 0 : true;
     const prev = hits.find(h => `${h.listId}:${h.entryId}` === key);
     if (prev) {
@@ -141,7 +141,7 @@ export function screenNames(corpus: Corpus, input: MatchInput): ScreeningHit[] {
     });
   };
 
-  // ① 지갑 주소 — 가장 강한 신호. 추론이 아니다.
+  // 1. wallet address, the strongest signal and not an inference
   const w = (input.walletAddress ?? '').toLowerCase();
   if (/^0x[0-9a-f]{40}$/.test(w)) {
     const ei = corpus.byWallet.get(w);
@@ -155,7 +155,7 @@ export function screenNames(corpus: Corpus, input: MatchInput): ScreeningHit[] {
     }
   }
 
-  // ② 표기된 이름 그대로
+  // 2. the name as written
   const givenNorm = normalizeName(input.romanizedName || input.fullName);
   const givenToks = contentTokens(tokenize(givenNorm));
   if (givenToks.length) {
@@ -164,7 +164,7 @@ export function screenNames(corpus: Corpus, input: MatchInput): ScreeningHit[] {
     }
   }
 
-  // ③ 한글이면 로마자 전개 — 추론이므로 inferred=true
+  // 3. romanised expansion for Hangul input, marked inferred
   if (hasHangul(input.fullName)) {
     for (const v of romanizeVariants(input.fullName)) {
       const toks = contentTokens(tokenize(normalizeName(v)));

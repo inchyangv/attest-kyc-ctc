@@ -9,40 +9,40 @@ import {MarkAttrs} from "./lib/MarkAttrs.sol";
 import {Action, Mark, MarkStatus, MarkOrigin} from "./lib/ProofmarkTypes.sol";
 
 /// @title ProofmarkASC
-/// @notice Creditcoin(CC3)에 배포되는 **기록의 정본**. 이더리움에서 발급된 마크를
-///         Attestcoin BlockProver 로 검증해 상태로 물질화한다.
-/// @dev docs/04-event-schema.md §5 · docs/05-asc-integration-review.md
+/// @notice The chain of record, deployed on Creditcoin CC3. Verifies marks issued on Ethereum
+///         through the Attestcoin BlockProver and materialises them into state.
+/// @dev docs/04-event-schema.md section 5, docs/05-asc-integration-review.md
 ///
-/// ⚠️ 배포 시 `EvmV1Decoder` 라이브러리 링킹 필수 — 아래 일반 주석 참조.
+/// Deployment requires linking the `EvmV1Decoder` library. See the note below.
 //
 //  forge create --broadcast --rpc-url $CREDITCOIN_RPC_URL --private-key $KEY \
 //    --libraries node_modules/@gluwa/usc-contracts/contracts/decoding/EvmV1Decoder.sol:EvmV1Decoder:<LIB_ADDR> \
 //    src/ProofmarkASC.sol:ProofmarkASC --constructor-args <OWNER>
 //
-//  LIB_ADDR 은 우리가 직접 배포한 주소를 쓴다. 문서에 있는 CC3 Testnet "Decoder Contract"
-//  (0x731c345d79Fb8BbDC541f9DF3b6317585F849F9f) 는 우리 컴파일 산출물과 바이트코드 크기가
-//  다르므로(19,199 vs 26,524 hex chars) 동일 라이브러리인지 미확인이다. 링크 불일치는
-//  조용히 실패하고 8분 사이클을 태우므로, 검증 전에는 직접 배포한다.
+//  Use a LIB_ADDR you deployed yourself. The "Decoder Contract" listed for CC3 Testnet
+//  (0x731c345d79Fb8BbDC541f9DF3b6317585F849F9f) has a different runtime size from our build
+//  (19,199 vs 26,524 hex chars), so we have not confirmed it is the same library. A bad link
+//  fails quietly and costs an eight-minute attestation cycle to discover.
 contract ProofmarkASC is Ownable2Step, ASCBaseX {
     using MarkAttrs for bytes32;
 
-    // ── 이벤트 시그니처 (cast keccak 실산출, docs/04 §8) ──
+    // Event signatures, computed with cast keccak. See docs/04 section 8.
     bytes32 internal constant SIG_ISSUED  = 0xffac883eea6676651044a7e28ee0527defa8e3fce7558142c598e6569ef5a5f3;
     bytes32 internal constant SIG_REVOKED = 0xdde75c52928e1a0e5b14011716a8309ab432e435d50ced197b667cc906d3fd09;
     bytes32 internal constant SIG_DENIED  = 0x4e68a53405a08cc0e2bb7cd374ad540457f069bcf32e0830ea2e851815d6f5ae;
     bytes32 internal constant SIG_EPOCH   = 0x984d6a4d0b5705f143158aad863f7a4f77abd36d272098cda48adbcbd40b0dc3;
 
-    // ── 소스 고정 (검증 ①④) ──
-    /// @notice 허용되는 소스 체인. CC3 Testnet 은 1(Sepolia)·3(Ethereum) 을 동시 지원하므로 필수.
+    // Source pinning, checks 1 and 4
+    /// @notice The one source chain accepted. CC3 Testnet serves both 1 (Sepolia) and 3 (Ethereum).
     uint64  public expectedChainKey;
-    /// @notice 이벤트를 발행할 수 있는 유일한 소스 컨트랙트.
+    /// @notice The only contract whose events this ASC will act on.
     address public sourceContract;
 
-    // ── 상태 ──
+    // State
     mapping(address => Mark)   public marks;
-    /// @notice 폐기·제재 툼스톤. 어떤 에폭 루트보다 우선한다 (deny > allow).
+    /// @notice Revocation and sanction tombstones. Outrank every epoch root: deny beats allow.
     mapping(address => bool)   public tombstone;
-    /// @notice 순서 역전 방어 커서 (검증 ⑤). blockHeight 가 필요해 ASCBaseX 를 포크했다.
+    /// @notice Ordering cursor, check 5. Needing blockHeight here is why ASCBaseX exists.
     mapping(address => uint64) public lastAppliedHeight;
 
     mapping(uint32 => bytes32) public epochRoots;
@@ -65,7 +65,7 @@ contract ProofmarkASC is Ownable2Step, ASCBaseX {
 
     constructor(address initialOwner) Ownable(initialOwner) {}
 
-    /// @notice 소스 체인과 소스 컨트랙트를 고정한다. 이 설정 전에는 어떤 증명도 받지 않는다.
+    /// @notice Pins the source chain and contract. No proof is accepted before this is set.
     function configureSource(uint64 chainKey_, address sourceContract_) external onlyOwner {
         require(sourceContract_ != address(0), "zero source");
         require(chainKey_ != 0, "zero chainKey");
@@ -74,7 +74,7 @@ contract ProofmarkASC is Ownable2Step, ASCBaseX {
         emit SourceConfigured(chainKey_, sourceContract_);
     }
 
-    // ─────────────────────── ASCBaseX 확장 지점 ───────────────────────
+    // ASCBaseX extension point
 
     function _processAndEmitEvent(
         uint8 action,
@@ -84,7 +84,7 @@ contract ProofmarkASC is Ownable2Step, ASCBaseX {
         bytes memory encodedTx
     ) internal override {
         if (sourceContract == address(0)) revert SourceNotConfigured();
-        // ① 소스 체인 고정 — 이게 없으면 Ethereum 메인넷 증명이 통과한다 (docs/05 §1)
+        // 1. pin the source chain. Without this an Ethereum mainnet proof passes. docs/05 section 1
         if (chainKey != expectedChainKey) revert UnexpectedChainKey(chainKey, expectedChainKey);
 
         if (action == uint8(Action.MarkIssued)) {
@@ -100,7 +100,7 @@ contract ProofmarkASC is Ownable2Step, ASCBaseX {
         }
     }
 
-    /// @dev 영수증 검증(②) + 시그니처 필터. ASCLoanManager._validateTransactionContents 패턴.
+    /// @dev Receipt check (2) and signature filter, following ASCLoanManager._validateTransactionContents.
     function _logs(bytes memory encodedTx, bytes32 sig)
         private
         pure
@@ -110,21 +110,21 @@ contract ProofmarkASC is Ownable2Step, ASCBaseX {
         require(EvmV1Decoder.isValidTransactionType(t), "bad tx type");
 
         EvmV1Decoder.ReceiptFields memory r = EvmV1Decoder.decodeReceiptFields(encodedTx);
-        if (r.receiptStatus != 1) revert SourceTxFailed(); // ② 실패한 tx 배제
+        if (r.receiptStatus != 1) revert SourceTxFailed(); // 2. reject failed source transactions
 
         logs = EvmV1Decoder.getLogsByEventSignature(r, sig);
         if (logs.length == 0) revert NoMatchingEvent();
     }
 
-    /// @dev ④ 발행자 검증 — 빠지면 누구나 위조 이벤트를 증명해 통과시킬 수 있다.
+    /// @dev 4. emitter check. Without it anyone can prove a forged event and get it accepted.
     function _requireTrusted(EvmV1Decoder.LogEntry memory L, uint256 expectedTopics) private view {
         if (L.address_ != sourceContract) revert UntrustedEmitter(L.address_, sourceContract);
         if (L.topics.length != expectedTopics) revert BadTopics();
     }
 
-    // ─────────────────────── 핸들러 ───────────────────────
+    // Handlers
 
-    /// @dev ③ 전체 로그 순회 — 한 tx 의 N건을 execute() 1회로 반영 (docs/05 §3)
+    /// @dev 3. walk every matching log, so one execute() applies N entries from a single tx. docs/05 section 3
     function _onIssued(uint64 blockHeight, EvmV1Decoder.LogEntry[] memory logs) private {
         uint256 n = logs.length;
         for (uint256 i = 0; i < n; ++i) {
@@ -136,7 +136,7 @@ contract ProofmarkASC is Ownable2Step, ASCBaseX {
             address issuer  = address(uint160(uint256(L.topics[3])));
             (bytes32 claimsRoot, bytes32 evidenceHash) = abi.decode(L.data, (bytes32, bytes32));
 
-            // ⑤ 순서 역전 방어 — 오래된 발급이 최신 폐기를 덮어쓰지 못하게
+            // 5. ordering guard: an older issuance must not overwrite a newer revocation
             if (blockHeight <= lastAppliedHeight[subject]) {
                 emit StaleProofSkipped(subject, blockHeight, lastAppliedHeight[subject]);
                 continue;
@@ -145,7 +145,7 @@ contract ProofmarkASC is Ownable2Step, ASCBaseX {
 
             marks[subject] = Mark({
                 status:       uint8(MarkStatus.Active),
-                // 개별 증명 경로이므로 Direct. Mode B(명부) 반영 시에만 Roster 가 된다.
+                // Direct, because this is the individual-proof path. Only Mode B sets Roster.
                 origin:       uint8(MarkOrigin.Direct),
                 kind:         attrs.kind(),
                 assurance:    attrs.assurance(),
@@ -164,7 +164,7 @@ contract ProofmarkASC is Ownable2Step, ASCBaseX {
         }
     }
 
-    /// @dev 폐기와 제재는 같은 형태(topics 4, data 0)라 한 핸들러로 처리한다.
+    /// @dev Revocation and sanction share a shape (4 topics, no data), so one handler covers both.
     function _onTombstone(uint64 blockHeight, EvmV1Decoder.LogEntry[] memory logs, uint8 newStatus) private {
         uint256 n = logs.length;
         for (uint256 i = 0; i < n; ++i) {
@@ -179,14 +179,14 @@ contract ProofmarkASC is Ownable2Step, ASCBaseX {
             }
             lastAppliedHeight[subject] = blockHeight;
 
-            tombstone[subject]    = true;   // deny > allow — 이후 어떤 마크도 이긴다
+            tombstone[subject]    = true;   // deny beats allow, and outlives any later mark
             marks[subject].status = newStatus;
 
             emit MarkTombstoned(subject, newStatus, blockHeight);
         }
     }
 
-    /// @dev 에폭은 한 tx 에 정확히 1건. 단조 증가를 강제한다.
+    /// @dev Exactly one epoch per transaction. Epochs must increase.
     function _onEpoch(EvmV1Decoder.LogEntry[] memory logs) private {
         EvmV1Decoder.LogEntry memory L = logs[0];
         _requireTrusted(L, 4); // sig + epoch + root + listVersion
@@ -204,13 +204,14 @@ contract ProofmarkASC is Ownable2Step, ASCBaseX {
         emit EpochAccepted(epoch, root, validUntil);
     }
 
-    // ─────────────────────── 조회 ───────────────────────
+    // Views
 
     function getMark(address subject) external view returns (Mark memory) {
         return marks[subject];
     }
 
-    /// @notice 명부 자체가 신선한가. 만료되면 전원 미검증 — "모르면 통과" 는 없다.
+    /// @notice Whether the roster itself is fresh. Once it expires nobody verifies. There is no
+    ///         "unknown means allowed" here.
     function isRosterFresh() public view returns (bool) {
         return epochValidUntil != 0 && block.timestamp < epochValidUntil;
     }

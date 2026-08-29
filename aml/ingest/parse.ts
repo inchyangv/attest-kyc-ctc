@@ -1,6 +1,6 @@
 /**
- * 명단 3종(OFAC SDN · UN Consolidated · EU FSF) 원본 XML → 공통 엔트리.
- * 원본 스키마가 서로 완전히 다르므로 각각 전용 파서를 둔다.
+ * Source XML for OFAC SDN, UN Consolidated and EU FSF into one common entry shape.
+ * The three schemas have nothing in common, so each gets its own parser.
  */
 import { createReadStream, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -20,13 +20,13 @@ export interface SanctionEntry {
   type: 'individual' | 'entity' | 'vessel' | 'unknown';
 }
 
-/** 원본 파일 내용 해시 앞 32비트 → 판본 번호. 내용이 같으면 같은 판본이다. */
+/** First 32 bits of the file content hash, used as the edition number. Same bytes, same edition. */
 export function listVersionOf(path: string): number {
   const h = createHash('sha256').update(readFileSync(path)).digest('hex');
   return parseInt(h.slice(0, 8), 16);
 }
 
-/** 국가명 → ISO-3166 alpha-2. 전수는 아니고 제재 맥락 위주. 미매핑은 그대로 둔다. */
+/** Country name to ISO-3166 alpha-2. Not exhaustive; weighted toward sanctions contexts. Unmapped names pass through. */
 const COUNTRY: Record<string, string> = {
   "korea, north":"KP","north korea":"KP","democratic people's republic of korea":"KP","dprk":"KP",
   "korea, south":"KR","south korea":"KR","republic of korea":"KR","korea":"KR",

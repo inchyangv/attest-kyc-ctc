@@ -4,9 +4,9 @@ pragma solidity ^0.8.30;
 import {Test} from "forge-std/Test.sol";
 import {MarkAttrs} from "../src/lib/MarkAttrs.sol";
 
-/// @notice TypeScript 파이프라인의 `packAttrs` 와 바이트 단위 일치를 고정한다.
-/// @dev 어긋나면 온체인 마크의 모든 필드가 밀려 들어간다 — 조용히 깨지는 종류의 버그.
-///      pipeline/pipeline.test.ts 가 같은 벡터를 하드코딩해 대조한다.
+/// @notice Pins byte-level agreement with `packAttrs` in the TypeScript pipeline.
+/// @dev A drift here shifts every field of the on-chain mark. It fails quietly.
+///      pipeline/pipeline.test.ts hardcodes the same vector and checks against it.
 contract AttrsVectorTest is Test {
     function test_KnownVectorMatchesTypeScript() public pure {
         bytes32 got = MarkAttrs.pack(

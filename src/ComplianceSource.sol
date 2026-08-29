@@ -4,22 +4,22 @@ pragma solidity ^0.8.30;
 import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 
 /// @title ComplianceSource
-/// @notice 이더리움(Sepolia)에 배포되는 **발급의 원본**. 크로스체인으로 읽히는 전용 이벤트만 발행한다.
+/// @notice The origin of issuance, deployed on Ethereum Sepolia. Emits only purpose-built events meant to be read cross-chain.
 /// @dev docs/04-event-schema.md §3·§6
 ///
-/// ⚠️ 하드 룰 — **한 트랜잭션은 한 종류의 ASC 이벤트만 emit 한다.**
-///    ASCBase 의 queryId 는 (chainKey, blockHeight, txIndex) 로 계산되어 액션·로그인덱스를
-///    포함하지 않는다. 따라서 소스 tx 1건당 execute() 는 1회뿐이다. 한 tx 에 서로 다른 종류를
-///    섞으면 공격자가 싼 액션을 먼저 성공시켜 queryId 를 소비하고, 같은 tx 의 다른 이벤트를
-///    **영구 봉인**할 수 있다 (execute 는 permissionless).
-///    → 복합 연산용 편의 함수를 만들지 말 것. 에폭 게시는 항상 독립 tx.
+/// Hard rule: one transaction emits one kind of ASC event.
+/// ASCBase derives queryId from (chainKey, blockHeight, txIndex). It carries neither the action
+/// nor the log index, so a source transaction gets exactly one execute(). Mixing event kinds in one
+/// transaction lets an attacker land the cheap action first, consume the queryId, and permanently
+/// seal the other events in that transaction. execute() is permissionless.
+/// Do not add convenience functions that combine operations. Epoch publication is always its own tx.
 contract ComplianceSource is Ownable2Step {
-    // ─────────────────────────── 이벤트 (docs/04 §3) ───────────────────────────
+    // Events. See docs/04 section 3.
 
     /// @dev sig 0xffac883eea6676651044a7e28ee0527defa8e3fce7558142c598e6569ef5a5f3
     event MarkIssued(
         address indexed subject,
-        bytes32 indexed attrs,        // MarkAttrs 팩킹 스칼라 8필드
+        bytes32 indexed attrs,   // eight scalar fields packed by MarkAttrs
         address indexed issuer,
         bytes32 claimsRoot,
         bytes32 evidenceHash
@@ -34,16 +34,16 @@ contract ComplianceSource is Ownable2Step {
     /// @dev sig 0x984d6a4d0b5705f143158aad863f7a4f77abd36d272098cda48adbcbd40b0dc3
     event RosterEpochPublished(uint32 indexed epoch, bytes32 indexed root, uint32 indexed listVersion, uint40 validUntil);
 
-    // 운영 이벤트 (크로스체인 대상 아님 — ASC 가 읽지 않는다)
+    // Operational events. Not read cross-chain; the ASC ignores them.
     event IssuerSet(address indexed account, bool allowed);
     event EpochPublisherSet(address indexed account, bool allowed);
 
-    // ─────────────────────────── 상태 ───────────────────────────
+    // State
 
     mapping(address => bool) public isIssuer;
     mapping(address => bool) public isEpochPublisher;
 
-    /// @notice 마지막으로 게시된 에폭. 단조 증가를 소스에서 1차 강제한다.
+    /// @notice Last published epoch. The source enforces monotonicity as a first line of defence.
     uint32 public lastEpoch;
 
     error NotIssuer(address caller);
@@ -64,7 +64,7 @@ contract ComplianceSource is Ownable2Step {
 
     constructor(address initialOwner) Ownable(initialOwner) {}
 
-    // ─────────────────────────── 권한 (키 3분리: owner / issuer / epoch) ───────────────────────────
+    // Roles. Three separate keys: owner, issuer, epoch publisher.
 
     function setIssuer(address account, bool allowed) external onlyOwner {
         isIssuer[account] = allowed;
@@ -76,7 +76,7 @@ contract ComplianceSource is Ownable2Step {
         emit EpochPublisherSet(account, allowed);
     }
 
-    // ─────────────────────────── 발급 (액션 0) ───────────────────────────
+    // Issuance, action 0
 
     struct Issuance {
         address subject;
@@ -90,8 +90,8 @@ contract ComplianceSource is Ownable2Step {
         emit MarkIssued(subject, attrs, msg.sender, claimsRoot, evidenceHash);
     }
 
-    /// @notice 한 tx 에 N개 발급 → ASC 가 execute() 1회로 전부 반영한다.
-    /// @dev 크로스체인 왕복(≈8분) 1회로 N건. verifyBatch 없이 얻는 배치 (docs/05 §3)
+    /// @notice Emit N issuances in one transaction; the ASC applies all of them in a single execute().
+    /// @dev N marks per cross-chain round trip of about eight minutes. This is batching without
     function issueBatch(Issuance[] calldata items) external onlyIssuer {
         uint256 n = items.length;
         for (uint256 i = 0; i < n; ++i) {
@@ -100,14 +100,14 @@ contract ComplianceSource is Ownable2Step {
         }
     }
 
-    // ─────────────────────────── 폐기 (액션 1) ───────────────────────────
+    // Revocation, action 1
 
     function revoke(address subject, uint16 reasonCode, uint32 epoch) external onlyIssuer {
         if (subject == address(0)) revert ZeroSubject();
         emit MarkRevoked(subject, reasonCode, epoch);
     }
 
-    /// @notice data 가 0바이트라 배치 폐기가 매우 싸다.
+    /// @notice The event carries no data, which makes batch revocation cheap.
     function revokeBatch(address[] calldata subjects, uint16[] calldata reasonCodes, uint32 epoch)
         external
         onlyIssuer
@@ -120,7 +120,7 @@ contract ComplianceSource is Ownable2Step {
         }
     }
 
-    // ─────────────────────────── 제재 (액션 2) ───────────────────────────
+    // Sanction, action 2
 
     function deny(address subject, uint32 listVersion, uint32 epoch) external onlyIssuer {
         if (subject == address(0)) revert ZeroSubject();
@@ -135,11 +135,11 @@ contract ComplianceSource is Ownable2Step {
         }
     }
 
-    // ─────────────────────────── 에폭 게시 (액션 3) ───────────────────────────
+    // Epoch publication, action 3
 
-    /// @notice 명부 루트 게시. **항상 독립 tx** — 다른 이벤트와 섞지 않는다 (하드 룰).
-    /// @dev L1 쓰기를 사용자 수와 무관하게 고정시키는 경로. 배치의 진짜 근거는
-    ///      Creditcoin 쓰기 비용(0.0002 CTC, 무시 가능)이 아니라 **이더리움 L1 발급 가스**다.
+    /// @notice Publishes a roster root. Always its own transaction; never mixed with other events.
+    /// @dev Fixes L1 writes independent of user count. The real driver for batching is Ethereum L1
+    ///      gas, not the Creditcoin write cost, which measured 0.0002 CTC and is negligible.
     function publishEpoch(uint32 epoch, bytes32 root, uint32 listVersion, uint40 validUntil)
         external
         onlyEpochPublisher

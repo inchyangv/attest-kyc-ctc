@@ -14,7 +14,7 @@ import {Action, Policy, Methods} from "../src/lib/ProofmarkTypes.sol";
 import {MockBlockProver} from "./mocks/MockBlockProver.sol";
 import {ReceiptFixture} from "./ReceiptFixture.sol";
 
-/// @notice 데모 시나리오 검증 — docs/03-product-plan.md §10 데모 대본이 실제로 도는지.
+/// @notice Checks the demo script in docs/03-product-plan.md section 10 actually runs.
 contract GatedRwaNoteTest is Test {
     address constant PRECOMPILE = 0x0000000000000000000000000000000000000FD2;
     uint64  constant SEPOLIA_KEY = 1;
@@ -59,7 +59,7 @@ contract GatedRwaNoteTest is Test {
         krNote = new GatedRwaNote("KR Credit Note", "KRCN", address(reg), krPolicy, owner);
     }
 
-    // ─── 헬퍼 ───
+    // Helpers
 
     function _issue(address subject, uint32 methods_, uint64 height, uint256 salt) internal {
         bytes32 attrs = MarkAttrs.pack(1, 3, 410, 410, methods_, ISSUED_AT, EXPIRY, 0);
@@ -90,29 +90,29 @@ contract GatedRwaNoteTest is Test {
         asc.execute(action, SEPOLIA_KEY, height, encTx, bytes32(salt), sib, bytes32(0), roots);
     }
 
-    // ═══════════════ 데모 대본 6·8번 — 수명주기 전체 ═══════════════
+    // Demo scenes 6 and 8: the full lifecycle
 
-    /// @dev 미인증 revert → 발급 후 성공 → 폐기 후 재차단.
-    ///      기획안 §9.1 P0 의 `GatedRwaNote` DoD 그대로다.
+    /// @dev Unverified reverts, issuance succeeds, revocation blocks again.
+    ///      Exactly the `GatedRwaNote` definition of done from section 9.1.
     function test_DemoLifecycle_BlockedThenAllowedThenBlockedAgain() public {
-        // ① 미인증 상태에서는 발행조차 안 된다
+        // 1. an unverified recipient cannot even be minted to
         vm.prank(owner);
         vm.expectRevert(abi.encodeWithSelector(GatedRwaNote.RecipientNotVerified.selector, alice, krPolicy));
         krNote.mint(alice, 1000);
 
-        // ② 발급 후에는 발행된다
+        // 2. once issued, minting works
         _issue(alice, KR_VASP, 100, 1);
         _issue(bob,   KR_VASP, 101, 2);
         vm.prank(owner);
         krNote.mint(alice, 1000);
         assertEq(krNote.balanceOf(alice), 1000);
 
-        // ③ 인증된 지갑끼리는 이전된다
+        // 3. verified wallets can transfer to each other
         vm.prank(alice);
         krNote.transfer(bob, 400);
         assertEq(krNote.balanceOf(bob), 400);
 
-        // ④ 폐기되면 같은 이전이 막힌다
+        // 4. after revocation the same transfer is blocked
         _revoke(alice, 200, 3);
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(GatedRwaNote.SenderNotVerified.selector, alice, krPolicy));
@@ -121,9 +121,9 @@ contract GatedRwaNoteTest is Test {
         assertEq(krNote.balanceOf(alice), 600, "balance must be untouched");
     }
 
-    // ═══════════════ 양방향 검사 ═══════════════
+    // Both sides are checked
 
-    /// @dev 수신자만 미인증인 경우. 한쪽만 검사하면 제재 지갑이 *받는* 걸 막지 못한다.
+    /// @dev Only the recipient is unverified. Gate one side and a sanctioned wallet can still receive.
     function test_BlocksTransferToUnverifiedRecipient() public {
         _issue(alice, KR_VASP, 100, 10);
         vm.prank(owner);
@@ -134,14 +134,14 @@ contract GatedRwaNoteTest is Test {
         krNote.transfer(mallory, 100);
     }
 
-    /// @dev 제재 등재된 수신자에게 보내는 것도 막힌다.
+    /// @dev Sending to a sanctioned recipient is blocked too.
     function test_BlocksTransferToSanctionedRecipient() public {
         _issue(alice,   KR_VASP, 100, 20);
         _issue(mallory, KR_VASP, 101, 21);
         vm.prank(owner);
         krNote.mint(alice, 1000);
 
-        // mallory 가 제재 명단에 등재된다
+        // mallory lands on a sanctions list
         _revoke(mallory, 200, 22);
 
         vm.prank(alice);
@@ -149,7 +149,7 @@ contract GatedRwaNoteTest is Test {
         krNote.transfer(mallory, 100);
     }
 
-    // ═══════════════ 0주소 예외 — 발행/소각이 막히면 안 된다 ═══════════════
+    // Zero address exemption: mint and burn must not be blocked
 
     function test_BurnWorksForVerifiedHolder() public {
         _issue(alice, KR_VASP, 100, 30);
@@ -157,34 +157,34 @@ contract GatedRwaNoteTest is Test {
         krNote.mint(alice, 1000);
 
         vm.prank(alice);
-        krNote.burn(400);   // to == address(0) — isVerified(0) 를 부르면 안 된다
+        krNote.burn(400);   // to == address(0); isVerified(0) must not be called
         assertEq(krNote.balanceOf(alice), 600);
         assertEq(krNote.totalSupply(), 600);
     }
 
-    // ═══════════════ 데모 대본 7번 — 정책이 다른 두 토큰 ═══════════════
+    // Demo scene 7: two tokens, two policies
 
-    /// @dev 같은 마크가 KR 노트에서는 통과하고 EU 노트에서는 거절된다.
-    ///      "국제화 설계"가 서술이 아니라 실행되는 코드임을 보여주는 장면.
+    /// @dev The same mark passes on the KR note and is rejected on the EU note.
+    ///      The portability claim is executable here, not just described.
     function test_SameMarkPassesKrNoteButFailsEuNote() public {
         uint256 euPolicy = reg.registerPolicy(Policy({
             requireAll: EU_RWA, minAssurance: 2, maxAge: 0, requireRoster: false, exists: false
         }));
         GatedRwaNote euNote = new GatedRwaNote("EU RWA Note", "EURN", address(reg), euPolicy, owner);
 
-        // 한국 절차로 발급 — LIVENESS·PEP 비트는 없다
+        // issued through the Korean flow
         _issue(alice, KR_VASP, 100, 40);
 
         vm.prank(owner);
-        krNote.mint(alice, 1000);                 // KR 노트: 통과
+        krNote.mint(alice, 1000);                 // KR note: passes
         assertEq(krNote.balanceOf(alice), 1000);
 
         vm.prank(owner);
         vm.expectRevert(abi.encodeWithSelector(GatedRwaNote.RecipientNotVerified.selector, alice, euPolicy));
-        euNote.mint(alice, 1000);                 // EU 노트: 거절
+        euNote.mint(alice, 1000);                 // EU note: rejected
     }
 
-    // ═══════════════ 프론트엔드 보조 ═══════════════
+    // Frontend helper
 
     function test_CanTransferPreview() public {
         _issue(alice, KR_VASP, 100, 50);
@@ -193,7 +193,7 @@ contract GatedRwaNoteTest is Test {
         assertTrue(krNote.canTransfer(alice, bob));
     }
 
-    // ═══════════════ 정책은 불변 ═══════════════
+    // The policy is immutable
 
     function test_PolicyIdIsImmutable() public view {
         assertEq(krNote.POLICY_ID(), krPolicy);

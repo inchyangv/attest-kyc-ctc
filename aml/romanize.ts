@@ -1,19 +1,19 @@
 /**
- * 한글 → 로마자 전개.
+ * Hangul to romanised forms.
  *
- * ⚠️ 여기서 만드는 표기는 **우리가 만든 추론**이지 명단에 실린 사실이 아니다.
- * 전개 표기로 얻은 적중은 corroborated=false 로 표시하고,
- * 생년월일이나 국가 같은 뒷받침 없이는 차단하지 않는다.
+ * What this produces is our inference, not something any list asserts.
+ * A hit found through expansion is marked corroborated=false and never blocks without
+ * support from a date of birth or a country.
  *
- * 왜: 발음기호를 뗀 표기에서 '영'과 '용'이 모두 yong 이 되어
- *     최영호가 명단의 다른 인물 최용호와 100점 일치하는 사고가 실제로 있었다.
+ * Why: strip the diacritics and both yeong and yong collapse to yong, which once scored
+ * Choi Yeong-ho at 100 against a different listed person, Choi Yong-ho.
  */
 
 const CHO = ['g','kk','n','d','tt','r','m','b','pp','s','ss','','j','jj','ch','k','t','p','h'];
 const JUNG = ['a','ae','ya','yae','eo','e','yeo','ye','o','wa','wae','oe','yo','u','wo','we','wi','yu','eu','ui','i'];
 const JONG = ['','k','k','k','n','n','n','t','l','l','l','l','l','l','l','l','m','p','p','t','t','ng','t','t','k','t','p','t'];
 
-/** 성씨 관용 표기 — 사람들이 실제로 쓰는 철자. RR 규칙과 다르다. */
+/** Surnames as people actually spell them. These differ from the RR rules. */
 const SURNAME_VARIANTS: Record<string, string[]> = {
   '김': ['kim','gim'],           '이': ['lee','yi','rhee','ri','i'],
   '박': ['park','pak','bak'],    '최': ['choi','choe','chwe'],
@@ -32,7 +32,7 @@ const SURNAME_VARIANTS: Record<string, string[]> = {
   '허': ['heo','hur','huh'],     '심': ['shim','sim'],
 };
 
-/** 북한 공식 표기 관용 — 국제 명단에 이 철자로 실린다 */
+/** DPRK official spellings. International lists carry these forms. */
 const DPRK_VARIANTS: Record<string, string[]> = {
   '김': ['kim'], '리': ['ri','li','lee'], '박': ['pak'], '최': ['choe'],
   '정': ['jong','jung'], '주': ['ju','chu'], '은': ['un','eun'], '일': ['il'],
@@ -44,7 +44,7 @@ function isHangulSyllable(ch: string): boolean {
   return c >= 0xAC00 && c <= 0xD7A3;
 }
 
-/** 음절 하나 → RR 표기 */
+/** One syllable to its RR form */
 function syllableRR(ch: string): string {
   const c = ch.charCodeAt(0) - 0xAC00;
   const cho = Math.floor(c / (21 * 28));
@@ -58,9 +58,9 @@ export function hasHangul(s: string): boolean {
 }
 
 /**
- * 한글 이름 → 가능한 로마자 표기 집합.
- * 성 1글자 + 이름 나머지를 가정한다 (한국 이름의 지배적 형태).
- * 복성(남궁·황보 등)은 이름 전체 RR 도 함께 반환해 놓치지 않게 한다.
+ * A Hangul name to the set of plausible romanised forms.
+ * Assumes a one-syllable surname and the rest as a given name, the dominant Korean shape.
+ * Two-syllable surnames also get a whole-name RR form so they are not missed.
  */
 export function romanizeVariants(name: string): string[] {
   const chars = [...name.replace(/\s+/g, '')].filter(isHangulSyllable);
@@ -74,7 +74,7 @@ export function romanizeVariants(name: string): string[] {
   for (const v of SURNAME_VARIANTS[surname] ?? []) surnameForms.add(v);
   for (const v of DPRK_VARIANTS[surname] ?? []) surnameForms.add(v);
 
-  // 이름 부분: 음절별 RR + 북한 관용 표기 조합
+  // Given name: per-syllable RR combined with DPRK spellings
   const givenForms = new Set<string>();
   if (given.length) {
     givenForms.add(given.map(syllableRR).join(''));
@@ -92,16 +92,16 @@ export function romanizeVariants(name: string): string[] {
     if (givenForms.size === 0) { out.add(s); continue; }
     for (const g of givenForms) {
       out.add(`${s} ${g}`);   // Kim Jong Un
-      out.add(`${g} ${s}`);   // Jong Un Kim (서구식 어순)
+      out.add(`${g} ${s}`);   // Jong Un Kim, western order
     }
   }
-  out.add(chars.map(syllableRR).join(''));   // 복성 대비 통짜 전개
+  out.add(chars.map(syllableRR).join(''));   // whole-name form, for two-syllable surnames
   return [...out];
 }
 
 function cartesian(arrs: string[][]): string[][] {
   if (arrs.length === 0) return [[]];
-  if (arrs.length > 4) arrs = arrs.slice(0, 4);          // 조합 폭발 방지
+  if (arrs.length > 4) arrs = arrs.slice(0, 4);   // cap the combinatorial blowup
   return arrs.reduce<string[][]>((acc, cur) => {
     const next: string[][] = [];
     for (const a of acc) for (const c of cur) next.push([...a, c]);

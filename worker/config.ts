@@ -2,14 +2,14 @@ import 'dotenv/config';
 
 function req(name: string): string {
   const v = process.env[name];
-  if (!v) throw new Error(`환경변수 ${name} 이 없습니다 (.env 확인)`);
+  if (!v) throw new Error(`environment variable ${name} is not set (check .env)`);
   return v;
 }
 function num(name: string, dflt: number): number {
   const v = process.env[name];
   if (!v) return dflt;
   const n = Number(v);
-  if (!Number.isFinite(n)) throw new Error(`환경변수 ${name} 이 숫자가 아닙니다: ${v}`);
+  if (!Number.isFinite(n)) throw new Error(`environment variable ${name} is not a number: ${v}`);
   return n;
 }
 
@@ -22,18 +22,18 @@ export const cfg = {
   ascAddress:    req('ASC_CONTRACT_ADDRESS'),
   chainKey:      num('SOURCE_CHAIN_KEY', 1),
 
-  /// 소스 체인 스캔 시 헤드에서 몇 블록 뒤까지만 확정으로 볼 것인가.
-  /// 리오그로 사라질 tx 를 작업으로 만들지 않기 위한 지연.
+  /// How far behind head a block must be before we treat it as final.
+  /// Keeps a transaction that a reorg will erase from becoming a job.
   confirmations: num('WORKER_CONFIRMATIONS', 4),
-  /// 한 번에 스캔할 블록 범위 상한 (공용 RPC 의 eth_getLogs 제한 회피)
+  /// Maximum block span per scan, to stay under public RPC eth_getLogs limits
   scanChunk:     num('WORKER_SCAN_CHUNK', 500),
-  /// 폴링 간격
+  /// Poll interval
   pollMs:        num('WORKER_POLL_MS', 12_000),
-  /// 동시에 처리할 작업 수 — 어테스트 8분 대기가 서로를 막지 않게 한다
+  /// Concurrent jobs, so one eight-minute attestation wait does not block the others
   concurrency:   num('WORKER_CONCURRENCY', 8),
-  /// 영구 실패로 판정하기까지의 시도 횟수
+  /// Attempts before a job is declared permanently failed
   maxAttempts:   num('WORKER_MAX_ATTEMPTS', 8),
   statePath:     process.env.WORKER_STATE_PATH ?? 'state/worker.json',
-  /// 처음 시작할 때 어느 블록부터 볼 것인가 (0 = 현재 헤드)
+  /// Which block to start from on a cold start. 0 means current head.
   startBlock:    num('WORKER_START_BLOCK', 0),
 };
