@@ -1,103 +1,43 @@
 @import "tailwindcss";
 
 /*
- * Proofmark design tokens.
- * Derived from the Creditcoin block explorer (Blockscout / Chakra scale):
- * light canvas, gray.50 fills, blue.600 interaction, black plate with mint (#B3FCB2)
- * as the only brand colour. Dark theme mirrors Blockscout's dark mode.
- * Semantic tokens live on :root / [data-theme=dark]; Tailwind utilities read them inline.
+ * Proofmark tokens. Dark only.
+ * One canvas, one panel step, hairline structure. Mint (#B3FCB2, the Creditcoin brand green)
+ * is the single chromatic accent: primary action, active state, focus. Status has its own three hues.
+ * Components use semantic utilities (bg-surface, text-fg-muted, …) and never raw hex.
  */
 
-@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
-
 :root {
-  color-scheme: light;
-
-  --canvas: #ffffff;
-  --surface: #f7fafc;            /* gray.50  — stat cards, form panels */
-  --surface-2: #edf2f7;          /* gray.100 — table heads, chips */
-  --surface-hover: #edf2f7;
-  --line: #e2e8f0;               /* gray.200 — 2px input/outline borders */
-  --line-strong: #cbd5e0;        /* gray.300 — hover */
-  --divider: rgba(16, 17, 18, 0.06);
-
-  --fg: rgba(16, 17, 18, 0.8);
-  --fg-strong: #101112;
-  --fg-muted: #718096;           /* gray.500 */
-  --fg-subtle: #a0aec0;          /* gray.400 */
-  --fg-inverse: #ffffff;
-
-  --link: #2b6cb0;               /* blue.600 */
-  --link-hover: #3182ce;         /* blue.500 */
-  --accent: #2b6cb0;
-  --accent-hover: #3182ce;
-  --accent-tint: #ebf8ff;        /* blue.50 */
-  --accent-fg: #2b6cb0;
-  --focus: #4299e1;              /* blue.400 */
-
-  --plate: #000000;
-  --plate-fg: #ffffff;
-  --plate-muted: rgba(255, 255, 255, 0.64);
-  --plate-line: rgba(255, 255, 255, 0.12);
-  --mint: #b3fcb2;
-
-  --ok: #38a169;                 /* green.500 */
-  --ok-fg: #25855a;              /* green.600 */
-  --ok-tint: #f0fff4;            /* green.50 */
-  --warn: #dd6b20;               /* orange.500 */
-  --warn-fg: #c05621;            /* orange.600 */
-  --warn-tint: #fffaf0;          /* orange.50 */
-  --bad: #e53e3e;                /* red.500 */
-  --bad-fg: #c53030;             /* red.600 */
-  --bad-tint: #fff5f5;           /* red.50 */
-  --note-tint: #fffaf0;          /* the "scanning new transactions" band */
-
-  --shadow-pop: 0 4px 16px rgba(16, 17, 18, 0.08);
-}
-
-[data-theme="dark"] {
   color-scheme: dark;
 
-  --canvas: #101112;
-  --surface: rgba(255, 255, 255, 0.06);
-  --surface-2: rgba(255, 255, 255, 0.08);
-  --surface-hover: rgba(255, 255, 255, 0.1);
-  --line: rgba(255, 255, 255, 0.1);
-  --line-strong: rgba(255, 255, 255, 0.2);
-  --divider: rgba(255, 255, 255, 0.08);
+  --canvas: #0d0e11;
+  --surface: #14161a;             /* panels, cards */
+  --surface-2: #1c1f25;           /* table heads, chips, hover */
+  --sunk: #0a0b0d;                /* inputs */
+  --line: rgba(255, 255, 255, 0.08);
+  --line-strong: rgba(255, 255, 255, 0.16);
+  --divider: rgba(255, 255, 255, 0.06);
 
-  --fg: rgba(255, 255, 255, 0.8);
-  --fg-strong: #ffffff;
-  --fg-muted: #a0aec0;
-  --fg-subtle: #718096;
-  --fg-inverse: #101112;
+  --fg-strong: #f2f3f5;
+  --fg: rgba(242, 243, 245, 0.74);
+  --fg-muted: #8a8f98;
+  --fg-subtle: #5c616a;
+  --fg-inverse: #0d0e11;
 
-  --link: #63b3ed;               /* blue.300 */
-  --link-hover: #90cdf4;         /* blue.200 */
-  --accent: #2b6cb0;
-  --accent-hover: #3182ce;
-  --accent-tint: #2a4365;        /* blue.800 */
-  --accent-fg: #bee3f8;          /* blue.100 */
-  --focus: #63b3ed;
-
-  --plate: #000000;
-  --plate-fg: #ffffff;
-  --plate-muted: rgba(255, 255, 255, 0.64);
-  --plate-line: rgba(255, 255, 255, 0.12);
   --mint: #b3fcb2;
+  --mint-hover: #c9ffc8;
+  --mint-fg: #0b1a0c;             /* text on a mint fill */
+  --mint-tint: rgba(179, 252, 178, 0.1);
+  --focus: #b3fcb2;
 
-  --ok: #38a169;
-  --ok-fg: #c6f6d5;              /* green.100 */
-  --ok-tint: #22543d;            /* green.800 */
-  --warn: #dd6b20;
-  --warn-fg: #feebcb;            /* orange.100 */
-  --warn-tint: #7b341e;          /* orange.800 */
-  --bad: #e53e3e;
-  --bad-fg: #fed7d7;             /* red.100 */
-  --bad-tint: #822727;           /* red.800 */
-  --note-tint: rgba(123, 52, 30, 0.44);
+  --ok: #6ee7a8;
+  --ok-tint: rgba(110, 231, 168, 0.12);
+  --warn: #f6b64b;
+  --warn-tint: rgba(246, 182, 75, 0.12);
+  --bad: #ff6f6f;
+  --bad-tint: rgba(255, 111, 111, 0.12);
 
-  --shadow-pop: 0 4px 16px rgba(0, 0, 0, 0.4);
+  --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.5);
 }
 
 @theme inline {
@@ -108,7 +48,7 @@
   --color-canvas: var(--canvas);
   --color-surface: var(--surface);
   --color-surface-2: var(--surface-2);
-  --color-surface-hover: var(--surface-hover);
+  --color-sunk: var(--sunk);
   --color-line: var(--line);
   --color-line-strong: var(--line-strong);
   --color-divider: var(--divider);
@@ -119,34 +59,22 @@
   --color-fg-subtle: var(--fg-subtle);
   --color-fg-inverse: var(--fg-inverse);
 
-  --color-link: var(--link);
-  --color-link-hover: var(--link-hover);
-  --color-accent: var(--accent);
-  --color-accent-hover: var(--accent-hover);
-  --color-accent-tint: var(--accent-tint);
-  --color-accent-fg: var(--accent-fg);
+  --color-mint: var(--mint);
+  --color-mint-hover: var(--mint-hover);
+  --color-mint-fg: var(--mint-fg);
+  --color-mint-tint: var(--mint-tint);
   --color-focus: var(--focus);
 
-  --color-plate: var(--plate);
-  --color-plate-fg: var(--plate-fg);
-  --color-plate-muted: var(--plate-muted);
-  --color-plate-line: var(--plate-line);
-  --color-mint: var(--mint);
-
   --color-ok: var(--ok);
-  --color-ok-fg: var(--ok-fg);
   --color-ok-tint: var(--ok-tint);
   --color-warn: var(--warn);
-  --color-warn-fg: var(--warn-fg);
   --color-warn-tint: var(--warn-tint);
   --color-bad: var(--bad);
-  --color-bad-fg: var(--bad-fg);
   --color-bad-tint: var(--bad-tint);
-  --color-note-tint: var(--note-tint);
 
   --radius-sm: 4px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
 
   --shadow-pop: var(--shadow-pop);
 }
@@ -157,11 +85,11 @@
     background: var(--canvas);
     color: var(--fg);
     font-size: 14px;
-    line-height: 1.5;
-    font-feature-settings: "tnum" 1, "cv11" 1;
+    line-height: 20px;
+    font-feature-settings: "tnum" 1, "cv11" 1, "ss01" 1;
     -webkit-font-smoothing: antialiased;
   }
-  ::selection { background: var(--mint); color: #101112; }
+  ::selection { background: var(--mint); color: var(--mint-fg); }
   h1, h2, h3 { color: var(--fg-strong); }
   code, kbd, pre { font-family: var(--font-mono); }
   a { color: inherit; }
@@ -171,20 +99,41 @@
 }
 
 @layer components {
-  /* Blockscout-style link: blue, no underline, brightens on hover */
-  .link { color: var(--link); text-decoration: none; }
-  .link:hover { color: var(--link-hover); }
-
-  /* Table primitive: gray head with rounded top corners, hairline rows */
-  .tbl { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 14px; }
-  .tbl th {
-    background: var(--surface-2); color: var(--fg-muted); font-weight: 500; text-align: left;
-    padding: 10px 12px; white-space: nowrap;
+  /* Outbound link: text-coloured, hairline underline, mint on hover. Blue is not used. */
+  .link {
+    color: var(--fg-strong);
+    text-decoration: underline;
+    text-decoration-color: var(--line-strong);
+    text-decoration-thickness: 1px;
+    text-underline-offset: 3px;
+    transition: color 120ms, text-decoration-color 120ms;
   }
-  .tbl th:first-child { border-top-left-radius: var(--radius-md); }
-  .tbl th:last-child { border-top-right-radius: var(--radius-md); }
-  .tbl td { padding: 12px; border-bottom: 1px solid var(--divider); vertical-align: top; font-weight: 500; }
-  .tbl tr:last-child td { border-bottom-color: var(--divider); }
+  .link:hover { color: var(--mint); text-decoration-color: var(--mint); }
+
+  /* Bordered panel: the one container style. */
+  .panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-md); }
+
+  /* Monospace at the same optical size as 13px Inter. */
+  .mono { font-family: var(--font-mono); font-size: 12px; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
+
+  /*
+   * Table: 36px head, 40px rows, hairlines. Lives inside a .panel with overflow hidden,
+   * so it never draws its own outer border or radius.
+   */
+  .tbl { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13px; line-height: 20px; }
+  .tbl th {
+    height: 36px; padding: 0 12px; background: var(--surface-2); color: var(--fg-muted);
+    font-size: 12px; font-weight: 500; text-align: left; white-space: nowrap;
+    border-bottom: 1px solid var(--line);
+  }
+  .tbl td { height: 40px; padding: 8px 12px; border-bottom: 1px solid var(--divider); vertical-align: middle; color: var(--fg); }
+  .tbl tbody tr:last-child td { border-bottom: 0; }
   .tbl .num { text-align: right; font-variant-numeric: tabular-nums; }
-  .tbl tr.group td { background: var(--surface); color: var(--fg-strong); font-weight: 600; padding: 8px 12px; }
+  .tbl tr.grp td {
+    height: 32px; padding: 6px 12px; color: var(--fg-muted); background: transparent;
+    font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
+    border-bottom: 1px solid var(--line);
+  }
+  .tbl tr.grp:not(:first-child) td { border-top: 1px solid var(--line); }
+  .tbl tr.grp .note { margin-left: 8px; font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--fg-subtle); }
 }

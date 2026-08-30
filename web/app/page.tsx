@@ -4,11 +4,12 @@ import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/Button';
 import { Field, Input } from '@/components/ui/Field';
 import { Tag, type Tone } from '@/components/ui/Tag';
-import { StatCard } from '@/components/ui/StatCard';
+import { Status } from '@/components/ui/Status';
+import { Stats, Stat } from '@/components/ui/Stat';
 import { Band } from '@/components/ui/Band';
 import { Hash } from '@/components/ui/Hash';
 import { DetailRow, DetailList } from '@/components/ui/DetailRow';
-import { Section, Plate } from '@/components/ui/Page';
+import { PageHeader, Section, Eyebrow } from '@/components/ui/Page';
 import { Icon } from '@/components/ui/Icon';
 import { bitOf } from '@/lib/methods';
 
@@ -48,10 +49,10 @@ const PRESETS = [
     v: { fullName: '박서준', dateOfBirth: '1990-05-05', nationality: 'KR', residence: 'KR', walletAddress: '' } },
 ];
 
-const DECISION: Record<Decision, { tone: Tone; band: 'ok' | 'warn' | 'bad'; text: string }> = {
-  ALLOW: { tone: 'green', band: 'ok', text: 'No corroborated match. The mark may carry the sanctions bit.' },
-  REVIEW: { tone: 'orange', band: 'warn', text: 'A candidate matched but nothing corroborates it. A person decides.' },
-  BLOCK: { tone: 'red', band: 'bad', text: 'A listed party was corroborated. No mark is issued.' },
+const DECISION: Record<Decision, { tone: Tone; edge: string; text: string }> = {
+  ALLOW: { tone: 'ok', edge: 'border-l-ok', text: 'No corroborated match. The mark may carry the sanctions bit.' },
+  REVIEW: { tone: 'warn', edge: 'border-l-warn', text: 'A candidate matched but nothing corroborates it. A person decides.' },
+  BLOCK: { tone: 'bad', edge: 'border-l-bad', text: 'A listed party was corroborated. No mark is issued.' },
 };
 
 const FIELDS = [
@@ -88,133 +89,114 @@ export default function Home() {
 
   return (
     <>
-      {/* ── plate ── */}
-      <Plate>
-        <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
-          <div className="max-w-2xl">
-            <div className="text-xs font-medium uppercase tracking-wider text-plate-muted">Proofmark · KYC/AML attestation layer</div>
-            <h1 className="mt-2 font-display text-[32px] font-semibold leading-tight text-mint sm:text-[40px]">Sanctions screening</h1>
-            <p className="mt-3 text-base leading-6 text-plate-muted">
-              OFAC SDN, UN Consolidated and EU FSF, parsed from the source XML.
-              The engine records <span className="text-plate-fg">what it checked</span> and nothing more.
-            </p>
-          </div>
-          <div className="grid shrink-0 grid-cols-3 gap-2">
-            {Object.keys(LIST).map(id => (
-              <div key={id} className="min-w-0 rounded-md border border-plate-line px-3 py-2">
-                <div className="text-[11px] font-medium text-plate-muted">{LIST[id].label}</div>
-                <div className="mt-0.5 text-lg font-medium leading-6 text-plate-fg tabular-nums">
-                  {info ? info.listCounts[id]?.toLocaleString() ?? '—' : <span className="text-plate-muted">…</span>}
-                </div>
-                <div className="truncate font-mono text-[11px] text-plate-muted">{info?.listVersions[id] ? `rev ${info.listVersions[id]}` : 'loading'}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </Plate>
+      <PageHeader
+        eyebrow="Proofmark · KYC/AML attestation layer"
+        title="Sanctions screening"
+        lede="OFAC SDN, UN Consolidated and EU FSF, parsed from the source XML. The engine records what it checked and nothing more."
+        aside={<span className="mono text-fg-muted">engine <span className="text-fg-strong">{info?.engineVersion ?? '—'}</span></span>}
+      />
 
-      {/* ── stats ── */}
-      <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <StatCard icon="database" label="Entries loaded" value={totalEntries?.toLocaleString() ?? '—'} sub="3 lists" />
-        <StatCard icon="bolt" label="Engine" value={<span className="font-mono text-base">{info?.engineVersion ?? '—'}</span>} />
-        <StatCard icon="shield" label="Last decision"
-          value={res ? <Tag tone={DECISION[res.decision].tone}>{res.decision}</Tag> : <span className="text-fg-subtle">—</span>}
-          sub={res ? `risk ${res.riskBand}/5` : undefined} />
-        <StatCard icon="clock" label="Screening time" value={res ? res.elapsedMs : '—'} sub={res ? 'ms' : undefined} />
-      </div>
+      {/* ── lists ── */}
+      <Stats>
+        {Object.keys(LIST).map(id => (
+          <Stat key={id}
+            label={<>{LIST[id].label} <span className="text-fg-subtle">· {LIST[id].source}</span></>}
+            value={info ? info.listCounts[id]?.toLocaleString() ?? '—' : '…'}
+            sub={info?.listVersions[id] ? <span className="mono">rev {info.listVersions[id]}</span> : undefined} />
+        ))}
+        <Stat label="Entries loaded" value={totalEntries?.toLocaleString() ?? '…'} sub="3 lists" />
+      </Stats>
 
-      <div className="mt-8 grid gap-8 lg:grid-cols-[360px_minmax(0,1fr)]">
+      <div className="mt-8 grid gap-6 lg:grid-cols-[340px_minmax(0,1fr)]">
         {/* ── input ── */}
         <div>
-          <div className="rounded-lg bg-surface p-4">
-            <div className="grid gap-3">
+          <div className="panel p-4">
+            <div className="grid gap-3.5">
               {FIELDS.map(([k, label, hint]) => (
                 <Field key={k} label={label} hint={hint || undefined}>
                   <Input value={form[k]} onChange={set(k)} spellCheck={false} />
                 </Field>
               ))}
               <Field label="Wallet address" hint="optional">
-                <Input value={form.walletAddress} onChange={set('walletAddress')} spellCheck={false} placeholder="0x…" className="font-mono" />
+                <Input value={form.walletAddress} onChange={set('walletAddress')} spellCheck={false} placeholder="0x…" className="mono" />
               </Field>
             </div>
             <Button onClick={() => screen()} disabled={busy} className="mt-4 w-full">
-              <Icon name="search" size={18} />{busy ? 'Screening…' : 'Run screening'}
+              <Icon name="search" size={16} />{busy ? 'Screening…' : 'Run screening'}
             </Button>
             {err && <Band tone="bad" className="mt-3">{err}</Band>}
           </div>
 
-          <div className="mt-6">
-            <div className="mb-2 text-xs font-medium uppercase tracking-wide text-fg-subtle">Try these</div>
-            <div className="overflow-hidden rounded-lg border border-line">
-              {PRESETS.map(p => (
-                <button key={p.label} type="button" onClick={() => { setForm(p.v); screen(p.v); }} disabled={busy}
-                  className="group flex w-full items-start gap-3 border-b border-divider px-3 py-2.5 text-left transition-colors last:border-b-0 hover:bg-surface disabled:opacity-60">
-                  <div className="min-w-0 flex-1">
-                    <div className="font-medium text-fg-strong group-hover:text-link">{p.label}</div>
-                    <div className="mt-0.5 text-[13px] leading-snug text-fg-muted">{p.hint}</div>
-                  </div>
-                  <Icon name="arrow" size={16} className="mt-1 shrink-0 text-fg-subtle group-hover:text-link" />
-                </button>
-              ))}
-            </div>
+          <Eyebrow className="mb-2 mt-6">Try these</Eyebrow>
+          <div className="panel overflow-hidden">
+            {PRESETS.map(p => (
+              <button key={p.label} type="button" onClick={() => { setForm(p.v); screen(p.v); }} disabled={busy}
+                className="group flex w-full items-start gap-3 border-b border-divider px-3.5 py-3 text-left transition-colors last:border-b-0 hover:bg-surface-2 disabled:opacity-60">
+                <div className="min-w-0 flex-1">
+                  <div className="text-[13px] font-medium leading-5 text-fg-strong">{p.label}</div>
+                  <div className="mt-0.5 text-xs leading-4 text-fg-muted">{p.hint}</div>
+                </div>
+                <Icon name="arrow" size={14} className="mt-[3px] shrink-0 text-fg-subtle transition-colors group-hover:text-mint" />
+              </button>
+            ))}
           </div>
         </div>
 
         {/* ── result ── */}
         <div className="min-w-0">
           {!res && (
-            <div className="flex flex-col items-center justify-center rounded-lg bg-surface px-6 py-20 text-center">
-              <Icon name="shield" size={32} className="text-fg-subtle" />
-              <div className="mt-3 text-base font-medium text-fg-strong">No screening yet</div>
-              <p className="mt-1 max-w-sm text-sm text-fg-muted">
-                Run one to see the decision, the evidence, and what was <em className="not-italic text-fg-strong">not</em> checked.
+            <div className="flex min-h-[320px] flex-col items-center justify-center rounded-md border border-dashed border-line-strong px-6 text-center">
+              <Icon name="shield" size={24} className="text-fg-subtle" />
+              <div className="mt-3 text-sm font-medium text-fg-strong">No screening yet</div>
+              <p className="mt-1 max-w-xs text-[13px] leading-5 text-fg-muted">
+                Run one to see the decision, the evidence, and what was <span className="text-fg-strong">not</span> checked.
               </p>
             </div>
           )}
 
           {res && (
             <>
-              <Band tone={DECISION[res.decision].band}>
-                <span className="mr-2 font-semibold">{res.decision}</span>
-                {DECISION[res.decision].text}
-                {res.reviewReason && <Tag tone="gray" mono className="ml-2 align-middle">{res.reviewReason}</Tag>}
-              </Band>
+              {/* verdict */}
+              <div className={`panel flex flex-wrap items-center gap-x-4 gap-y-2 border-l-2 px-4 py-3 ${DECISION[res.decision].edge}`}>
+                <Status tone={DECISION[res.decision].tone} className="text-base leading-6">{res.decision}</Status>
+                <span className="text-[13px] leading-5 text-fg">{DECISION[res.decision].text}</span>
+                {res.reviewReason && <Tag tone="gray" mono>{res.reviewReason}</Tag>}
+                <span className="mono ml-auto text-fg-muted">risk {res.riskBand}/5 · {res.elapsedMs} ms</span>
+              </div>
 
               {/* checks */}
               <Section title="Checks performed" className="mt-6"
-                aside={<Tag tone="gray" mono>methods = {res.methodsHex}</Tag>}
+                aside={<>methods <Tag tone="gray" mono>{res.methodsHex}</Tag></>}
                 lede="A bit is set only when the check ran. An unset bit is what lets a consumer policy reject this mark.">
-                <div className="overflow-x-auto">
+                <div className="panel overflow-hidden">
                   <table className="tbl">
-                    <thead><tr><th>Check</th><th className="w-24">Bit</th><th className="w-32">Status</th></tr></thead>
+                    <thead><tr><th>Check</th><th className="num w-24">Bit</th><th className="w-32">Status</th></tr></thead>
                     <tbody>
-                      {res.methodGroups.map(g => (
-                        <Group key={g.group} group={g} />
-                      ))}
+                      {res.methodGroups.map(g => <Group key={g.group} group={g} />)}
                     </tbody>
                   </table>
                 </div>
               </Section>
 
               {/* hits */}
-              <Section title={<>List matches <span className="text-fg-muted">({res.hits.length})</span></>}>
+              <Section title={<>List matches <span className="font-normal text-fg-muted">{res.hits.length}</span></>}>
                 {res.hits.length === 0 ? (
-                  <div className="rounded-md bg-surface px-4 py-3 text-sm text-fg-muted">No candidate matched above threshold.</div>
+                  <div className="panel px-4 py-3 text-[13px] text-fg-muted">No candidate matched above threshold.</div>
                 ) : (
-                  <div className="overflow-x-auto">
+                  <div className="panel overflow-x-auto">
                     <table className="tbl">
                       <thead><tr><th>Matched name</th><th>Type</th><th className="num">Score</th><th>Source</th><th>Corroboration</th></tr></thead>
                       <tbody>
                         {res.hits.map((h, i) => (
                           <tr key={i}>
-                            <td className="text-fg-strong">{h.matchedName}</td>
-                            <td><Tag tone={h.corroborated ? 'orange' : 'blue'}>{h.matchType}</Tag></td>
+                            <td className="font-medium text-fg-strong">{h.matchedName}</td>
+                            <td><Tag tone={h.corroborated ? 'warn' : 'gray'}>{h.matchType}</Tag></td>
                             <td className="num">{h.score}</td>
-                            <td><span className="font-mono text-[13px] text-fg-muted">{LIST[h.listId]?.label ?? h.listId} · {h.entryId}</span></td>
+                            <td className="mono text-fg-muted">{LIST[h.listId]?.label ?? h.listId} · {h.entryId}</td>
                             <td>
                               {h.corroborated
-                                ? <span className="inline-flex flex-wrap gap-1">{h.corroboration?.map(c => <Tag key={c} tone="red">{c}</Tag>)}</span>
-                                : <span className="text-fg-muted">none. Recorded, but does not hold the person</span>}
+                                ? <span className="inline-flex flex-wrap gap-1">{h.corroboration?.map(c => <Tag key={c} tone="bad">{c}</Tag>)}</span>
+                                : <span className="text-fg-muted">none · recorded, but does not hold the person</span>}
                             </td>
                           </tr>
                         ))}
@@ -226,7 +208,7 @@ export default function Home() {
 
               {/* evidence */}
               <Section title="Evidence">
-                <DetailList className="rounded-lg border border-line px-4">
+                <DetailList>
                   <DetailRow label="Digest" hint="keccak over the evidence record"><Hash value={res.evidenceDigest} full /></DetailRow>
                   <DetailRow label="List versions">
                     <span className="flex flex-wrap gap-1.5">
@@ -236,11 +218,11 @@ export default function Home() {
                   <DetailRow label="Entries loaded">
                     {Object.entries(res.listCounts).map(([k, v]) => `${LIST[k]?.label ?? k} ${v.toLocaleString()}`).join(' · ')}
                   </DetailRow>
-                  <DetailRow label="Engine"><span className="font-mono text-[13px]">{res.engineVersion}</span></DetailRow>
-                  <DetailRow label="Elapsed">{res.elapsedMs} ms</DetailRow>
+                  <DetailRow label="Engine"><span className="mono">{res.engineVersion}</span></DetailRow>
+                  <DetailRow label="Elapsed"><span className="mono">{res.elapsedMs} ms</span></DetailRow>
                 </DetailList>
                 <Band tone="note" className="mt-3">
-                  The evidence record holds <b>no name in cleartext</b>. Name fields are keyed HMAC digests. Evidence is kept for audit;
+                  The evidence record holds <b className="font-medium text-fg-strong">no name in cleartext</b>. Name fields are keyed HMAC digests. Evidence is kept for audit;
                   the vault can still be erased on request. The key holder can still confirm a candidate, which is the point of pseudonymisation.
                 </Band>
               </Section>
@@ -255,19 +237,16 @@ export default function Home() {
 function Group({ group: g }: { group: MethodGroup }) {
   return (
     <>
-      <tr className="group">
-        <td colSpan={3}>
-          {g.group}
-          <span className="ml-2 text-xs font-normal text-fg-muted">{g.note}</span>
-        </td>
+      <tr className="grp">
+        <td colSpan={3}>{g.group}<span className="note">{g.note}</span></td>
       </tr>
       {g.items.map(m => {
         const bit = bitOf(m.key);
         return (
           <tr key={m.key}>
-            <td className={m.set ? 'text-fg-strong' : 'text-fg-muted'}>{m.label}</td>
-            <td><span className="font-mono text-[13px] text-fg-muted">{bit !== undefined ? `1 << ${bit}` : '—'}</span></td>
-            <td>{m.set ? <Tag tone="green">Performed</Tag> : <Tag tone="gray">Not run</Tag>}</td>
+            <td className={m.set ? 'font-medium text-fg-strong' : 'text-fg-muted'}>{m.label}</td>
+            <td className="num mono text-fg-muted">{bit !== undefined ? `1 << ${bit}` : '—'}</td>
+            <td>{m.set ? <Tag tone="ok">Performed</Tag> : <Tag tone="gray">Not run</Tag>}</td>
           </tr>
         );
       })}

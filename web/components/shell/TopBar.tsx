@@ -1,25 +1,25 @@
-import { CreditcoinMark, Icon } from '@/components/ui/Icon';
+import { CreditcoinMark } from '@/components/ui/Icon';
 import { CC3_EXPLORER, SEPOLIA_EXPLORER } from '@/lib/links';
-import { ThemeToggle } from './ThemeToggle';
 
-/** 36px utility bar, as on the explorer: network context on the left, settings on the right. */
+/** 40px utility bar: network context on the left, prover on the right. Everything is 12px on one baseline. */
 export function TopBar() {
   return (
-    <div className="flex h-9 items-center gap-3 border-b border-divider bg-canvas px-4 text-xs font-medium lg:px-6">
-      <a href={CC3_EXPLORER} target="_blank" rel="noreferrer" className="link inline-flex items-center gap-1.5">
-        <CreditcoinMark size={14} className="text-fg-strong" />
-        <span>Creditcoin CC3 Testnet</span>
-        <span className="hidden text-fg-subtle sm:inline">· 102031</span>
+    <div className="flex h-10 shrink-0 items-center gap-4 border-b border-line px-4 text-xs leading-4 lg:px-5">
+      <a href={CC3_EXPLORER} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 text-fg-strong hover:text-mint">
+        <CreditcoinMark size={14} />
+        <span className="font-medium">Creditcoin CC3 Testnet</span>
+        <span className="mono hidden text-fg-muted sm:inline">102031</span>
       </a>
-      <span className="h-4 w-px bg-line" />
-      <a href={SEPOLIA_EXPLORER} target="_blank" rel="noreferrer" className="hidden items-center gap-1 text-fg-muted hover:text-link sm:inline-flex">
-        <span>Source chain</span><span className="text-fg-strong">Sepolia</span>
-        <span className="text-fg-subtle">· chainKey 1</span>
+      <span className="h-4 w-px bg-line" aria-hidden />
+      <a href={SEPOLIA_EXPLORER} target="_blank" rel="noreferrer" className="hidden items-center gap-2 text-fg-muted hover:text-fg-strong sm:inline-flex">
+        <span>Source</span><span className="font-medium text-fg-strong">Ethereum Sepolia</span>
+        <span className="mono">chainKey 1</span>
       </a>
-      <span className="ml-auto hidden items-center gap-1.5 text-fg-muted sm:inline-flex">
-        <Icon name="bolt" size={14} className="text-ok" />Attestcoin proofs · BlockProver 0x…0FD2
+      <span className="ml-auto hidden items-center gap-2 text-fg-muted sm:inline-flex">
+        <span className="h-1.5 w-1.5 rounded-full bg-ok" aria-hidden />
+        Attestcoin proofs
+        <span className="mono text-fg-strong">BlockProver 0x…0FD2</span>
       </span>
-      <span className="ml-auto sm:ml-0"><ThemeToggle /></span>
     </div>
   );
 }

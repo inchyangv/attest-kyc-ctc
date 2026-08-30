@@ -1,137 +1,136 @@
 import type { Metadata } from 'next';
-import { Button, LinkButton } from '@/components/ui/Button';
+import { notFound } from 'next/navigation';
+import { Button } from '@/components/ui/Button';
 import { Field, Input } from '@/components/ui/Field';
 import { Tag, type Tone } from '@/components/ui/Tag';
-import { StatCard } from '@/components/ui/StatCard';
+import { Status } from '@/components/ui/Status';
+import { Stats, Stat } from '@/components/ui/Stat';
 import { Band } from '@/components/ui/Band';
 import { Hash } from '@/components/ui/Hash';
 import { DetailRow, DetailList } from '@/components/ui/DetailRow';
-import { PageTitle, Section, Plate } from '@/components/ui/Page';
+import { PageHeader, Section, Eyebrow } from '@/components/ui/Page';
 import { Icon, CreditcoinMark, type IconName } from '@/components/ui/Icon';
 import { Mark, Wordmark } from '@/components/ui/Logo';
-import { CREDITCOIN_EXPLORER } from '@/lib/links';
 
-export const metadata: Metadata = { title: 'Design system' };
+export const metadata: Metadata = { title: 'Design system', robots: { index: false, follow: false } };
 
-/* Token catalogue, kept in sync with app/globals.css by hand. */
-const COLORS: { group: string; tokens: { name: string; cls: string; light: string; dark: string; note?: string }[] }[] = [
+/* Internal reference. Not linked from the app and not served in production. Tokens mirror app/globals.css by hand. */
+const COLORS: { group: string; tokens: { name: string; cls: string; value: string; note?: string }[] }[] = [
   { group: 'Canvas & surfaces', tokens: [
-    { name: 'canvas', cls: 'bg-canvas', light: '#FFFFFF', dark: '#101112', note: 'page' },
-    { name: 'surface', cls: 'bg-surface', light: '#F7FAFC', dark: 'white 6%', note: 'stat tiles, panels' },
-    { name: 'surface-2', cls: 'bg-surface-2', light: '#EDF2F7', dark: 'white 8%', note: 'table head, chips' },
-    { name: 'line', cls: 'bg-line', light: '#E2E8F0', dark: 'white 10%', note: '2px borders' },
-    { name: 'divider', cls: 'bg-divider', light: 'ink 6%', dark: 'white 8%', note: '1px hairlines' },
+    { name: 'canvas', cls: 'bg-canvas', value: '#0D0E11', note: 'page' },
+    { name: 'surface', cls: 'bg-surface', value: '#14161A', note: 'panels' },
+    { name: 'surface-2', cls: 'bg-surface-2', value: '#1C1F25', note: 'table head, chips, hover' },
+    { name: 'sunk', cls: 'bg-sunk', value: '#0A0B0D', note: 'inputs, segmented control' },
+    { name: 'line', cls: 'bg-line', value: 'white 8%', note: 'panel borders' },
+    { name: 'line-strong', cls: 'bg-line-strong', value: 'white 16%', note: 'secondary button, dashed empty state' },
+    { name: 'divider', cls: 'bg-divider', value: 'white 6%', note: 'rows' },
   ]},
   { group: 'Text', tokens: [
-    { name: 'fg-strong', cls: 'bg-fg-strong', light: '#101112', dark: '#FFFFFF', note: 'headings, values' },
-    { name: 'fg', cls: 'bg-fg', light: 'ink 80%', dark: 'white 80%', note: 'body' },
-    { name: 'fg-muted', cls: 'bg-fg-muted', light: '#718096', dark: '#A0AEC0', note: 'labels' },
-    { name: 'fg-subtle', cls: 'bg-fg-subtle', light: '#A0AEC0', dark: '#718096', note: 'placeholders' },
+    { name: 'fg-strong', cls: 'bg-fg-strong', value: '#F2F3F5', note: 'headings, values' },
+    { name: 'fg', cls: 'bg-fg', value: 'white 74%', note: 'body' },
+    { name: 'fg-muted', cls: 'bg-fg-muted', value: '#8A8F98', note: 'labels, ledes' },
+    { name: 'fg-subtle', cls: 'bg-fg-subtle', value: '#5C616A', note: 'placeholders, bit numbers' },
   ]},
-  { group: 'Interaction', tokens: [
-    { name: 'link', cls: 'bg-link', light: '#2B6CB0', dark: '#63B3ED', note: 'links, icon buttons' },
-    { name: 'accent', cls: 'bg-accent', light: '#2B6CB0', dark: '#2B6CB0', note: 'primary button' },
-    { name: 'accent-tint', cls: 'bg-accent-tint', light: '#EBF8FF', dark: '#2A4365', note: 'blue tag fill' },
-    { name: 'focus', cls: 'bg-focus', light: '#4299E1', dark: '#63B3ED', note: 'focus ring' },
-  ]},
-  { group: 'Brand', tokens: [
-    { name: 'plate', cls: 'bg-plate', light: '#000000', dark: '#000000', note: 'hero plate' },
-    { name: 'mint', cls: 'bg-mint', light: '#B3FCB2', dark: '#B3FCB2', note: 'only on plate' },
+  { group: 'Accent', tokens: [
+    { name: 'mint', cls: 'bg-mint', value: '#B3FCB2', note: 'primary button, active nav, focus, link hover' },
+    { name: 'mint-tint', cls: 'bg-mint-tint', value: 'mint 10%', note: 'claim tags' },
   ]},
   { group: 'Status', tokens: [
-    { name: 'ok', cls: 'bg-ok', light: '#38A169', dark: '#38A169' },
-    { name: 'ok-tint', cls: 'bg-ok-tint', light: '#F0FFF4', dark: '#22543D' },
-    { name: 'warn', cls: 'bg-warn', light: '#DD6B20', dark: '#DD6B20' },
-    { name: 'warn-tint', cls: 'bg-warn-tint', light: '#FFFAF0', dark: '#7B341E' },
-    { name: 'bad', cls: 'bg-bad', light: '#E53E3E', dark: '#E53E3E' },
-    { name: 'bad-tint', cls: 'bg-bad-tint', light: '#FFF5F5', dark: '#822727' },
-    { name: 'note-tint', cls: 'bg-note-tint', light: '#FFFAF0', dark: 'orange 44%', note: 'message band' },
+    { name: 'ok', cls: 'bg-ok', value: '#6EE7A8' },
+    { name: 'ok-tint', cls: 'bg-ok-tint', value: 'ok 12%' },
+    { name: 'warn', cls: 'bg-warn', value: '#F6B64B' },
+    { name: 'warn-tint', cls: 'bg-warn-tint', value: 'warn 12%' },
+    { name: 'bad', cls: 'bg-bad', value: '#FF6F6F' },
+    { name: 'bad-tint', cls: 'bg-bad-tint', value: 'bad 12%' },
   ]},
 ];
 
 const TYPE = [
-  { name: 'Display', spec: 'Poppins 32 / 40 · 500', cls: 'font-display text-[32px] font-medium leading-10 tracking-tight text-fg-strong', sample: 'On-chain state' },
-  { name: 'Plate title', spec: 'Poppins 40 / 1.1 · 600 · mint', cls: 'font-display text-[40px] font-semibold leading-tight text-mint bg-plate inline-block rounded-md px-3', sample: 'Sanctions screening' },
-  { name: 'Section', spec: 'Inter 18 / 24 · 500', cls: 'text-lg font-medium leading-6 text-fg-strong', sample: 'Same mark, two policies' },
-  { name: 'Body', spec: 'Inter 16 / 24 · 400', cls: 'text-base text-fg', sample: 'The mark carries the checks that were performed; each consumer decides whether that meets its own regime.' },
-  { name: 'UI', spec: 'Inter 14 / 20 · 500', cls: 'text-sm font-medium text-fg-strong', sample: 'Run screening · Contract call · 0.00049 CTC' },
-  { name: 'Label', spec: 'Inter 12 / 16 · 500 · muted', cls: 'text-xs font-medium text-fg-muted', sample: 'Latest block · Average block time' },
-  { name: 'Mono', spec: 'SF Mono 13 · tabular', cls: 'font-mono text-[13px] text-fg-strong', sample: '0x93C62D3016123Da0aBdB4AC1857564c30CbE5629' },
+  { name: 'Page title', spec: 'Poppins 26 / 32 · 600 · tight', cls: 'font-display text-[26px] font-semibold leading-8 tracking-tight text-fg-strong', sample: 'On-chain state' },
+  { name: 'Section', spec: 'Inter 15 / 24 · 600', cls: 'text-[15px] font-semibold leading-6 text-fg-strong', sample: 'Same mark, two policies' },
+  { name: 'Stat value', spec: 'Inter 18 / 24 · 600 · tnum', cls: 'text-lg font-semibold leading-6 text-fg-strong tabular-nums', sample: '26,566' },
+  { name: 'Body', spec: 'Inter 14 / 20 · 400', cls: 'text-sm text-fg', sample: 'The mark carries the checks that were performed; each consumer decides whether that meets its own regime.' },
+  { name: 'Row', spec: 'Inter 13 / 20 · 400–500', cls: 'text-[13px] font-medium text-fg-strong', sample: 'Sanctions screened · Document authenticity' },
+  { name: 'Label', spec: 'Inter 12 / 16 · 500 · muted', cls: 'text-xs font-medium text-fg-muted', sample: 'Entries loaded · Policies passed' },
+  { name: 'Eyebrow', spec: 'Inter 11 / 16 · 600 · caps · +8%', cls: 'text-[11px] font-semibold uppercase tracking-[0.08em] text-fg-muted', sample: 'Contracts · Try these' },
+  { name: 'Mono', spec: 'SF Mono 12 · tnum', cls: 'mono text-fg-strong', sample: '0x93C62D3016123Da0aBdB4AC1857564c30CbE5629' },
 ];
 
-const ICONS: IconName[] = ['shield', 'cube', 'swatch', 'database', 'bolt', 'clock', 'globe', 'gauge', 'layers', 'block', 'policy', 'wallet', 'key', 'hash', 'user', 'list', 'search', 'copy', 'check', 'x', 'info', 'warning', 'external', 'arrow', 'chevron', 'sun', 'moon', 'menu'];
-const TONES: Tone[] = ['blue', 'green', 'orange', 'red', 'gray', 'mint'];
+const ICONS: IconName[] = ['shield', 'cube', 'database', 'bolt', 'clock', 'globe', 'gauge', 'layers', 'block', 'policy', 'wallet', 'key', 'hash', 'user', 'list', 'search', 'copy', 'check', 'x', 'info', 'warning', 'external', 'arrow', 'chevron', 'menu'];
+const TONES: Tone[] = ['ok', 'warn', 'bad', 'mint', 'gray'];
 
-const PRINCIPLES = [
-  ['Fill, don’t outline', 'Panels and stat tiles are gray.50 fills with no border. Borders are reserved for inputs (2px) and list containers (1px). Never both.'],
-  ['Blue is the only action colour', 'Links, primary buttons and icon buttons are blue.600. Nothing else is blue, so the eye learns what is clickable.'],
-  ['Mint lives on black', 'The Creditcoin mint (#B3FCB2) appears only as type on the black plate, never as a fill, border or tint on the canvas.'],
-  ['Status is a tag', 'ALLOW / REVIEW / BLOCK, PASS / FAIL and Performed / Not run are tinted tags with dark text. No coloured borders, no shadows.'],
-  ['Hashes are monospace and copyable', 'Every address and digest renders through <Hash>: truncated by default, full where it matters, linked to the explorer when it lives there.'],
-  ['Same shapes make a table', 'When there is more than one row of the same shape, it is a table with a gray head. Two things being compared sit side by side.'],
-  ['Silence over guesses', 'An unset bit is shown as "Not run", in muted text. The UI never implies a check that did not happen.'],
+const RULES = [
+  ['One container', 'Every box is a .panel: surface fill, 1px line, 6px radius. No stacked translucent fills, no 12px radius, no shadows.'],
+  ['One accent', 'Mint is the only chromatic accent: primary button, active nav marker, focus ring, link hover. Status has its own three hues and nothing else is coloured.'],
+  ['Fixed columns', 'Detail labels are 176px. Bit numbers are a 64px right-aligned mono column. Verdict tags in policy rows are 72px. Nothing is ragged.'],
+  ['Line boxes', 'Rows are 40px, table heads 36px, inputs and buttons 36px, tags 24px on a 24px line. Labels and values share a baseline.'],
+  ['Same-shaped rows are a table', 'Two things being compared sit side by side in equal-height cards; a footer sticks to the bottom of both.'],
+  ['Hashes are mono and copyable', 'Every address and digest renders through <Hash>: truncated by default, full where it matters, underlined only when it links out.'],
+  ['Silence over guesses', 'An unset bit is "Not run", in muted text. The UI never implies a check that did not happen.'],
 ];
 
 function Swatch({ t }: { t: (typeof COLORS)[number]['tokens'][number] }) {
   return (
-    <div className="flex items-center gap-3 rounded-md border border-line p-2">
-      <div className={`h-10 w-10 shrink-0 rounded-sm border border-divider ${t.cls}`} />
-      <div className="min-w-0 text-xs">
-        <div className="font-mono text-[13px] font-medium text-fg-strong">{t.name}</div>
-        <div className="text-fg-muted">{t.light} <span className="text-fg-subtle">/</span> {t.dark}</div>
-        {t.note && <div className="text-fg-subtle">{t.note}</div>}
+    <div className="panel flex items-center gap-3 p-2">
+      <div className={`h-9 w-9 shrink-0 rounded-sm border border-line ${t.cls}`} />
+      <div className="min-w-0 text-xs leading-4">
+        <div className="mono text-fg-strong">{t.name}</div>
+        <div className="text-fg-muted">{t.value}</div>
+        {t.note && <div className="truncate text-fg-subtle">{t.note}</div>}
       </div>
     </div>
   );
 }
 
 export default function Design() {
+  if (process.env.NODE_ENV === 'production') notFound();
   return (
     <>
-      <PageTitle
-        aside={<LinkButton href={CREDITCOIN_EXPLORER} target="_blank" rel="noreferrer" size="sm"><CreditcoinMark size={14} />Reference explorer<Icon name="external" size={14} /></LinkButton>}
-        lede="Proofmark borrows the Creditcoin explorer's visual language: light canvas, gray fills, one blue for action, and a black plate with mint type as the single brand moment. A compliance mark should read like the chain it lives on.">
-        Design system
-      </PageTitle>
+      <PageHeader
+        eyebrow="Internal · not linked, dev only"
+        title="Design system"
+        lede="Dark canvas, hairline structure, one mint accent. Every primitive in the app, rendered once, so alignment can be checked against a ruler."
+        aside={<span className="mono text-fg-muted">tokens · app/globals.css</span>}
+      />
 
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <StatCard icon="swatch" label="Semantic colour tokens" value="27" sub="light + dark" />
-        <StatCard icon="hash" label="Type scale" value="7" sub="styles" />
-        <StatCard icon="layers" label="Radii" value="4 · 8 · 12" sub="px" />
-        <StatCard icon="block" label="Primitives" value="11" sub="components" />
-      </div>
+      <Stats>
+        <Stat label="Colour tokens" value={String(COLORS.reduce((n, g) => n + g.tokens.length, 0))} sub="semantic" />
+        <Stat label="Type styles" value={String(TYPE.length)} />
+        <Stat label="Radii" value="4 · 6 · 8" sub="px" />
+        <Stat label="Primitives" value="12" sub="components" />
+      </Stats>
 
-      <Section title="Principles">
+      <Section title="Rules">
         <div className="grid gap-3 md:grid-cols-2">
-          {PRINCIPLES.map(([h, p], i) => (
-            <div key={h} className="flex gap-3 rounded-lg bg-surface p-4">
-              <span className="font-mono text-[13px] text-fg-subtle">{String(i + 1).padStart(2, '0')}</span>
-              <div><div className="font-medium text-fg-strong">{h}</div><p className="mt-1 text-sm text-fg-muted">{p}</p></div>
+          {RULES.map(([h, p], i) => (
+            <div key={h} className="panel grid grid-cols-[28px_minmax(0,1fr)] gap-2 p-4">
+              <span className="mono pt-0.5 text-fg-subtle">{String(i + 1).padStart(2, '0')}</span>
+              <div><div className="text-[13px] font-medium leading-5 text-fg-strong">{h}</div><p className="mt-1 text-[13px] leading-5 text-fg-muted">{p}</p></div>
             </div>
           ))}
         </div>
       </Section>
 
-      <Section title="Colour" lede="Chakra scale values as shipped by Blockscout. Every colour is a semantic token; components never reference raw hex.">
+      <Section title="Colour" lede="Every colour is a semantic token; components never reference raw hex.">
         <div className="grid gap-6">
           {COLORS.map(g => (
             <div key={g.group}>
-              <div className="mb-2 text-xs font-medium uppercase tracking-wide text-fg-subtle">{g.group}</div>
+              <Eyebrow className="mb-2">{g.group}</Eyebrow>
               <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{g.tokens.map(t => <Swatch key={t.name} t={t} />)}</div>
             </div>
           ))}
         </div>
       </Section>
 
-      <Section title="Typography" lede="Inter for everything, Poppins only for page and plate titles. Tabular numerals everywhere.">
-        <div className="overflow-x-auto">
+      <Section title="Typography" lede="Inter for everything, Poppins only for the page title. Tabular numerals everywhere.">
+        <div className="panel overflow-x-auto">
           <table className="tbl">
-            <thead><tr><th className="w-36">Style</th><th className="w-56">Spec</th><th>Sample</th></tr></thead>
+            <thead><tr><th className="w-32">Style</th><th className="w-60">Spec</th><th>Sample</th></tr></thead>
             <tbody>
               {TYPE.map(t => (
                 <tr key={t.name}>
-                  <td className="text-fg-strong">{t.name}</td>
-                  <td><span className="font-mono text-[13px] text-fg-muted">{t.spec}</span></td>
+                  <td className="font-medium text-fg-strong">{t.name}</td>
+                  <td className="mono text-fg-muted">{t.spec}</td>
                   <td><span className={t.cls}>{t.sample}</span></td>
                 </tr>
               ))}
@@ -140,103 +139,97 @@ export default function Design() {
         </div>
       </Section>
 
-      <Section title="Logo & network mark" lede="Proofmark's seal ring closes with a check. The Creditcoin mark is used only to credit the network, at 13–16px, in the text colour.">
+      <Section title="Logo & network mark" lede="The seal ring closes with a check; mint in the chrome, text colour elsewhere. The Creditcoin mark only credits the network, at 12–14px.">
         <div className="grid gap-3 sm:grid-cols-3">
-          <div className="flex items-center gap-3 rounded-lg bg-surface p-5 text-fg-strong"><Mark size={40} /><Wordmark /></div>
-          <Plate className="flex items-center gap-3 !p-5 text-mint"><Mark size={40} /><span className="font-display text-[17px] font-semibold text-plate-fg">Proofmark</span></Plate>
-          <div className="flex items-center gap-2 rounded-lg border border-line p-5 text-sm text-fg"><CreditcoinMark size={16} className="text-fg-strong" />Built on Creditcoin</div>
+          <div className="panel flex items-center gap-2.5 p-5 text-fg-strong"><Mark size={28} className="text-mint" /><Wordmark /></div>
+          <div className="panel flex items-center gap-2.5 p-5 text-fg-strong"><Mark size={28} /><Wordmark compact /></div>
+          <div className="panel flex items-center gap-2 p-5 text-xs text-fg-muted"><CreditcoinMark size={12} />Built on Creditcoin</div>
         </div>
       </Section>
 
-      <Section title="Buttons" lede="40px, 8px radius, 16/600. One primary per view. Secondary is a 2px outline, as on the explorer's Log in.">
-        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-line p-4">
-          <Button>Run screening</Button>
-          <Button variant="secondary">Log in</Button>
-          <Button variant="ghost">Advanced <Icon name="chevron" size={16} /></Button>
+      <Section title="Buttons" lede="36px, 4px radius, 14/500. One primary per view, in mint. Secondary is a hairline outline; ghost is text.">
+        <div className="panel flex flex-wrap items-center gap-3 p-4">
+          <Button><Icon name="search" size={16} />Run screening</Button>
+          <Button variant="secondary">Secondary</Button>
+          <Button variant="ghost">Ghost <Icon name="chevron" size={14} /></Button>
           <Button disabled>Screening…</Button>
           <Button size="sm">Small</Button>
-          <Button size="sm" variant="secondary"><Icon name="copy" size={16} />Copy</Button>
+          <Button size="sm" variant="secondary"><Icon name="copy" size={14} />Copy</Button>
         </div>
       </Section>
 
-      <Section title="Tags" lede={'14/500, 4px radius, tinted fill with a darker text of the same hue. `mono` for hex, `size="lg"` for a verdict.'}>
-        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-line p-4">
-          {TONES.map(t => <Tag key={t} tone={t}>{t === 'blue' ? 'Contract call' : t === 'green' ? 'ALLOW' : t === 'orange' ? 'REVIEW' : t === 'red' ? 'BLOCK' : t === 'gray' ? 'Not run' : 'Testnet'}</Tag>)}
-          <Tag tone="gray" mono>0x19003f</Tag>
-          <Tag tone="blue">Sanctions screened</Tag>
-          <Tag tone="green">Performed</Tag>
-          <Tag tone="green" size="lg">PASS</Tag>
-          <Tag tone="red" size="lg">FAIL</Tag>
+      <Section title="Tags & status" lede="Tag: 12/500 on a 24px box, tinted fill, text of the same hue. Status: dot + word, for values that must share a baseline with neighbours.">
+        <div className="panel grid gap-4 p-4">
+          <div className="flex flex-wrap items-center gap-2">
+            {TONES.map(t => <Tag key={t} tone={t}>{t === 'ok' ? 'ALLOW' : t === 'warn' ? 'REVIEW' : t === 'bad' ? 'BLOCK' : t === 'mint' ? 'Sanctions screened' : 'Not run'}</Tag>)}
+            <Tag tone="gray" mono>0x19003f</Tag>
+            <Tag tone="ok" size="lg">PASS</Tag>
+            <Tag tone="bad" size="lg">FAIL</Tag>
+            <Tag tone="gray" size="sm">sm</Tag>
+          </div>
+          <div className="flex flex-wrap items-center gap-6 text-base">
+            <Status tone="ok">ACTIVE</Status><Status tone="warn">REVIEW</Status><Status tone="bad">REVOKED</Status><Status tone="gray">NONE</Status>
+          </div>
         </div>
       </Section>
 
-      <Section title="Inputs" lede="40px, 2px gray.200 border, blue.400 on focus. Labels sit above in 12/500 muted; hints right-aligned.">
-        <div className="grid max-w-2xl gap-3 rounded-lg bg-surface p-4 sm:grid-cols-2">
+      <Section title="Inputs" lede="36px, sunk fill, hairline border, mint on focus. Label 12/500 muted; hint right-aligned in mono.">
+        <div className="panel grid max-w-2xl gap-3.5 p-4 sm:grid-cols-2">
           <Field label="Full name"><Input defaultValue="박서준" /></Field>
           <Field label="Date of birth" hint="YYYY-MM-DD"><Input placeholder="1990-05-05" /></Field>
-          <Field label="Wallet address" hint="optional"><Input placeholder="0x…" className="font-mono" /></Field>
+          <Field label="Wallet address" hint="optional"><Input placeholder="0x…" className="mono" /></Field>
           <Field label="Disabled"><Input disabled value="—" readOnly /></Field>
         </div>
       </Section>
 
-      <Section title="Stat tiles" lede="gray.50 fill, icon, 12px label, 18px value with an optional unit.">
-        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-          <StatCard icon="block" label="Latest block" value="4,211,073" />
-          <StatCard icon="clock" label="Average block time" value="15.0s" />
-          <StatCard icon="database" label="Entries loaded" value="23,117" sub="3 lists" />
-          <StatCard icon="shield" label="Last decision" value={<Tag tone="red">BLOCK</Tag>} sub="risk 5/5" />
-        </div>
+      <Section title="Stat strip" lede="One panel, hairline-split cells, 12px label over an 18px value on a fixed 24px line. A Status is a valid value.">
+        <Stats>
+          <Stat label="Latest block" value="4,211,073" />
+          <Stat label={<>OFAC SDN <span className="text-fg-subtle">· US Treasury</span></>} value="19,321" sub={<span className="mono">rev 4147031705</span>} />
+          <Stat label="Mark status" value={<Status tone="ok">ACTIVE</Status>} />
+          <Stat label="Assurance" value="Level 1" sub="sandbox" />
+        </Stats>
       </Section>
 
-      <Section title="Bands" lede="The explorer's message strip. One line, an icon, a tone.">
+      <Section title="Bands" lede="Message strip. Neutral by default; a tone tints the fill and colours the icon.">
         <div className="grid gap-2">
-          <Band tone="note">scanning new transactions…</Band>
-          <Band tone="info">Read live from Creditcoin CC3 Testnet at block 4,211,073.</Band>
-          <Band tone="ok"><b className="mr-2">ALLOW</b>No corroborated match. The mark may carry the sanctions bit.</Band>
-          <Band tone="warn"><b className="mr-2">REVIEW</b>A candidate matched, but nothing corroborates it.</Band>
-          <Band tone="bad"><b className="mr-2">BLOCK</b>A listed party was corroborated. No mark is issued.</Band>
+          <Band tone="note">Two 32-byte commitments. No name, date of birth or document number.</Band>
+          <Band tone="ok">No corroborated match. The mark may carry the sanctions bit.</Band>
+          <Band tone="warn">A candidate matched, but nothing corroborates it.</Band>
+          <Band tone="bad">A listed party was corroborated. No mark is issued.</Band>
         </div>
       </Section>
 
-      <Section title="Table" lede="Gray head with rounded top corners, 14/500 cells, 1px hairlines. Numbers right-aligned and tabular.">
-        <div className="overflow-x-auto">
+      <Section title="Table" lede="36px head, 40px rows, hairlines, inside a panel. Group rows are 32px eyebrows. Numbers right-aligned and tabular.">
+        <div className="panel overflow-x-auto">
           <table className="tbl">
-            <thead><tr><th>Policy</th><th>requireAll</th><th className="num">Min assurance</th><th>Result</th></tr></thead>
+            <thead><tr><th>Check</th><th className="num w-24">Bit</th><th className="w-32">Status</th></tr></thead>
             <tbody>
-              <tr><td className="text-fg-strong">KR VASP production</td><td><Tag tone="gray" mono>0x10024</Tag></td><td className="num">2</td><td><Tag tone="red">FAIL</Tag></td></tr>
-              <tr><td className="text-fg-strong">KR pilot</td><td><Tag tone="gray" mono>0x10000</Tag></td><td className="num">1</td><td><Tag tone="green">PASS</Tag></td></tr>
+              <tr className="grp"><td colSpan={3}>Run by this screening<span className="note">Performed here, on every request.</span></td></tr>
+              <tr><td className="font-medium text-fg-strong">Sanctions lists</td><td className="num mono text-fg-muted">1 &lt;&lt; 16</td><td><Tag tone="ok">Performed</Tag></td></tr>
+              <tr><td className="font-medium text-fg-strong">Jurisdiction (FATF)</td><td className="num mono text-fg-muted">1 &lt;&lt; 19</td><td><Tag tone="ok">Performed</Tag></td></tr>
+              <tr className="grp"><td colSpan={3}>Not licensed yet<span className="note">The bit stays unset — silence, not a guess.</span></td></tr>
+              <tr><td className="text-fg-muted">Politically exposed persons</td><td className="num mono text-fg-muted">1 &lt;&lt; 17</td><td><Tag tone="gray">Not run</Tag></td></tr>
             </tbody>
           </table>
         </div>
       </Section>
 
-      <Section title="Detail rows" lede="Explorer detail page rows: 160px muted label, hairline separators, hashes copyable.">
-        <DetailList className="rounded-lg border border-line px-4">
-          <DetailRow label="Subject" hint="The wallet the mark is bound to"><Hash value="0xFD1222e35a536A62f180aA44826656940e86bD5E" full /></DetailRow>
-          <DetailRow label="Status"><Tag tone="green">ACTIVE</Tag></DetailRow>
-          <DetailRow label="Methods"><span className="flex flex-wrap gap-1.5"><Tag tone="gray" mono>0x19003f</Tag><Tag tone="blue">Sanctions screened</Tag><Tag tone="blue">Jurisdiction check</Tag></span></DetailRow>
+      <Section title="Detail rows" lede="176px label column, 24px line boxes, hairlines. A hint is a dotted underline with a title, so the column stays flush.">
+        <DetailList>
+          <DetailRow label="Subject" hint="The wallet the mark is bound to"><Hash value="0xFD1222e35a536A62f180aA44826656940e86bD5E" href="#" full /></DetailRow>
+          <DetailRow label="Status"><Tag tone="ok">ACTIVE</Tag></DetailRow>
+          <DetailRow label="Methods"><span className="flex flex-wrap gap-1.5"><Tag tone="gray" mono>0x19003f</Tag><Tag tone="mint">Sanctions screened</Tag><Tag tone="mint">Jurisdiction check</Tag></span></DetailRow>
+          <DetailRow label="Claims root"><Hash value="0xe0f8f6d4a5b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7" full /></DetailRow>
           <DetailRow label="Truncated"><Hash value="0xe0f8f6d4a5b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7" /></DetailRow>
         </DetailList>
       </Section>
 
-      <Section title="Plate" lede="The one brand moment. Black, 12px radius, mint Poppins title, 64% white copy, hairline chips.">
-        <Plate>
-          <div className="text-xs font-medium uppercase tracking-wider text-plate-muted">Proofmark</div>
-          <div className="mt-2 font-display text-[32px] font-semibold leading-tight text-mint">Prove compliance once.</div>
-          <p className="mt-2 max-w-xl text-base text-plate-muted">Issued on Ethereum, verified on Creditcoin by Attestcoin. Zero bytes of PII on-chain.</p>
-          <div className="mt-4 flex flex-wrap gap-2">
-            {['OFAC SDN', 'UN Consolidated', 'EU FSF'].map(l => (
-              <span key={l} className="rounded-md border border-plate-line px-3 py-1.5 text-sm text-plate-fg">{l}</span>
-            ))}
-          </div>
-        </Plate>
-      </Section>
-
-      <Section title="Icons" lede="24px outline, 1.75 stroke, round joins. Inherit currentColor; muted in nav, strong in stat tiles.">
-        <div className="grid grid-cols-4 gap-2 sm:grid-cols-7 lg:grid-cols-10">
+      <Section title="Icons" lede="24-grid outline icons at 14 / 16 px, 1.75 stroke, round joins. Inherit currentColor.">
+        <div className="grid grid-cols-4 gap-2 sm:grid-cols-6 lg:grid-cols-9">
           {ICONS.map(n => (
-            <div key={n} className="flex flex-col items-center gap-1.5 rounded-md bg-surface py-3 text-fg-strong">
-              <Icon name={n} /><span className="font-mono text-[11px] text-fg-muted">{n}</span>
+            <div key={n} className="panel flex flex-col items-center gap-1.5 py-3 text-fg-strong">
+              <Icon name={n} size={18} /><span className="mono text-[11px] text-fg-muted">{n}</span>
             </div>
           ))}
         </div>

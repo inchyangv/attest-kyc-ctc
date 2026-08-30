@@ -1,23 +1,29 @@
 import type { ReactNode } from 'react';
 
-export type Tone = 'blue' | 'green' | 'orange' | 'red' | 'gray' | 'mint';
+export type Tone = 'ok' | 'warn' | 'bad' | 'mint' | 'gray';
 
 const TONE: Record<Tone, string> = {
-  blue: 'bg-accent-tint text-accent-fg',
-  green: 'bg-ok-tint text-ok-fg',
-  orange: 'bg-warn-tint text-warn-fg',
-  red: 'bg-bad-tint text-bad-fg',
+  ok: 'bg-ok-tint text-ok',
+  warn: 'bg-warn-tint text-warn',
+  bad: 'bg-bad-tint text-bad',
+  mint: 'bg-mint-tint text-mint',
   gray: 'bg-surface-2 text-fg',
-  mint: 'bg-plate text-mint',
 };
 
-const SIZE = { md: 'h-6 px-1.5 text-sm', lg: 'h-8 px-2.5 text-base font-semibold' };
+const SIZE = {
+  sm: 'h-5 px-1.5 text-[11px]',
+  md: 'h-6 px-2 text-xs',
+  lg: 'h-7 px-2.5 text-[13px] font-semibold',
+};
 
-/** Blockscout tag: 14px/500, 4px radius, tinted fill. `mono` for hex values, `size="lg"` for a verdict. */
+/**
+ * Tag: tinted fill, text of the same hue, 4px radius. Heights are 20 / 24 / 28 so a tag
+ * sits on the same line box as 13px text (leading 20 / 24). `mono` for hex values.
+ */
 export function Tag({ tone = 'gray', mono, size = 'md', className = '', children }:
   { tone?: Tone; mono?: boolean; size?: keyof typeof SIZE; className?: string; children: ReactNode }) {
   return (
-    <span className={`inline-flex max-w-full items-center gap-1 truncate rounded-sm font-medium leading-none ${SIZE[size]} ${mono ? 'font-mono text-[13px]' : ''} ${TONE[tone]} ${className}`}>
+    <span className={`inline-flex max-w-full shrink-0 items-center gap-1 whitespace-nowrap rounded-sm font-medium leading-none ${SIZE[size]} ${mono ? 'mono' : ''} ${TONE[tone]} ${className}`}>
       {children}
     </span>
   );

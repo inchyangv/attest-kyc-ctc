@@ -9,8 +9,8 @@ export function Shell({ children }: { children: ReactNode }) {
       <MobileNav />
       <div className="flex flex-1">
         <Sidebar />
-        <main className="min-w-0 flex-1 px-4 pb-16 pt-6 sm:px-6 lg:px-12">
-          <div className="mx-auto max-w-[1160px]">{children}</div>
+        <main className="min-w-0 flex-1 px-4 pb-20 pt-6 sm:px-6 lg:px-10 lg:pt-8">
+          <div className="mx-auto max-w-[1120px]">{children}</div>
         </main>
       </div>
     </div>

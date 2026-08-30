@@ -4,16 +4,16 @@ type Variant = 'primary' | 'secondary' | 'ghost';
 type Size = 'md' | 'sm';
 
 const VARIANT: Record<Variant, string> = {
-  primary: 'bg-accent text-white hover:bg-accent-hover disabled:hover:bg-accent',
-  secondary: 'border-2 border-line text-fg-strong hover:border-line-strong hover:text-link',
-  ghost: 'text-link hover:text-link-hover',
+  primary: 'bg-mint text-mint-fg font-semibold hover:bg-mint-hover disabled:hover:bg-mint',
+  secondary: 'border border-line-strong bg-transparent text-fg-strong hover:bg-surface-2',
+  ghost: 'text-fg-muted hover:bg-surface-2 hover:text-fg-strong',
 };
 const SIZE: Record<Size, string> = {
-  md: 'h-10 px-3 text-base',
-  sm: 'h-8 px-2.5 text-sm',
+  md: 'h-9 px-3.5 text-sm',
+  sm: 'h-7 px-2.5 text-xs',
 };
 
-const base = 'inline-flex shrink-0 items-center justify-center gap-2 rounded-md font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40';
+const base = 'inline-flex shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40';
 
 export function Button({ variant = 'primary', size = 'md', className = '', children, ...rest }:
   { variant?: Variant; size?: Size; children: ReactNode } & ButtonHTMLAttributes<HTMLButtonElement>) {

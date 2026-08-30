@@ -1,4 +1,4 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import { Inter, Poppins } from 'next/font/google';
 import './globals.css';
 import { Shell } from '@/components/shell/Shell';
@@ -11,13 +11,11 @@ export const metadata: Metadata = {
   description: 'Prove compliance once and carry it to every chain. Issued on Ethereum, verified on Creditcoin by Attestcoin, with zero bytes of PII on-chain.',
 };
 
-/* Applies the saved theme before first paint. Light is the default, as on the explorer. */
-const themeScript = `(function(){try{var t=localStorage.getItem('pm-theme');if(t==='dark'||t==='light')document.documentElement.setAttribute('data-theme',t)}catch(e){}})()`;
+export const viewport: Viewport = { themeColor: '#0d0e11', colorScheme: 'dark' };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${inter.variable} ${poppins.variable}`} suppressHydrationWarning>
-      <head><script dangerouslySetInnerHTML={{ __html: themeScript }} /></head>
+    <html lang="en" className={`${inter.variable} ${poppins.variable}`}>
       <body className="min-h-screen bg-canvas text-fg antialiased">
         <Shell>{children}</Shell>
       </body>
