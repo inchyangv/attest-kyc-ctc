@@ -1,0 +1,169 @@
+# KYC vendors: what is real, what is demo, and how to connect each
+
+> 2026-08-31 · Tech Lead
+> Background: [`03-product-plan.md`](03-product-plan.md) section 4.2 (the Korean adapter) and section 16 D4.
+> Code: `pipeline/adapters/{kr,codef,openbanking,demo}.ts`, `web/lib/kyc-server.ts`, `web/app/api/kyc/*`, `web/app/verify/page.tsx`.
+> Verified: 117 TypeScript tests, `next build`, and the full `/verify` flow driven through the API in demo mode (section 8).
+
+---
+
+## 1. The decision
+
+The two regulatory checks in the Korean adapter, **document authenticity with the issuing authority** (FSC method 1) and **an existing bank account through a one-won transfer** (method 4), are integrated against real vendors in code. The commercial side of some of them cannot be arranged before the deadline, so the rule is:
+
+> Onboard what onboards today. Where an institution cannot be reached yet, a **demo vendor** stands in, and every surface says so: the page, the evidence, and the mark's `regime`.
+
+There is no silent mock. An axis is either a real vendor, the labelled demo vendor under `KYC_DEMO=1`, or unconfigured, in which case the API answers 503 with the names of the missing variables.
+
+---
+
+## 2. What onboards today
+
+| Axis | Self-service today | Path | Result on the mark |
+|---|---|---|---|
+| **ID document**: 주민등록증 (정부24), 운전면허증 (경찰청 교통민원24), plus OCR | **Yes.** CODEF demo tier with 간편인증 login | Section 3 | `live`, bit set, regime production |
+| **Bank account**: holder name + one won | Testbed only: KFTC Open Banking | Section 4 | not live: the real API, canned answers, no money moves |
+| Bank account, real rails | No. KFTC 이용기관 registration (weeks) or the CODEF 제휴 contract | Section 4.3 | `live`, bit set |
+
+Real and demo mix per axis. With CODEF configured and nothing for the bank, the document is checked for real and the account is demo.
+
+---
+
+## 3. ID document: CODEF
+
+### 3.1 Sign-up
+
+1. Register at codef.io and apply for the **데모 서비스**.
+2. 마이페이지 → **키 관리**: copy `clientId`, `clientSecret`, `publicKey`.
+3. Set `CODEF_ENV=demo`. The demo tier queries the real 정부24 and 교통민원24 within a daily allowance. `sandbox` answers from fixed sample data and is never live; `api` is production.
+
+### 3.2 Login: 간편인증, no certificate file
+
+The authorities require the *requesting party* to log in; the document being checked belongs to the customer (the guide's "3자인증"). Two ways are implemented:
+
+| `CODEF_LOGIN_TYPE` | What it needs | Behaviour |
+|---|---|---|
+| `simple` | The operator's name, phone and 13-digit resident number, and an app: `CODEF_SIMPLE_LEVEL` 1 카카오톡 · 3 삼성패스 · 4 KB모바일 · 5 통신사 PASS (`CODEF_LOGIN_TELECOM` 0 SKT · 1 KT · 2 LG U+) · 6 네이버 · 7 신한 · 8 toss · 9 하나 · 10 NH | Every check comes back once as `CF-03002 / simpleAuth`; the operator approves on the phone; the page sends the second leg and the authority answers. This is the quickest route to a live lookup: nothing but a demo key and a phone |
+| `cert` | The issuer's 공동인증서 as files: `CODEF_CERT_TYPE=pfx` + `CODEF_CERT_FILE` (base64), or `1` + `CODEF_CERT_FILE` (der) + `CODEF_KEY_FILE`; `CODEF_CERT_PASSWORD` (plain, RSA-encrypted per request with the account `publicKey`); `CODEF_LOGIN_USER_NAME` (법인명 or 성명) and `CODEF_LOGIN_IDENTITY` (사업자등록번호 or 주민등록번호) | One shot. A corporate certificate on 교통민원24 gets a captcha leg (`secureNo`), which the page shows as an image and answers |
+
+### 3.3 Products and wire format
+
+| Product | Endpoint | Notes |
+|---|---|---|
+| 주민등록 진위확인 (KR_PB_MW_035) | `POST /v1/kr/public/mw/identity-card/check-status` | `organization 0002`; `identityEncYn Y`, `birthDate yymmdd`, `identity` = RSA of the last seven digits; `issueDate YYYYMMDD`. `resAuthenticity "1"` is genuine |
+| 운전면허 진위확인 (KR_PB_EF_001) | `POST /v1/kr/public/ef/driver-license/status` | `organization 0001`; licence number split `licenseNo01..04` (2-2-6-2); `serialNo` (암호일련번호) is required. `"1"` genuine; `"2"` = number exists, serial did not verify, treated as a rejection |
+| OCR 주민등록증 / 운전면허증 (KR_ETC_KYC_001/002) | `POST /v1/kr/etc/a/kyc/registration-card`, `/drivers-license` | multipart `file`, ≤ 5 MB. Fields prefill the form; the customer confirms them against the card |
+
+Protocol, from the REST guide: token `POST https://oauth.codef.io/oauth/token` with Basic `clientId:clientSecret` and `grant_type=client_credentials&scope=read`, valid a week and cached; requests are URL-encoded JSON with a Bearer header; responses are URL-encoded JSON `{ result: { code, message, transactionId }, data }`; `CF-00000` is success; `CF-03002` with `data.continue2Way = true` asks for a second leg, sent to the same endpoint with the first body plus `is2Way: true`, `twoWayInfo: { jobIndex, threadIndex, jti, twoWayTimestamp }` and the answer (`secureNo` or `simpleAuth: "1"`). The authority holds the session about three minutes.
+
+The developer site is a SPA; the parameter tables came from `https://admin.codef.io/dev-guide-menu/{menu-detail,api-input-param,api-output-param}/{menuCode}?mode=real`.
+
+### 3.4 What is not integrated
+
+Face match and liveness. CODEF has no face product; those bits stay unset until a face vendor is added.
+
+---
+
+## 4. Bank account
+
+### 4.1 KFTC Open Banking (`BANK_VENDOR=openbanking`, default)
+
+1. Register at developers.kftc.or.kr (개인 개발자 needs 본인인증) and create a test app: `client_id`, `client_secret`, and the ten-character 이용기관코드.
+2. Set `OPENBANKING_CLIENT_ID`, `OPENBANKING_CLIENT_SECRET`, `OPENBANKING_CLIENT_USE_CODE`, the institution's contracted account `OPENBANKING_CNTR_ACCOUNT_NUM` (type `N`, or `C` for a fintech use number), `OPENBANKING_WD_PASS_PHRASE` (the 출금이체 비밀번호 registered with KFTC), `OPENBANKING_ENV=test`.
+
+| Step | Endpoint | Notes |
+|---|---|---|
+| Token | `POST /oauth/2.0/token` | 2-legged: `client_id`, `client_secret`, `scope=oob`, `grant_type=client_credentials` |
+| Holder name | `POST /v2.0/inquiry/real_name` | `bank_code_std` (3 digits), `account_num`, `account_holder_info_type " "`, `account_holder_info` = first six digits of the resident number; `rsp_code A0000` |
+| One won | `POST /v2.0/transfer/deposit/acnt_num` | `tran_amt "1"`, `print_content "PM" + 4 digits` as the sender, `name_check_option on`; success is `A0000` **and** `res_list[0].bank_rsp_code "000"` |
+
+`bank_tran_id` is 이용기관코드 + `U` + nine characters, unique per call; `tran_dtime` is KST. Hosts: `testapi.openbanking.or.kr` (test), `openapi.openbanking.or.kr` (prod).
+
+The testbed runs the real API against canned data and moves nothing, so the vendor reports `live = false`. The flow completes (under demo the code is shown, since no statement exists), the bit is not set unless demo bits are on.
+
+### 4.2 CODEF bank products (`BANK_VENDOR=codef`)
+
+`예금주명 인증` (`/v1/kr/bank/a/account/holder-authentication`: `organization` = `0` + bank code, `account`, `identity` = YYMMDD) and `계좌 인증(1원 이체)` (`/v1/kr/bank/a/account/transfer-authentication`, `inPrintType 0` = four random digits as the depositor, returns `authCode`). These are 제휴 products: the demo server returns random test data, so the class refuses to construct on anything but `CODEF_ENV=api`.
+
+### 4.3 Real rails
+
+Either KFTC 이용기관 registration (review, weeks) with `OPENBANKING_ENV=prod`, or the CODEF 제휴 contract with `CODEF_ENV=api`. Nothing in the code changes.
+
+---
+
+## 5. Demo mode
+
+`KYC_DEMO=1` (`web/lib/kyc-server.ts`). Any axis with no real vendor gets `pipeline/adapters/demo.ts`.
+
+| Property | Demo vendor |
+|---|---|
+| Interface and inputs | Identical to CODEF and Open Banking. Tokens, reconciliation, screening, commitment and evidence run unchanged |
+| Institutions asked | None. `live = false`, vendor `demo:id` / `demo:bank`, references `demo-…` |
+| OCR | Reads nothing; the customer types and the page says so |
+| Rejection paths, for a demo | A name containing `위조` or `FAKE`, or a document number of one repeated digit → not authentic → issuance stops. An account ending in `99` belongs to `다른사람` → holder mismatch |
+| One-won code | Derived from the account (stable on retry) and **shown on the page** in place of the bank app. A live rail never reveals it |
+| Bits | `KYC_DEMO_BITS=1` (default): the adapter's `sandboxBits` switch counts non-live results, so the mark ends with `0x190027` and assurance 3. `KYC_DEMO_BITS=0` leaves the two bits unset |
+| Regime | Always `KR_FSC_NONFACE_SANDBOX` (2) when either axis is not live. The evidence carries `sandboxBits`, `live` and the vendor name per axis |
+
+The page shows a "Demo mode" band naming the demo axes, and the result row says "under regime sandbox; the policy does not check regime yet".
+
+**The one caveat.** The deployed `ProofmarkRegistry` policy #1 checks `requireAll 0x10024` and `minAssurance 2`, not `regime` (P1 in the plan). So a demo mark passes policy #1 on chain while `/onchain` shows regime sandbox. The `regime` field exists exactly so a consumer can tell the two apart; until the policy reads it, that is the honest description.
+
+---
+
+## 6. Environment reference
+
+All keys with comments: `web/.env.example`. Grouped:
+
+| Group | Keys |
+|---|---|
+| Demo | `KYC_DEMO`, `KYC_DEMO_BITS` |
+| CODEF client | `CODEF_CLIENT_ID`, `CODEF_CLIENT_SECRET`, `CODEF_PUBLIC_KEY`, `CODEF_ENV` (`sandbox` / `demo` / `api`) |
+| CODEF login, simple | `CODEF_LOGIN_TYPE=simple`, `CODEF_SIMPLE_LEVEL`, `CODEF_LOGIN_PHONE`, `CODEF_LOGIN_TELECOM`, `CODEF_LOGIN_USER_NAME`, `CODEF_LOGIN_IDENTITY` (13 digits) |
+| CODEF login, cert | `CODEF_LOGIN_TYPE=cert`, `CODEF_CERT_TYPE`, `CODEF_CERT_FILE`, `CODEF_KEY_FILE`, `CODEF_CERT_PASSWORD`, `CODEF_LOGIN_USER_NAME`, `CODEF_LOGIN_IDENTITY` |
+| Bank | `BANK_VENDOR` (`openbanking` / `codef`), `OPENBANKING_CLIENT_ID`, `OPENBANKING_CLIENT_SECRET`, `OPENBANKING_CLIENT_USE_CODE`, `OPENBANKING_CNTR_ACCOUNT_TYPE`, `OPENBANKING_CNTR_ACCOUNT_NUM`, `OPENBANKING_WD_PASS_PHRASE`, `OPENBANKING_PRINT_NAME`, `OPENBANKING_ENV` |
+| Issuer | `ISSUER_PRIVATE_KEY` (allow-listed with `setIssuer`), `NEXT_PUBLIC_SEPOLIA_RPC`, `NEXT_PUBLIC_SOURCE` |
+| Sealing | `EVIDENCE_HMAC_KEY` (already required by screening; the step tokens derive their key from it) |
+
+Local: `web/.env.local` carries `KYC_DEMO=1`, so `npm run dev` and `/verify` work with no vendor. Deployment, minimum for the demo:
+
+```
+vercel env add KYC_DEMO production            # 1
+vercel env add ISSUER_PRIVATE_KEY production  # without it the pipeline runs and the Sepolia tx is skipped
+```
+
+then the CODEF keys as they arrive; the document axis turns real on redeploy, the bank axis stays demo.
+
+---
+
+## 7. The flow, and where the personal data is
+
+| Step | Route | What crosses the browser |
+|---|---|---|
+| 0 wallet | `GET/POST /api/kyc/wallet` | EIP-4361 message with a sealed nonce; signature checked with viem; returns `walletProof` |
+| 1 document | `POST /api/kyc/id` (multipart) | `action=ocr` prefill; `action=verify` returns `idProof` (sealed result: name, DOB, `docHash`, authenticity, vendor, `live`) or a two-way challenge with `twoWayToken` (170 s). The image is hashed (`keccak256`) and discarded; the resident number is used for the query and never stored |
+| 2 bank | `POST /api/kyc/bank` | `start`: holder name compared with the declared name, one won sent, sealed `challenge` carrying an HMAC of the code (never the code); `verify`: five tries, then `bankProof` |
+| 3 issue | `POST /api/kyc/issue` | Opens the proofs, runs reconciliation, the list-backed AML engine, the salted claims commitment and `packAttrs`, then `ComplianceSource.issue()` from the issuer key. Returns claims and evidence for the customer to save; the server keeps neither |
+
+Sealed tokens are AES-256-GCM under `sha256(EVIDENCE_HMAC_KEY | proofmark-seal-v1)` with a type tag and expiry; a forged or expired token is a 400. Evidence never holds a name, number or account: vendor, reference, `live`, decision codes and hashes only (`pipeline/pii-guard.ts` checks this in tests).
+
+---
+
+## 8. Verified
+
+- `npm run test:ts`: 117 tests. New: CODEF wire format (token, URL-encoded JSON, RSA fields, both login modes, captcha and simpleAuth second legs, OCR multipart, error codes), Open Banking (2-legged token, `bank_tran_id`, real_name, deposit with `bank_rsp_code`), demo vendors and `sandboxBits`, adapter honesty (no vendor, non-live answer, authority says no, code never read back).
+- `tsc` at root and in `web/`; `next build --webpack`; `config.resolve.modules` points root-level `pipeline/` at `web/node_modules`, and `ethers` is a `web/` dependency, so the Vercel build resolves.
+- Against the built server with `KYC_DEMO=1`: status reports demo on both axes → wallet round trip → demo OCR → document verified / `위조` rejected → account ending `99` mismatch → one won with the code revealed → wrong code counted → right code → issue: `ISSUED`, methods `0x190027`, regime 2, assurance 3, policy #1 passes, evidence names `demo:id` and `demo:bank`, no PII; a different declared name → `REJECTED` on reconciliation. With no issuer key the transaction is skipped and says so.
+- Without `KYC_DEMO`: each vendor step is a 503 listing the missing variables; a forged signature is 422, a forged proof 400, 김정은 · KP → `DENIED`.
+
+---
+
+## 9. Left
+
+| Item | Why it matters |
+|---|---|
+| `regime` in `Policy` (P1) | Until the contract reads it, a sandbox mark and a production mark pass the same policy |
+| Face match and liveness vendor | `FACE_MATCH`, `LIVENESS` stay unset |
+| Bank rails | KFTC 이용기관 registration or the CODEF 제휴 contract |
+| Evidence retention | The issuer must keep the evidence to recompute `evidenceHash`; today it is returned to the customer and not stored server-side |
+| Corporate certificate on 교통민원24 | Manual captcha every time; 간편인증 avoids it |

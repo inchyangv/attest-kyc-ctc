@@ -78,7 +78,7 @@ That buys two things at once: portability across regimes, and legal safety, beca
 
 ```
 0. connect wallet, sign ownership (EIP-4361, 10 min TTL, binding address, consent version and claimsRoot)
-1. [ID document]  capture, OCR, authenticity lookup, face match and liveness
+1. [ID document]  capture, OCR, authenticity lookup with the issuing authority (face match and liveness once a face vendor is connected)
 2. [bank account] one-won transfer, account holder name compared with the document name
                   this pair satisfies the FSC two-check requirement
 3. [reconcile]    declared details, document, account holder. All three must agree
@@ -136,13 +136,27 @@ uint32 constant M_ONCHAIN_EXPOSURE    = 1 << 20;
 | Step | Check | FSC guidance | Bits set |
 |---|---|---|---|
 | 0 | Wallet ownership signature | not a regulatory requirement, ours | `WALLET_CONTROL` |
-| 1 | ID document | method 1, document image | `ID_DOC_IMAGE` `ID_DOC_AUTHENTICITY` `FACE_MATCH` `LIVENESS` |
+| 1 | ID document | method 1, document image | `ID_DOC_IMAGE` `ID_DOC_AUTHENTICITY` (`FACE_MATCH` `LIVENESS` when a face vendor is added) |
 | 2 | Bank account, one-won transfer | method 4, use of an existing account | `BANK_ACCOUNT` |
 | 3 | AML screening | CDD under the FIU act | `SANCTIONS_SCREENED` `JURISDICTION_CHECK` `ONCHAIN_EXPOSURE` |
 
 Methods 1 and 4 together satisfy the two-check requirement. The mark records that pairing as `regime = KR_FSC_NONFACE`.
 
-> The authenticity API and the one-won transfer both need institutional agreements and an open banking partnership, which cannot be arranged in fourteen days. So the adapter interface, the methods recording and the evidence are all real, while the vendor calls run in sandbox mode and every surface says so. Not setting the bit is what makes the lie structurally impossible: an unconnected check leaves a zero, and a consumer policy filters on it automatically.
+**How each check is actually performed** (`pipeline/adapters/`, wired into the web flow at `/verify`):
+
+| Check | Vendor and product | What runs |
+|---|---|---|
+| Document fields | CODEF `OCR 주민등록증` / `OCR 운전면허증` (`/v1/kr/etc/a/kyc/registration-card`, `/drivers-license`) | The photo is read so the customer does not type; every field is confirmed against the card |
+| Document authenticity, 주민등록증 | CODEF `주민등록 진위확인`, 정부24 (`/v1/kr/public/mw/identity-card/check-status`) | The issuer logs in with its own 공동인증서 and asks 정부24 whether name, resident number and issue date are a genuine card. `resAuthenticity = "1"` sets the bit; anything else stops issuance |
+| Document authenticity, 운전면허증 | CODEF `운전면허 진위확인`, 경찰청 교통민원24 (`/v1/kr/public/ef/driver-license/status`) | Same login; licence number and the anti-forgery serial are checked. `"2"` (number exists, serial did not verify) is a rejection |
+| Account holder | KFTC Open Banking `계좌실명조회` (`/v2.0/inquiry/real_name`), or CODEF `예금주명 인증` (`/v1/kr/bank/a/account/holder-authentication`) | The bank returns the holder for the account and the customer's real-name number; it must equal the name on the document |
+| Account control | KFTC Open Banking `입금이체` (`/v2.0/transfer/deposit/acnt_num`), or CODEF `계좌 인증(1원 이체)` (`/v1/kr/bank/a/account/transfer-authentication`) | One won is deposited with a code as the sender; the customer types the code back. The code never reaches the browser, only a keyed digest inside a sealed challenge |
+
+The additional-authentication legs the institutions impose (a captcha on a corporate-certificate login, an app approval) are carried through the same endpoint with `is2Way` and surfaced to the operator in the flow.
+
+> **What "live" means.** CODEF's demo tier reaches the real 정부24 and 교통민원24 with a daily allowance; its sandbox answers from fixed sample data, and its bank products return random test data anywhere but production. The KFTC testbed runs the real API against canned data and moves no money. Each vendor result therefore carries `live`, and by default a bit is set only from a live result. Production for the bank axis needs 이용기관 registration with KFTC or the CODEF 제휴 contract; production for the document axis needs either the issuer's certificate or an operator approving each lookup through 간편인증 (카카오톡, PASS …), which needs nothing but a CODEF demo key. None of the commercial side is code, and the code does not pretend otherwise.
+
+> **Demo mode** (`KYC_DEMO=1`, `web/lib/kyc-server.ts`). An axis without a real vendor gets `pipeline/adapters/demo.ts`: same interface, same inputs, same tokens and reconciliation, no institution asked. The page announces it, the evidence names `demo:*`, and the mark carries `regime = KR_FSC_NONFACE_SANDBOX`. Under demo the adapter's `sandboxBits` switch sets the bits from non-live results so the flow ends with a mark that passes policy #1; the on-chain policy does not read `regime` yet (P1, section 9.1), which is the one place a sandbox mark and a production mark look alike, and the reason the switch defaults to off outside demo. Real and demo mix per axis, so a CODEF demo key gives a real document check next to a demo account. Sign-up steps, wire formats and the environment reference: [`07-kyc-vendors.md`](07-kyc-vendors.md).
 
 ### 4.3 Other jurisdictions, on the roadmap
 
@@ -404,7 +418,7 @@ Attestcoin's writability is still in development, so we cannot claim Creditcoin 
 | Priority | Item | Definition of done |
 |---|---|---|
 | P0 | Deploy and verify `ComplianceSource` on Sepolia | Four purpose-built events, tests passing |
-| P0 | KR adapter interface, reconciliation, methods recording | The document and account axes leave their agreement in the evidence. Vendors are mocked and labelled |
+| P0 | KR adapter: document authenticity with the issuing authority, one-won account verification, reconciliation, methods recording | CODEF (정부24 / 교통민원24 진위확인, OCR) and KFTC Open Banking or CODEF for the account, behind `IdDocumentVendor` / `BankAccountVendor`. A bit is set only from a live vendor answer; the evidence records vendor, reference and whether it was live. No mock anywhere in the flow |
 | P0 | AML screening against real OFAC, UN and EU lists | Real BLOCK and ALLOW decisions |
 | P0 | Evidence hash chain into `evidenceHash` | Anyone with a copy can recompute and compare |
 | P0 | ~~Local mock BlockProver harness~~ | Done. `encodedTransaction` is ABI encoded rather than RLP, so synthetic fixtures are possible. `vm.etch` injects the mock in the precompile's place, and the whole path is testable without the eight-minute wait |
@@ -746,10 +760,10 @@ Seven years operating Korea's fourth registered VASP, covering the CEO, complian
 
 | # | Decision | Options | Outcome |
 |---|---|---|---|
-| D1 | Product name | Proofmark, Mapae, AttestKYC | **Proofmark.** For an international product the English name has to carry, and this one comes straight from "proof plus mark", so the name explains the design. Mapae stays in the logo wordmark |
+| D1 | Product name | Proofmark, AttestKYC | **Proofmark**, and only Proofmark. For an international product the English name has to carry, and this one comes straight from "proof plus mark", so the name explains the design. No secondary or Korean name anywhere in the product; an earlier draft had put one in the wordmark without approval, and it was removed |
 | D2 | Track | RWA, DeFi | **RWA** |
 | D3 | Prior project assets | port the code, or carry knowledge only | **knowledge only**, per R4 |
-| D4 | How far the KR adapter integrates | attempt vendor contracts, or interface plus mock | **Interface plus mock, labelled.** An institutional agreement cannot be arranged in fourteen days, and leaving the bit unset makes the lie structurally impossible |
+| D4 | How far the KR adapter integrates | real vendor integrations, or interface plus mock | **Real integrations, no mock.** Document authenticity through CODEF against 정부24 and 교통민원24, the account through KFTC Open Banking (or CODEF), both live in code and tested against the documented wire formats. What fourteen days cannot buy is the commercial side (KFTC 이용기관 registration, the CODEF 제휴 contract), and that shows up honestly as `live = false` from a testbed and a bit left at zero, not as a fake vendor. See section 4.2 |
 | D5 | Second jurisdiction | ePassport NFC, EU, US | **ePassport NFC.** It verifies without a vendor or a jurisdiction dependency, which is the real gateway. P2 |
 | D6 | Team size | one, or several | **Several.** The submission form asks each member for residence and citizenship | 
 | D7 | Which spoke chain | undecided | decide at D-5 |

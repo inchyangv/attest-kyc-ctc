@@ -225,23 +225,35 @@ This section stays. What we did not do is part of what the product is.
 | `SANCTIONS_SCREENED` | yes | 26,566 entries from three real lists |
 | `JURISDICTION_CHECK` | yes | FATF table, marked unverified against the source and recorded that way in evidence |
 | `ONCHAIN_EXPOSURE` | yes | 124 sanctioned wallets from OFAC |
-| `ID_DOC_AUTHENTICITY` | no | Needs an agreement with the issuing authority |
-| `FACE_MATCH`, `LIVENESS` | no | No vendor connected |
-| `BANK_ACCOUNT` | no | One-won transfer needs an open banking partnership |
+| `ID_DOC_AUTHENTICITY` | yes, with the vendor configured | CODEF against 정부24 (주민등록증) or 경찰청 교통민원24 (운전면허증), logged in with the issuer's certificate. `pipeline/adapters/codef.ts` |
+| `BANK_ACCOUNT` | yes, on production rails | Holder name from the bank against the real-name number, then one won with a code the customer reads back. KFTC Open Banking (`pipeline/adapters/openbanking.ts`) or CODEF. The KFTC testbed runs the same API without moving money and is recorded as not live, so it sets nothing |
+| `FACE_MATCH`, `LIVENESS` | no | No face vendor connected |
 | `PEP_SCREENED`, `ADVERSE_MEDIA` | no | Commercial datasets we have not licensed |
+
+The flow is at `/verify`: wallet signature, document photo and OCR, authenticity with the authority (including the captcha or app-approval leg the authority may demand), holder name and the one-won code, then screening and `ComplianceSource.issue()`. Vendor credentials go in `web/.env.example`'s `CODEF_*`, `OPENBANKING_*` and `ISSUER_PRIVATE_KEY`. Without them the step reports which variables are missing.
+
+### Demo mode, and what onboards today
+
+| Axis | Self-service today | How | Result |
+|---|---|---|---|
+| ID document | **yes**: CODEF demo tier + 간편인증 | Sign up at codef.io, apply for the demo service, copy `clientId` / `clientSecret` / `publicKey` from 키 관리. Set `CODEF_ENV=demo`, `CODEF_LOGIN_TYPE=simple`, `CODEF_SIMPLE_LEVEL=1` (카카오톡) and the operator's name, phone and resident number. Each check pops an approval in the operator's app, then 정부24 / 교통민원24 answer for real | live, bit set, regime production |
+| Bank account | testbed only: KFTC Open Banking | Register at developers.kftc.or.kr, create a test app, set `OPENBANKING_*` with `OPENBANKING_ENV=test`. The real API answers with canned data and moves no money | not live |
+| Bank account, real | no: KFTC 이용기관 registration or the CODEF 제휴 contract | weeks, and a contract | live, bit set |
+
+`KYC_DEMO=1` fills any axis that has no real vendor with the built-in demo vendor (`pipeline/adapters/demo.ts`): same inputs, same procedure, no institution asked. The page says so, the one-won code is shown on the page in place of the bank app, the evidence names `demo:*`, and the mark carries `regime = KR_FSC_NONFACE_SANDBOX`. Under demo the bits are set anyway (`KYC_DEMO_BITS=1`), so the flow ends with a mark that passes policy #1; set `KYC_DEMO_BITS=0` to keep them unset. A name containing `위조` is rejected by the demo authority and an account ending in `99` belongs to someone else, so both outcomes can be shown. Real and demo mix per axis: with CODEF configured and no bank vendor, the document is checked for real and the account is demo.
 
 ### The two deployed policies
 
-| policyId | Name | requireAll | Our mark |
+| policyId | Name | requireAll | A mark from the pipeline |
 |---|---|---|---|
-| 1 | KR VASP production | `0x10024`: document authenticity, bank account, sanctions | **fails** |
+| 1 | KR VASP production | `0x10024`: document authenticity, bank account, sanctions | passes only when both regulatory checks ran against live rails |
 | 2 | KR pilot | `0x190001`: wallet control, sanctions, jurisdiction, on-chain exposure | passes |
 
 We did not lower policy 1 to make our own mark pass. A standard you relax to fit yourself is not a standard.
 
-> The mark we issue does not pass the production policy we wrote. That policy asks for document authenticity and bank account verification. We did not run those checks, so we did not set those bits, and the system reports it.
+> The mark deployed on CC3 today was issued before the vendors were wired and does not pass the production policy. It says so on `/onchain`. A mark issued through `/verify` with CODEF on demo or production and Open Banking on production carries both bits and passes.
 
-That is the design, not a gap. An unconnected check is a zero bit, and a zero bit is what lets a consumer policy reject the mark. `pipeline/integration.test.ts` also proves the reverse: connect the vendors and production passes. Nothing is blocked by construction.
+That is the design. A check that did not run, or ran against a testbed, is a zero bit, and a zero bit is what lets a consumer policy reject the mark. `pipeline/pipeline.test.ts` pins every case: no vendor, a sandbox answer, an authority that says no, a code never read back.
 
 ### Other limits
 
@@ -286,6 +298,7 @@ That last one exists because the first PII check reported clean and was wrong. T
 | `docs/04-event-schema.md` | The four source events |
 | `docs/05-asc-integration-review.md` | `ASCBase` integration review |
 | `docs/06-worker-design.md` | Worker design |
+| `docs/07-kyc-vendors.md` | KYC vendors: what is real, what is demo, how to connect each |
 | `web/DESIGN.md` | Design system |
 
 ## Originality
