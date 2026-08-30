@@ -1,24 +1,24 @@
-# 내결함성 워커 설계
+# Fault-tolerant worker
 
-> 작성일 2026-08-30 · 소유자 Tech Lead
-> 근거: [`02-loan-flow-analysis.md`](02-loan-flow-analysis.md) §7 (예제 워커의 프로덕션 갭) · [`01-env-verification.md`](01-env-verification.md) §5 (SDK 취약성 실측)
+> 2026-08-30 · Tech Lead
+> Background: [`02-loan-flow-analysis.md`](02-loan-flow-analysis.md) section 7 on the example worker's production gaps, and [`01-env-verification.md`](01-env-verification.md) section 5 on the measured SDK failure.
 
 ---
 
-## 1. 왜 예제를 복사하지 않았는가
+## 1. Why we did not copy the example
 
-예제 워커(`loan-flow/worker.ts`)는 교육용으로 명시돼 있고, 실제로 다음 문제가 있다.
+The example worker (`loan-flow/worker.ts`) is labelled educational, and it behaves like it.
 
-| 예제의 문제 | 결과 | 본 워커의 대응 |
+| Problem in the example | Result | What this worker does |
 |---|---|---|
-| 상태가 전부 in-memory | 재시작 시 이벤트 **영구 무시** | `Store` — 파일 영속, 원자적 쓰기 |
-| 시작 블록이 `getBlockNumber()` | 다운타임 중 이벤트 **영구 유실** | 커서 영속 + 재시작 이어받기 |
-| 중복 캐시 1000건 넘으면 통째 clear | 중복 처리 | 작업별 상태를 영구 보관 |
-| 재시도 없음 (`catch { console.error }`) | 조용한 유실 | 지수 백오프 + 데드레터 |
-| 순차 await | 8분 대기가 서로를 블로킹 | 작업별 독립 처리 (동시성 8) |
-| **SDK `waitUntilHeightAttested`** | **8분 대기 후 타임아웃 1회에 전량 손실** | 폴링 호출 자체를 재시도로 감쌈 |
+| All state in memory | A restart ignores events permanently | `Store`, file-backed with atomic writes |
+| Start block from `getBlockNumber()` | Events during downtime are lost for good | Persisted cursor, resumes where it stopped |
+| Dedupe cache cleared wholesale past 1000 entries | Duplicate processing | Per-job state kept permanently |
+| No retry (`catch { console.error }`) | Silent loss | Exponential backoff plus a dead letter state |
+| Sequential await | One eight-minute wait blocks the others | Independent jobs, concurrency 8 |
+| **SDK `waitUntilHeightAttested`** | **Eight minutes of waiting lost to one timeout** | Every poll wrapped in its own retry |
 
-### 마지막 항목이 가장 중요하다 — 실측된 실패
+### The last row is the one that matters, and we measured it
 
 ```
 Waiting for block 11597452 attestation on Creditcoin...
@@ -26,53 +26,52 @@ Error: Failed to fetch attested height: AxiosError: timeout of 10000ms exceeded
   at ApiClient.<anonymous> (@gluwa/usc-sdk/dist/proof-provider/service/index.js:90:27)
 ```
 
-`waitUntilHeightAttested()`는 15초 간격 폴링 루프를 돌지만 **그 안의 HTTP 호출(10초 타임아웃)이 실패하면
-예외가 루프 밖으로 튀어나온다.** 폴링 자체에는 재시도가 없다.
+`waitUntilHeightAttested()` polls every 15 seconds, but the HTTP call inside that loop carries a 10-second timeout and no retry. When it fails the exception escapes the loop and the wait is gone.
 
-> 🔑 **핵심 통찰: 어테스트는 체인의 성질이지 프로세스의 성질이 아니다.**
-> 소스 tx 는 계속 유효하므로 재시도는 **언제나 안전하다.** 포기할 이유가 없다.
-> `AttestationWatcher.waitFor()` 는 개별 폴링 실패를 흡수하고 무한히 기다린다.
+> **Attestation is a property of the chain, not of our process.** The source transaction stays valid, so retrying is always safe and there is never a reason to give up. `AttestationWatcher.waitFor()` absorbs individual poll failures and keeps waiting.
 
 ---
 
-## 2. 구조
+## 2. Layout
 
 ```
 worker/
-  config.ts       환경변수 로딩·검증
-  log.ts          타임스탬프 로거
-  retry.ts        Backoff · withRetry  ← SDK 취약성 대응의 핵심
-  store.ts        파일 영속 상태 (원자적 쓰기)
-  attestation.ts  어테스트 대기 (SDK 대체)
-  proof.ts        증명 획득 + queryId 계산
-  abi.ts          forge 산출물에서 ABI 로딩 (단일 정본)
-  worker.ts       스캔 + 처리 루프
-  index.ts        엔트리 + 그레이스풀 셧다운
+  config.ts       environment loading and validation
+  log.ts          timestamped logger
+  retry.ts        Backoff and withRetry, the answer to the SDK problem
+  store.ts        file-backed state, atomic writes
+  attestation.ts  attestation wait, replacing the SDK path
+  proof.ts        proof retrieval and queryId computation
+  abi.ts          ABIs read from the forge build output
+  worker.ts       scan and process loops
+  index.ts        entry point and graceful shutdown
 ```
 
-## 3. 작업 수명주기
+## 3. Job lifecycle
 
 ```
-discovered ──(어테스트 대기)──▶ attested ──(증명)──▶ submitted ──▶ done
-     │                                                   │
-     └──────────── skipped (이미 처리된 쿼리) ◀───────────┘
-     └──────────── dead (maxAttempts 초과 · C1 위반)
+discovered ──(wait for attestation)──▶ attested ──(proof)──▶ submitted ──▶ done
+     │                                                            │
+     └──────────── skipped (query already processed) ◀────────────┘
+     └──────────── dead (past maxAttempts, or a C1 violation)
 ```
 
-**작업 단위 = 소스 트랜잭션 1건.** `queryId`가 tx 단위이므로 `execute()`도 tx 당 1회다.
-한 tx 의 로그 N개는 ASC 가 한 번에 순회 처리한다.
+**One job is one source transaction.** `queryId` is per transaction, so `execute()` runs once per transaction and the ASC walks all N logs inside it.
 
-## 4. 핵심 방어
+## 4. The guards that matter
 
-### 4.1 커서 전진 순서
+### 4.1 Cursor advances last
+
 ```ts
 const found = await this.scanRange(from, to);
-this.store.setCursor(to);   // ★ 작업이 전부 영속화된 뒤에만 전진
+this.store.setCursor(to);   // only after every job in the range is persisted
 ```
-먼저 전진시키면 크래시 시 그 구간을 영원히 놓친다. 커서는 되돌아가지도 않는다.
 
-### 4.2 멱등 — 가스를 태우지 않는다
-ASC 가 `processedQueries` 로 이미 막지만, 워커도 **제출 전에 조회**해 실패할 tx 를 아예 보내지 않는다.
+Advance it first and a crash loses that range forever. The cursor also never moves backwards.
+
+### 4.2 Idempotence, so no gas is wasted
+
+The ASC already blocks a repeat through `processedQueries`, but the worker checks before submitting so a doomed transaction is never sent.
 
 ```ts
 const txIndex = txIndexFromProof(proof.merkleProof.siblings);
@@ -80,160 +79,152 @@ const queryId = computeQueryId(proof.chainKey, proof.headerNumber, txIndex);
 if (await this.asc.processedQueries(queryId)) { /* skipped */ }
 ```
 
-`computeQueryId` 는 `ASCBaseX._computeQueryId` 와 **바이트 단위로 동일**해야 한다.
-레이아웃(총 72바이트)을 양쪽에서 검증한다:
+`computeQueryId` has to match `ASCBaseX._computeQueryId` byte for byte. Both sides verify the 72-byte layout.
 
-| 범위 | 내용 |
+| Range | Contents |
 |---|---|
 | `[0..32)` | `uint256(chainKey)` |
-| `[32..40)` | `uint64 blockHeight` (big-endian) |
+| `[32..40)` | `uint64 blockHeight`, big-endian |
 | `[40..72)` | `uint256(txIndex)` |
 
-- Solidity: `test/QueryId.t.sol` — 퍼즈 256런 + 고정 벡터
-- TypeScript: `worker/worker.test.ts` — **같은 고정 벡터**로 대조
+- Solidity: `test/QueryId.t.sol`, 256 fuzz runs plus a fixed vector
+- TypeScript: `worker/worker.test.ts`, checked against the same fixed vector
   `0x6ca17d0e6939c57d0d71f9b17302db50a70d50e09c6144c362cadd1850a36159`
 
-### 4.3 기동 시 설정 정합성 검사
+### 4.3 Configuration check at startup
+
 ```ts
 if (Number(expectedKey) !== cfg.chainKey) throw …
 if (srcAddr.toLowerCase() !== cfg.sourceAddress.toLowerCase()) throw …
 ```
-ASC 가 신뢰하는 소스와 워커가 감시하는 소스가 다르면 **증명을 아무리 제출해도 전부 revert 된다.**
-8분씩 태우기 전에 기동 시점에 죽는 편이 낫다.
 
-### 4.4 리오그 여유
-헤드에서 `WORKER_CONFIRMATIONS`(기본 4) 블록 뒤까지만 확정으로 본다.
-어테스트 자체가 파이널리티를 요구하므로 큰 값은 불필요하다.
+If the source the ASC trusts differs from the source the worker watches, every proof reverts. Dying at startup beats burning eight minutes to find out.
 
-### 4.5 C1 위반 탐지
-한 tx 에 서로 다른 종류의 ASC 이벤트가 섞이면 하나만 처리되고 나머지는 **영구 봉인**된다
-([`04-event-schema.md`](04-event-schema.md) §0). 우리 `ComplianceSource` 는 그런 tx 를 만들지 않으므로,
-발견되면 **설계 위반**이다 — 조용히 넘기지 않고 `dead` 로 표시하고 에러 로그를 남긴다.
+### 4.4 Reorg headroom
 
-### 4.6 실패 격리
-작업 하나가 죽어도 큐의 나머지는 계속 돈다. `maxAttempts` 초과 시 `dead` 로 격리하고 사람이 보게 한다.
+Blocks are treated as final only once they are `WORKER_CONFIRMATIONS` behind head, default 4. Attestation already requires finality, so a larger value buys nothing.
+
+### 4.5 C1 violation detection
+
+Mixed ASC event kinds in one transaction mean one gets processed and the rest are sealed permanently ([`04-event-schema.md`](04-event-schema.md) section 0). Our `ComplianceSource` never produces such a transaction, so seeing one means something upstream is wrong. The worker marks the job `dead` and logs an error rather than passing over it.
+
+### 4.6 Failure isolation
+
+One failing job does not stop the queue. Past `maxAttempts` it becomes `dead` and waits for a human.
 
 ---
 
-## 5. 실행
+## 5. Running it
 
 ```sh
-forge build                 # ABI 산출 (워커가 out/ 에서 읽는다)
-npm run worker              # 기동
-npm run worker:test         # 유닛테스트 11건
+forge build                 # produces the ABIs the worker reads from out/
+npm run worker
+npm run worker:test         # 11 unit tests
 npm run typecheck
 ```
 
-필요한 환경변수는 `.env.example` 참조. 배포 후 `SOURCE_CONTRACT_ADDRESS` / `ASC_CONTRACT_ADDRESS` 를 채운다.
+`.env.example` lists what is needed. Fill in `SOURCE_CONTRACT_ADDRESS` and `ASC_CONTRACT_ADDRESS` after deployment.
 
-## 6. 실전 검증 — 실발급 E2E 성공 (2026-08-30)
+## 6. Verified against the deployed contracts
 
-배포된 컨트랙트에 대해 워커가 전 구간을 자동 처리했다.
+The worker handled the whole path unattended, twice.
 
-| 단계 | 값 |
+| Step | Synthetic mark (2026-08-30) | Honest mark (2026-08-31) |
+|---|---|---|
+| Sepolia `issue()` | `0x93e4f981…9a01`, block 11,597,799, 27,933 gas | `0xa251db9d…baea`, block 11,602,963 |
+| Worker sees it | 86 seconds | 110 seconds |
+| Attestation completes | 6m 30s (39 blocks) | 8m 50s (33 blocks) |
+| CC3 `execute()` | `0xe0f8f6d4…`, 386,008 gas | `0x8e96ce1f…`, 388,696 gas |
+| `isVerified` true | 7m 55s | 10m 48s |
+
+```
+✓ ASC configuration matches
+found MarkIssued x1 in tx 0xa251db9d... (block 11602963)
+waiting for block 11602963 to be attested. Latest 11602930, 33 blocks behind (~6.6 min)
+✓ block 11602963 attested (latest 11602970)
+✓ applied MarkIssued x1, gas 388696
+```
+
+Everything the design promised held: the startup check on `expectedChainKey` and `sourceContract`, absorbed polling failures, the pre-submission idempotence check, and a persisted cursor.
+
+### What the first run did not prove
+
+> The first mark's `methods` were hand-authored rather than produced by the pipeline. `0x19003f` claimed `ID_DOC_AUTHENTICITY`, `FACE_MATCH`, `LIVENESS` and `BANK_ACCOUNT`, and none of those checks ran.
+
+| Proven | Not proven |
 |---|---|
-| Sepolia `issue()` | tx `0x93e4f981…9a01` · block 11,597,799 · gas **27,933** |
-| **워커 감지** | 발급 후 **86초** |
-| 어테스트 완료 | 발급 후 **6분 30초** (39블록) |
-| CC3 `execute()` 제출 | tx `0xe0f8f6d4…` · gas **386,008** |
-| `isVerified` → true | 발급 후 **7분 55초** |
-| `note.mint` 성공 | tx `0x8f6789cf…c138` · 잔고 1.0 KRCN |
+| Cross-chain integrity, every field intact | That any identity screening happened |
+| Worker resilience across detect, wait and submit | That the `methods` bits were true |
+| The gate responds (`isVerified` then `note.mint`) | Pipeline honesty |
+| Propagation of 7m 55s | |
+
+That mark was revoked on 2026-08-30, reason `ISSUER_ERROR`, propagating back in 8m 43s. A mark claiming checks that never ran is exactly what this product exists to stop, so leaving it on our own testnet was not an option.
+
+The second run fixed the gap. The pipeline produced `0x190001` with no vendors connected, which passes the pilot policy and fails production, and that is what reached Creditcoin.
+
+### Cross-chain integrity, field by field
 
 ```
-✓ ASC 설정 일치 확인
-발견 MarkIssued ×1 — tx 0x93e4f981… (블록 11597799)
-블록 11597799 어테스트 대기 — 현재 11597760, 39블록 뒤 (약 7.8분)
-✓ 블록 11597799 어테스트 완료 (최신 11597800)
-✓ 반영 완료 MarkIssued ×1 — gas 386008
+status 1 ACTIVE   origin 1 Direct   kind 1   assurance 1   regime 2 sandbox   jurisdiction 410
+methods 0x190001   epoch 0
+claimsRoot   0x6e7b9593…05c9   matches what was issued
+evidenceHash 0x3f976d2f…47d7   matches what was issued
 ```
 
-**설계대로 동작한 것:** 기동 시 `expectedChainKey`/`sourceContract` 선검사 · 어테스트 폴링 실패 흡수 ·
-제출 전 멱등 확인 · 커서 영속.
+> `origin = 1 (Direct)` came from the ASC, not the source event (`ProofmarkASC.sol:149`). Keeping it out of the packed attrs is what stops an issuer claiming roster provenance it never earned, and the on-chain value confirms the decision.
 
-### ⚠️ 이 E2E 가 증명한 것과 증명하지 않은 것
+### Attestation latency is a range
 
-> **이 마크의 `methods` 는 손으로 만든 값이다.** 파이프라인이 실제 심사를 거쳐 산출한 값이 아니다.
-> `0x19003f` 에는 `ID_DOC_AUTHENTICITY` · `FACE_MATCH` · `LIVENESS` · `BANK_ACCOUNT` 가 들어 있지만
-> **그 확인들은 실제로 수행되지 않았다.**
-
-| 증명한 것 | 증명하지 않은 것 |
+| Observation | Latency |
 |---|---|
-| 크로스체인 무결성 (전 필드 온전 전달) | 실제 신원 심사가 있었다는 것 |
-| 워커 내결함성 (감지·대기·제출 자동화) | `methods` 비트의 진실성 |
-| 게이트 반응 (`isVerified` → `note.mint`) | 파이프라인 정직성 (§ [`04`](04-event-schema.md) 아님 — `pipeline/` 이 담당) |
-| 전파 지연 7분 55초 | |
+| Hello Bridge, 8/30 | 8.5 min (42 blocks) |
+| Synthetic mark E2E, 8/30 | 6.5 min (39 blocks) |
+| Honest mark E2E, 8/31 | 8.8 min (33 blocks) |
 
-→ 이 마크는 **폐기(`revoke`)** 한다. 우리 제품이 존재하는 이유가 "하지 않은 확인을 주장하는 마크"를 막는 것인데,
-   그런 마크를 우리 테스트넷에 남겨둘 수는 없다 (§15-4 · §15-7).
-   부수효과로 §10 대본 8번(폐기 → 게이트 재차단)이 온체인으로 증명된다.
-
-### 크로스체인 무결성 — 전 필드 일치
-```
-status 1(ACTIVE) · origin 1(Direct) · kind 1 · assurance 2 · regime 1 · jurisdiction 410
-methods 0x19003f · epoch 0 · issuer 0xFD12…bD5E
-claimsRoot   0xd78af317…bca97  ✓ 발급 원본과 일치
-evidenceHash 0xfab21992…297a  ✓ 발급 원본과 일치
-```
-
-> `origin = 1(Direct)` 는 소스 이벤트가 아니라 **ASC 가 쓴 값**이다(`ProofmarkASC.sol:149`).
-> 팩킹에 넣지 않은 판단이 온체인으로 증명됐다 — 발급사가 출처를 위조 주장할 수 없다.
-
-### ⏱ 어테스트 지연은 고정값이 아니다
-
-| 관측 | 지연 |
-|---|---|
-| Hello Bridge (8/30) | **8.5분** (42블록) |
-| 실발급 E2E (8/30) | **6.5분** (39블록) |
-
-**관측 범위 6.5–8.5분.** 문서·덱에 단일 값을 쓰지 말고 **범위로** 적는다.
-데모 영상 편집 시에도 최악값(8.5분+)을 기준으로 잡는다.
+**6.5 to 8.8 minutes across three observations.** Documents and the deck quote the range, never a single figure. Video editing assumes the worst case.
 
 ---
 
-## 7. ⚠️ 운영 함정 두 가지
+## 7. Two operational traps
 
-### 7.1 커서 — 워커를 먼저 띄워야 한다
-`WORKER_START_BLOCK=0` 이면 커서가 **현재 헤드**에서 시작한다.
-`issue()` 를 먼저 보내면 워커가 그 이벤트를 보지 못한다.
+### 7.1 Start the worker before issuing
 
-- (권장) **워커 기동 → 그다음 발급**
-- 이미 발급했다면 `WORKER_START_BLOCK=<발급 직전 블록>` 설정 후 `rm -f state/worker.json`
+With `WORKER_START_BLOCK=0` the cursor begins at the current head. Issue first and the worker never sees the event.
 
-> 데모 리허설에서 가장 걸리기 쉬운 지점이다.
+- Start the worker, then issue.
+- If you already issued, set `WORKER_START_BLOCK=<block before issuance>` and `rm -f state/worker.json`.
 
-### 7.2 `getMark` 필드 순서 — `origin` 이 두 번째다
+This is the easiest thing to get wrong in a demo rehearsal.
 
-`Mark` 구조체는 `status, **origin**, kind, assurance, …` 순이다.
-`origin` 을 빼먹고 읽으면 값이 한 칸씩 밀려서, `evidenceHash` 의 마지막 20바이트가
-`address` 로 찍혀 **"issuer 가 이상한 값"처럼 보인다.** 실제로 한 번 걸렸다.
+### 7.2 `origin` is the second field of `getMark`
 
-README·재현 절차에는 **정확한 ABI 시그니처를 함께** 적는다:
+The `Mark` struct runs `status, origin, kind, assurance, …`. Omit `origin` from the ABI and every field shifts by one, which prints the last 20 bytes of `evidenceHash` as an address and makes `issuer` look corrupted. We hit this once.
+
+The README and any reproduction steps carry the full signature:
+
 ```sh
 cast call $ASC \
   "getMark(address)((uint8,uint8,uint8,uint8,uint16,uint16,uint32,uint40,uint40,uint32,bytes32,bytes32,address))" \
   $SUBJECT --rpc-url $CREDITCOIN_RPC_URL
 ```
 
-> 그리고 `cast call` 에는 **항상 `--from`** 을 붙인다. 없으면 `msg.sender=0` 이라
-> `onlyOwner` 가 먼저 걸려 `OwnableUnauthorizedAccount(0x118cdaa7)` 가 나오는데,
-> 이걸 게이트 동작으로 오해하기 쉽다 (진짜 게이트는 `RecipientNotVerified` = `0x17887111`).
+> Always pass `--from` to `cast call`. Without it `msg.sender` is zero, `onlyOwner` fires first, and `OwnableUnauthorizedAccount` (`0x118cdaa7`) is easy to mistake for the gate working. The gate's own rejection is `RecipientNotVerified` (`0x17887111`).
 
 ---
 
-## 8. 검증 상태
+## 8. Verification status
 
 | | |
 |---|---|
-| 워커 유닛테스트 | **11 passed** (queryId 3 · txIndex 2 · Store 5 · Backoff 1) |
-| 타입체크 | ✅ 오류 없음 |
-| 컨트랙트 테스트 | **36 passed** (QueryId 2 포함) |
+| Worker unit tests | **11 passed** (queryId 3, txIndex 2, Store 5, Backoff 1) |
+| Typecheck | clean |
+| Contract tests | **45 passed** |
 
-> 타입체크가 실제 버그를 하나 잡았다 — `this.src`(provider)와 `this.source`(contract) 혼동.
-> 로그 스캔이 통째로 동작하지 않았을 코드였다.
+> The typecheck caught a real bug along the way: `this.src` (provider) confused with `this.source` (contract). Log scanning would not have worked at all.
 
-## 9. 남은 것
+## 9. Remaining
 
-- [x] ~~배포 후 실제 주소로 E2E 1회~~ ✅ 성공 (§6)
-- [ ] 데드레터 재처리 CLI (`--retry-dead`)
-- [ ] 메트릭 노출 (처리 지연 p50/p95 — 기획안 §14 KPI)
-- [ ] Mode B(에폭) 경로는 `RosterEpochPublished` 액션 3으로 이미 지원. ASC 측 핸들러만 P1
+- [x] ~~One E2E against the deployed addresses~~ done twice, section 6
+- [ ] Dead-letter reprocessing CLI (`--retry-dead`)
+- [ ] Metrics for processing latency, p50 and p95, feeding the KPIs in the plan
+- [ ] Mode B is already wired on the source side as action 3, `RosterEpochPublished`. The ASC handler is P1.
