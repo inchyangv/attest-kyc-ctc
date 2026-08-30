@@ -26,3 +26,7 @@ state/
 # 제재 명단 원본 (57MB) — aml/fetch-lists.sh 로 받는다
 data/raw/
 state/
+.vercel
+
+# deck render cache
+docs/deck/.DS_Store
