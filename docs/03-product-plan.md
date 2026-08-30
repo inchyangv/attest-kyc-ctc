@@ -1,127 +1,127 @@
-# 기획안 — Proofmark: 국제 KYC·AML 증명 레이어 (크로스체인)
+# Proofmark: a cross-chain KYC and AML attestation layer
 
-> 작성일 2026-08-30 · 문서 소유자 Tech Lead / PO · 대상 [BUIDL CTC 2026 Fall](00-hackathon-brief.md) (D-14)
-> 선행 문서: [`00-hackathon-brief.md`](00-hackathon-brief.md) · [`01-env-verification.md`](01-env-verification.md) *(실측치 반영 완료)*
-> 팀 선행 자산: `../../stabled-gasok` (호패 / GIWA·EAS) — **지식만 이전, 코드는 새로 쓴다** (§11 R4)
+> 2026-08-30 · Tech Lead / PO · For [BUIDL CTC 2026 Fall](00-hackathon-brief.md)
+> Prerequisites: [`00-hackathon-brief.md`](00-hackathon-brief.md), [`01-env-verification.md`](01-env-verification.md)
+> Prior team work: an EAS-based compliance layer on GIWA. Knowledge carried over, code did not (section 11, R4).
 >
-> **이 문서의 지위:** 제품 정의·아키텍처·스코프의 정본. 리서치가 갱신되면 §13 대조표를 먼저 고치고 그 결과로 §9 스코프를 조정한다.
-> 표기 규칙: 실측은 그대로, 추정은 `추정`, 미검증 가정은 `가정`, 계약 전 가격은 `가설`.
+> **Status:** the canonical document for product, architecture and scope. When research changes, fix the mapping in section 13 first and let section 9 follow.
+> Notation: measurements stand as written; estimates are marked `estimate`; unverified assumptions are marked `assumed`.
 
 ---
 
-## 1. 한 문단 요약
+## 1. In one paragraph
 
-**어느 나라에서 어떤 방법으로 신원확인을 했는지를 기계 판독 가능한 형태로 이더리움에 발급하고, 그것을 중앙 오라클 없이 Creditcoin에서 수학적으로 검증해, 모든 체인이 읽을 수 있게 만드는 국제 KYC·AML 증명 레이어.** 개인정보는 온체인에 1바이트도 올리지 않는다. 남는 것은 "이 지갑은 KYC를 정상 완료했다"는 **마크(mark)** 와, 그것이 실제로 발급됐다는 **프루프(proof)** 뿐이다.
+An international KYC and AML attestation layer. It issues, on Ethereum and in machine-readable form, which country verified an identity and by what method; Creditcoin verifies that issuance mathematically with no oracle operator in between; any chain can read the result. Not one byte of personal data goes on chain. What remains is a **mark** saying the wallet completed KYC, and a **proof** that the mark was really issued.
 
-핵심 설계 명제 하나로 국제화가 갈린다:
+One design proposition decides whether this works across borders:
 
-> **"KYC 완료"는 국경을 넘으면 의미가 고정되지 않는다. 그래서 마크에는 결론이 아니라 *수행한 확인 행위*를 싣는다. 등가성 판정은 우리가 아니라 소비자(dApp)가 자기 관할의 정책으로 한다.**
+> "KYC complete" does not carry a fixed meaning across borders. So the mark carries the checks that were performed rather than a verdict, and each consumer decides equivalence under its own jurisdiction's policy.
 
-첫 번째 관할 어댑터는 **한국**이다: **신분증 인증 → 계좌 인증(1원 송금)**. 이 조합은 금융위 「비대면 실명확인 방안」의 복수확인 요건에 대응하는 실제 절차이고, 그대로 다른 관할 어댑터를 끼울 수 있는 인터페이스가 된다.
+The first jurisdiction adapter is Korea: ID document verification, then bank account verification through a one-won transfer. That pairing satisfies the two-check requirement in the FSC's non-face-to-face identification guidance, and the same interface takes any other jurisdiction's adapter.
 
-| 항목 | 값 |
+| Item | Value |
 |---|---|
-| 제품명 (권고) | **Proofmark** — 레포·기술명 `attest-kyc` · 한국어 서사 보조 "마패" (§16 D1) |
-| 한 줄 | 한 번 검증하고, 증명으로 건너가고, 모든 체인에서 확인한다 |
-| 영문 | *Prove your compliance once. Carry it to every chain.* |
-| 트랙 (권고) | **RWA** (§12) |
-| 소스 체인 | Ethereum **Sepolia** — chainKey **`1`** (실측 확인, chainId 11155111과 다름) |
-| 검증 허브 | Creditcoin **CC3 Testnet** (chainId 102031) — ASC + BlockProver |
-| Attestcoin 축 | **Readability** (Writability는 로드맵) |
-| 온체인 개인정보 | **0 바이트** |
-| 첫 관할 | **KR** — 신분증 인증 + 계좌 인증 |
+| Product name | **Proofmark**. Repository and technical name `attest-kyc` |
+| One line | Verify once, carry the result by proof, check it on any chain |
+| Tagline | Prove your compliance once. Carry it to every chain. |
+| Track | **RWA**, section 12 |
+| Source chain | Ethereum Sepolia, chainKey `1`. Confirmed at runtime, and not the same as chainId 11155111 |
+| Verification hub | Creditcoin CC3 Testnet, chainId 102031, through the ASC and BlockProver |
+| Attestcoin axis | Readability. Writability is roadmap |
+| On-chain personal data | zero bytes |
+| First jurisdiction | KR: ID document plus bank account |
 
 ---
 
-## 2. 문제 — 컴플라이언스는 국경과 체인, 두 번 갈라진다
+## 2. The problem splits twice: once per chain, once per border
 
-### 2.1 체인마다 다시 짓는다
+### 2.1 Rebuilt on every chain
 
-| 현재 선택지 | 무엇이 문제인가 |
+| Option today | What breaks |
 |---|---|
-| ① 체인마다 KYC를 다시 짓는다 | 벤더 최소약정·수개월 구축·**개인정보 처리자 지위**가 체인 수만큼 곱해진다. 사용자는 같은 신분증을 N번 올린다 |
-| ② 중앙 서명 서버가 "검증됨" 서명을 발급 | 키 하나가 전체 신뢰의 단일 실패점. 규제기관에 "왜 이 서명을 믿어야 하나"를 설명할 수 없다 |
-| ③ 브릿지/릴레이어가 미러링 | 릴레이어를 믿는 것이 곧 컴플라이언스를 믿는 것. 신뢰를 옮겼을 뿐 없애지 못했다 |
+| Build KYC again on each chain | Vendor minimums, months of integration and data-controller obligations all multiply by the number of chains. The user uploads the same document N times |
+| A central server signs "verified" | One key becomes the whole security model, and there is no good answer to a regulator asking why that signature should be believed |
+| A bridge or relayer mirrors the state | Trusting the relayer becomes trusting the compliance. The trust moved rather than disappeared |
 
-### 2.2 나라마다 다르게 부른다 — 국제화의 진짜 장벽
+### 2.2 Every country means something different by it
 
-같은 "KYC 완료"라는 라벨이 관할마다 전혀 다른 확인 행위를 가리킨다.
+The same label points at different work depending on where you are.
 
-| 관할 | 요구하는 확인 행위 (요지) |
+| Jurisdiction | What it requires |
 |---|---|
-| 한국 | 비대면 실명확인 — 신분증 사본·영상통화·접근매체 전달 시 확인·기존계좌 활용 중 **2가지 이상 중첩** + 특금법 CDD |
-| EU | AMLD 고객확인 + eIDAS 신뢰수준(Low/Substantial/High) `가정` |
-| 미국 | CIP — 이름·생년월일·주소·식별번호(SSN/ITIN) 확보 및 검증 |
-| FATF 공통 | R.10 CDD / EDD, R.16 트래블룰 |
+| Korea | Non-face-to-face identification: at least two of document image, video call, verification on delivery of an access device, or use of an existing account, plus CDD under the FIU act |
+| EU | AMLD customer due diligence plus an eIDAS assurance level, low, substantial or high `assumed` |
+| US | CIP: collect and verify name, date of birth, address and an identification number |
+| FATF, everywhere | R.10 CDD and EDD, R.16 travel rule |
 
-**그래서 "KYC 완료 = true" 하나만 온체인에 올리면 국경을 넘는 순간 쓸모가 없어진다.** 한국 dApp에는 충분하지만 EU 규제 대상 dApp에는 근거가 되지 못하고, 반대도 마찬가지다. 지금까지의 온체인 신원 프로젝트가 국지적으로만 작동한 이유가 여기 있다.
+Put a single boolean on chain and it stops being useful the moment it crosses a border. It satisfies a Korean dApp and gives an EU-regulated one nothing to stand on, and the reverse holds too. That is why on-chain identity projects have stayed local.
 
-### 2.3 우리의 답
+### 2.3 Our answer
 
-**결론을 싣지 말고 증거를 실어라.** 마크에는 `methods`(수행한 확인 행위 비트맵) · `regime`(어느 규제 체계 하에서) · `jurisdiction` · `assurance`(발급사 자체 등급)를 담는다. 소비자가 자기 정책으로 통과 여부를 판단한다. 우리는 **"한국 KYC = EU KYC"라고 주장하지 않는다.** 무엇을 실제로 했는지를 기계 판독 가능하게 게시할 뿐이다.
+Carry the evidence, not the conclusion. The mark holds `methods`, a bitmap of the checks performed, `regime`, the framework they ran under, `jurisdiction`, and `assurance`, the issuer's own grade. The consumer applies its policy and decides. We never claim Korean KYC equals EU KYC. We publish what was done, in a form a contract can read.
 
-이 설계는 두 가지를 동시에 얻는다 — 국제 상호운용성, 그리고 법적 안전성(등가성 주장을 하지 않는다).
+That buys two things at once: portability across regimes, and legal safety, because no equivalence is asserted.
 
 ---
 
-## 3. 제품 — 무엇을 만드는가
+## 3. What gets built
 
-### 3.1 세 개의 명사
+### 3.1 Three nouns
 
-| 이름 | 정의 | 어디에 있나 |
+| Name | Definition | Where it lives |
 |---|---|---|
-| **마크 (Mark)** | 어떤 관할에서 어떤 방법으로 확인했고 언제까지 유효한지 — 공개적으로 볼 수 있는 전부 | 이더리움(원본) + Creditcoin(검증된 정본) |
-| **프루프 (Proof)** | 3층: ① 증적 프루프(오프체인 심사 ↔ 온체인 마크 결속) ② **크로스체인 프루프(Attestcoin)** ③ 선택공개/ZK 프루프(선택) | ①해시 ②Attestcoin ③사용자 브라우저 |
-| **명부 (Roster)** | 특정 에폭의 전체 유효 상태 집합. 루트 하나로 표현 | 이더리움에 게시 → Creditcoin이 검증 |
+| **Mark** | Which jurisdiction verified what, by which method, and until when. This is everything the public sees | Ethereum as origin, Creditcoin as the verified record |
+| **Proof** | Three layers: an evidence proof binding the offline screening to the on-chain mark, the Attestcoin cross-chain proof, and optional selective disclosure | hashes, Attestcoin, the user's browser |
+| **Roster** | The full set of valid state at an epoch, expressed as one root | published on Ethereum, verified on Creditcoin |
 
-### 3.2 사용자 여정 — 한국 경로 (첫 어댑터)
+### 3.2 The user journey, Korean path
 
 ```
-0. 지갑 연결 → 소유권 서명 (EIP-4361, TTL 10분, 원문에 주소·동의문 버전·claimsRoot 결속)
-1. [신분증 인증]  신분증 촬영 → OCR → 진위확인 조회 → 얼굴 대조 + 라이브니스
-2. [계좌 인증]    본인 명의 계좌에 1원 송금 → 예금주 실명 ↔ 신분증 성명 대조
-                  → 여기까지가 금융위 비대면 실명확인의 "복수 확인" 조합 ①+④
-3. [맵핑 대사]    입력 개인정보 ↔ 신분증 정보 ↔ 예금주 정보 — 세 축이 모두 일치해야 통과
-4. [AML 심사]     제재명단 대사 · 관할 · 온체인 노출 · 위험등급 산정 → 만료일 결정
-5. [커밋먼트]     브라우저가 각 claim에 salt 부여 → claimsRoot 계산.
-                  ★ 서버로 나가는 것은 32바이트. 원본 PII는 발급사 금고에만.
-6. [발급]         Sepolia ComplianceSource.issue(...) → 마크 + 전용 이벤트 emit
-7. [크로스체인]   어태스트 대기(실측 ~8분) → 증명 획득 → Creditcoin ASC가 검증
-8. [사용]         어느 체인의 dApp이든 isVerified(wallet, policy) 한 줄
+0. connect wallet, sign ownership (EIP-4361, 10 min TTL, binding address, consent version and claimsRoot)
+1. [ID document]  capture, OCR, authenticity lookup, face match and liveness
+2. [bank account] one-won transfer, account holder name compared with the document name
+                  this pair satisfies the FSC two-check requirement
+3. [reconcile]    declared details, document, account holder. All three must agree
+4. [AML]          sanctions lists, jurisdiction, on-chain exposure, risk band, which sets expiry
+5. [commitment]   the browser salts each claim and computes claimsRoot.
+                  32 bytes reach the server. The originals stay in the issuer's vault
+6. [issue]        Sepolia ComplianceSource.issue(...), emitting the mark event
+7. [cross-chain]  wait for attestation, about 8 min, fetch the proof, the ASC verifies
+8. [use]          any dApp on any chain calls isVerified(wallet, policy)
 ```
 
-**3번이 사용자가 지시한 설계의 핵심이다** — 개인정보와 신분증정보(그리고 계좌 명의)를 맵핑해 일치를 확인하고, **그 "일치했다"는 사실만** 프루프와 마크로 온체인에 남긴다.
+Step 3 is the heart of it. Declared details, document and account holder are reconciled, and only the fact that they agreed reaches the chain as a proof and a mark.
 
-### 3.3 프라이버시 경계 (협상 불가)
+### 3.3 The privacy boundary, which does not move
 
-| 보는 주체 | 볼 수 있는 것 |
+| Who | Sees |
 |---|---|
-| 누구나 (온체인) | 지갑 · kind · assurance · **methods 비트맵** · regime · jurisdiction · 만료 · 발급자 · 에폭 · claimsRoot · evidenceHash + 이더리움에서 실제 발급됐다는 증명 |
-| dApp | `isVerified(W, policy) → bool`. 그 외 아무것도 |
-| 이용자 본인 | 자기 크리덴셜 원본(브라우저 로컬) · 선택공개 가능 |
-| 감사인·규제기관 (계약·영장) | 발급사 오프체인 증적 전문. 온체인 `evidenceHash`와 대조해 위변조 없음 입증 |
-| **아무도** | 온체인에서 개인정보 역산 — salt 커밋먼트라 구조적으로 불가 |
+| Anyone, on chain | wallet, kind, assurance, the methods bitmap, regime, jurisdiction, expiry, issuer, epoch, claimsRoot, evidenceHash, and the proof it was issued on Ethereum |
+| A dApp | `isVerified(W, policy)` returning a bool, and nothing else |
+| The user | their own credential, held locally, with selective disclosure available |
+| An auditor or regulator, under contract or warrant | the issuer's full offline evidence, checkable against the on-chain `evidenceHash` |
+| Nobody | reverses personal data out of the chain. Salted commitments make it structurally impossible |
 
 ---
 
-## 4. 검증 방법 체계 — 국제화의 실체
+## 4. The method system, which is what makes it portable
 
-### 4.1 methods 비트맵 (마크에 실리는 것)
+### 4.1 The methods bitmap
 
 ```solidity
-// 확인 행위 — "무엇을 했는가"
-uint32 constant M_WALLET_CONTROL      = 1 << 0;  // 지갑 소유권 서명
-uint32 constant M_ID_DOC_IMAGE        = 1 << 1;  // 신분증 사본 제출
-uint32 constant M_ID_DOC_AUTHENTICITY = 1 << 2;  // 발급기관 진위확인 조회
-uint32 constant M_FACE_MATCH          = 1 << 3;  // 신분증 사진 ↔ 얼굴 대조
-uint32 constant M_LIVENESS            = 1 << 4;  // 생체 라이브니스
-uint32 constant M_BANK_ACCOUNT        = 1 << 5;  // 계좌 실명 대조 (1원 송금 등)
-uint32 constant M_MOBILE_CARRIER      = 1 << 6;  // 통신사 본인확인
-uint32 constant M_VIDEO_CALL          = 1 << 7;  // 영상통화
-uint32 constant M_IN_PERSON           = 1 << 8;  // 대면
-uint32 constant M_EPASSPORT_NFC       = 1 << 9;  // 전자여권 칩 판독 + 발급국 서명 검증
-uint32 constant M_GOV_EID             = 1 << 10; // 정부 전자신원 (eIDAS 등)
-// 심사 행위 — "무엇을 걸렀는가"
+// identity checks: what was done
+uint32 constant M_WALLET_CONTROL      = 1 << 0;  // wallet ownership signature
+uint32 constant M_ID_DOC_IMAGE        = 1 << 1;  // document image submitted
+uint32 constant M_ID_DOC_AUTHENTICITY = 1 << 2;  // authenticity checked with the issuer
+uint32 constant M_FACE_MATCH          = 1 << 3;  // face compared to the document photo
+uint32 constant M_LIVENESS            = 1 << 4;  // liveness
+uint32 constant M_BANK_ACCOUNT        = 1 << 5;  // account holder name, via a one-won transfer
+uint32 constant M_MOBILE_CARRIER      = 1 << 6;  // mobile carrier identification
+uint32 constant M_VIDEO_CALL          = 1 << 7;  // video call
+uint32 constant M_IN_PERSON           = 1 << 8;  // in person
+uint32 constant M_EPASSPORT_NFC       = 1 << 9;  // ePassport chip read, issuer signature verified
+uint32 constant M_GOV_EID             = 1 << 10; // government eID such as eIDAS
+// screening: what was filtered
 uint32 constant M_SANCTIONS_SCREENED  = 1 << 16;
 uint32 constant M_PEP_SCREENED        = 1 << 17;
 uint32 constant M_ADVERSE_MEDIA       = 1 << 18;
@@ -129,70 +129,70 @@ uint32 constant M_JURISDICTION_CHECK  = 1 << 19;
 uint32 constant M_ONCHAIN_EXPOSURE    = 1 << 20;
 ```
 
-**왜 비트맵인가:** 등급 하나는 국경을 못 넘지만, 확인 행위 목록은 넘는다. EU dApp이 한국 발급 마크를 보고 "진위확인 + 계좌 실명 + 라이브니스가 다 있으니 우리 기준으로 Substantial에 해당한다"고 **스스로** 판단할 수 있다.
+**Why a bitmap.** A single grade does not cross a border; a list of checks does. An EU dApp can look at a Korean mark, see document authenticity, account verification and liveness, and decide for itself that this meets substantial under its own rules.
 
-### 4.2 한국 어댑터 (KR) — 첫 구현
+### 4.2 The Korean adapter
 
-| 단계 | 확인 행위 | 금융위 「비대면 실명확인 방안」 대응 | 세팅되는 비트 |
+| Step | Check | FSC guidance | Bits set |
 |---|---|---|---|
-| 0 | 지갑 소유권 서명 | (규제 요건 아님 — 본 제품 고유) | `WALLET_CONTROL` |
-| 1 | **신분증 인증** | ① 신분증 사본 제출 | `ID_DOC_IMAGE` `ID_DOC_AUTHENTICITY` `FACE_MATCH` `LIVENESS` |
-| 2 | **계좌 인증** (1원 송금) | ④ 기존 계좌 활용 | `BANK_ACCOUNT` |
-| 3 | AML 심사 | 특금법 CDD | `SANCTIONS_SCREENED` `JURISDICTION_CHECK` `ONCHAIN_EXPOSURE` |
+| 0 | Wallet ownership signature | not a regulatory requirement, ours | `WALLET_CONTROL` |
+| 1 | ID document | method 1, document image | `ID_DOC_IMAGE` `ID_DOC_AUTHENTICITY` `FACE_MATCH` `LIVENESS` |
+| 2 | Bank account, one-won transfer | method 4, use of an existing account | `BANK_ACCOUNT` |
+| 3 | AML screening | CDD under the FIU act | `SANCTIONS_SCREENED` `JURISDICTION_CHECK` `ONCHAIN_EXPOSURE` |
 
-**①+④ 중첩 = 복수 확인 요건 대응.** 이 조합을 `regime = KR_FSC_NONFACE` 로 표기한다.
+Methods 1 and 4 together satisfy the two-check requirement. The mark records that pairing as `regime = KR_FSC_NONFACE`.
 
-> ⚠️ 신분증 진위확인 API와 1원 송금은 **기관 계약·오픈뱅킹 제휴가 필요**하다. 14일 안에 계약은 불가능하다. 따라서 **어댑터 인터페이스와 methods 기록·증적은 실제로 구현하되, 벤더 호출은 모의(sandbox) 구현으로 두고 화면·문서·마크에 "미연동"을 명시한다.** 이것이 호패에서 이어받은 정직성 원칙(§15-4)이고, 마크에 해당 비트를 세우지 않는 방식으로 **거짓말이 구조적으로 불가능**하게 만든다 — 연동 안 된 확인은 비트가 0이므로 소비자 정책에서 자동으로 걸린다.
+> The authenticity API and the one-won transfer both need institutional agreements and an open banking partnership, which cannot be arranged in fourteen days. So the adapter interface, the methods recording and the evidence are all real, while the vendor calls run in sandbox mode and every surface says so. Not setting the bit is what makes the lie structurally impossible: an unconnected check leaves a zero, and a consumer policy filters on it automatically.
 
-### 4.3 국제 확장 어댑터 (로드맵)
+### 4.3 Other jurisdictions, on the roadmap
 
-| 관할 | 어댑터 | 우선순위 | 비고 |
+| Jurisdiction | Adapter | Priority | Note |
 |---|---|---|---|
-| **KR** | 신분증 진위확인 + 1원 송금 | 1st (본 대회) | 팀의 실운영 경험이 있는 유일한 관할 |
-| **Global** | **전자여권 NFC (ICAO 9303)** | 2nd | 칩 데이터가 발급국 CSCA 서명으로 보호됨 → **관할 무관·벤더 무관 오프라인 검증 가능**. 국제 KYC의 만능키이자 우리가 제휴 없이 구현 가능한 가장 강한 검증 |
-| EU | eIDAS 노드 · 은행 ID (iDIN·itsme) | 3rd | |
-| US | CIP (SSN/ITIN 대사) | 3rd | |
-| JP·SG·기타 | 개별 | 4th | |
+| **KR** | document authenticity plus one-won transfer | first, this competition | the only jurisdiction the team has operated in |
+| **Global** | ePassport NFC, ICAO 9303 | second | The chip data is signed by the issuing country's CSCA, so it verifies offline with no vendor and no jurisdiction dependency. It is the strongest check we can build without a partnership |
+| EU | eIDAS nodes, bank ID such as iDIN or itsme | third | |
+| US | CIP, matching SSN or ITIN | third | |
+| JP, SG, others | case by case | fourth | |
 
-### 4.4 소비자 정책 (dApp이 등록)
+### 4.4 Consumer policies, registered by the dApp
 
 ```solidity
 struct Policy {
-    uint32   requireAll;    // 이 비트가 전부 있어야 통과 (AND)
-    uint32   requireAny;    // 이 중 하나 이상 (OR)
+    uint32   requireAll;    // every one of these bits must be present
+    uint32   requireAny;    // at least one of these
     uint8    minAssurance;
-    uint40   maxAge;        // 마크 신선도 상한
+    uint40   maxAge;        // freshness ceiling
     uint16[] allowedRegimes;
-    uint16[] deniedJurisdictions;   // FATF 고위험 관할 등
+    uint16[] deniedJurisdictions;   // FATF high-risk jurisdictions and the like
 }
 ```
 
-- 한국 VASP: `requireAll = ID_DOC_AUTHENTICITY | BANK_ACCOUNT | SANCTIONS_SCREENED`
-- EU RWA 발행사: `requireAll = LIVENESS | SANCTIONS_SCREENED | PEP_SCREENED`, `requireAny = EPASSPORT_NFC | GOV_EID`
-- 게임 dApp: `requireAll = SANCTIONS_SCREENED` 만
+- A Korean VASP: `requireAll = ID_DOC_AUTHENTICITY | BANK_ACCOUNT | SANCTIONS_SCREENED`
+- An EU RWA issuer: `requireAll = LIVENESS | SANCTIONS_SCREENED | PEP_SCREENED`, `requireAny = EPASSPORT_NFC | GOV_EID`
+- A game: `requireAll = SANCTIONS_SCREENED` and nothing more
 
-**P0에서는 `requireAll + maxAge` 단순형만 구현하고, 나머지는 P1.**
+P0 implements `requireAll` and `maxAge`. The rest is P1.
 
-### 4.5 AML 명단 — 처음부터 국제
+### 4.5 AML lists, international from the start
 
-| 명단 | 관할 | 상태 |
+| List | Jurisdiction | Status |
 |---|---|---|
-| OFAC SDN | US | 팀 보유 (호패에서 파이프라인 검증) |
-| UN Consolidated | UN | 보유 |
-| EU FSF | EU | 보유 |
-| UK HMT / OFSI | UK | 추가 예정 |
-| 금융위 지정 명단 | KR | 기계 판독 배포본 부재 — 수기 적재 검토 |
-| PEP · adverse media | 상용 | 로드맵 (데이터 계약 필요) |
+| OFAC SDN | US | loaded |
+| UN Consolidated | UN | loaded |
+| EU FSF | EU | loaded |
+| UK HMT / OFSI | UK | planned |
+| FSC designated list | KR | no machine-readable distribution, manual loading under review |
+| PEP and adverse media | commercial | roadmap, needs a data agreement |
 
-호패에서 실측된 파이프라인 성능(코퍼스 재현율 99.5% · 특이도 100% · 한글↔로마자 전개 처리)은 **지식으로 이전**하고 코드는 새로 쓴다.
+Pipeline knowledge from the earlier project carried over: normalisation rules, the Hangul romanisation path, and how to score without wrecking specificity. The code did not.
 
 ---
 
-## 5. 아키텍처
+## 5. Architecture
 
 ```
-┌─ Ethereum Sepolia (chainKey 1 · 발급의 원본) ─────────────────────┐
-│  ComplianceSource.sol        ← dApp당 소스 컨트랙트 1개 (모범사례)│
+┌─ Ethereum Sepolia (chainKey 1, where issuance happens) ───────────┐
+│  ComplianceSource.sol        one source contract per dApp         │
 │   ├ issue()        → MarkIssued(subject,kind,assurance,methods,   │
 │   │                             regime,jurisdiction,expiry,       │
 │   │                             claimsRoot,evidenceHash)          │
@@ -202,123 +202,123 @@ struct Policy {
 │                                           validUntil)             │
 └──────────────────────────────┬────────────────────────────────────┘
                                │ (watch)
-┌─ Offchain (발급사) ───────────┴────────────────────────────────────┐
-│  ① 관할 어댑터: KR(신분증→계좌) · [로드맵] ePassport NFC · eIDAS   │
-│  ② 맵핑 대사: 입력 PII ↔ 신분증 ↔ 예금주 3축 일치                  │
-│  ③ AML 심사: 명단 적재/정규화/매칭 → 판정 · 위험등급 · 만료        │
-│  ④ 증적: 단계별 append-only 해시체인 → evidenceHash(head)          │
-│  ⑤ 에폭 빌더: 정렬 머클트리 → 루트 게시                            │
-│  ⑥ Attestcoin 워커: waitUntilHeightAttested → getProof → ASC       │
-│  ⑦ 재대사 데몬: 활성 명부 재심사 → 적중 시 폐기 레인               │
+┌─ Offchain (the issuer) ───────┴────────────────────────────────────┐
+│  1 jurisdiction adapter: KR document then account; later NFC, eIDAS│
+│  2 reconciliation across declared, document and account holder     │
+│  3 AML: load, normalise, match, decide, risk band, expiry          │
+│  4 evidence: append-only hash chain, head becomes evidenceHash     │
+│  5 epoch builder: sorted-key Merkle tree, publishes the root       │
+│  6 worker: wait for attestation, fetch proof, submit to the ASC    │
+│  7 rescreening daemon: re-check the active roster, revoke on a hit │
 └──────────────────────────────┬────────────────────────────────────┘
                                │ merkleProof + continuityProof
-┌─ Creditcoin CC3 (검증 허브 · 기록의 정본) ───────────────────────┐
+┌─ Creditcoin CC3 (verification hub, the chain of record) ─────────┐
 │  ProofmarkASC.sol                                                │
-│   ├ BlockProver(0x…0FD2) 동기 검증 · verifyBatch 우선            │
-│   ├ 소스 컨트랙트·chainKey 고정 검증 · 재생 방지                 │
+│   ├ synchronous BlockProver verification at 0x…0FD2              │
+│   ├ pinned source contract and chainKey, replay guard            │
 │   ├ epochRoots[epoch] · latestEpoch · epochValidUntil            │
-│   ├ tombstone[subject]  ← 폐기·제재 즉시 반영 (에폭 무관)        │
-│   └ marks[subject]      ← 물질화된 캐시                          │
-│  ProofmarkRegistry.sol — isVerified(W,policy) / isDenied / 증명검증│
-│  GatedRwaNote.sol      — 정책 통과자끼리만 이전되는 RWA 데모 토큰 │
+│   ├ tombstone[subject]  revocation and sanctions, epoch-independent│
+│   └ marks[subject]      materialised cache                       │
+│  ProofmarkRegistry.sol   isVerified / isDenied / proof mode       │
+│  GatedRwaNote.sol        RWA note, movable only between passers   │
 └──────────────────────────────┬────────────────────────────────────┘
-                               │ 허브에 대조 가능
-┌─ Spoke Chains (읽기 표면) ────┴────────────────────────────────────┐
-│  ProofmarkMirror.sol + @proofmark/sdk + 증명 서빙 REST API        │
+                               │ checkable against the hub
+┌─ Spoke chains (read surface) ─┴────────────────────────────────────┐
+│  ProofmarkMirror.sol + @proofmark/sdk + a proof-serving REST API  │
 └───────────────────────────────────────────────────────────────────┘
 ```
 
-### 5.1 컴포넌트
+### 5.1 Components
 
-| 레이어 | 컴포넌트 | 책임 | 스코프 |
+| Layer | Component | Responsibility | Scope |
 |---|---|---|---|
-| L0 | `ComplianceSource.sol` (Sepolia) | 발급·폐기·제재·에폭 게시. **전용 이벤트만** (표준 `Transfer` 류 금지) | P0 |
-| L1 | 관할 어댑터 · 맵핑 대사 · AML · 증적 · 에폭빌더 · 워커 | 신뢰의 실체 | P0 |
-| L2 | **`ASCBaseX.sol` — `ASCBase` 포크** | `_processAndEmitEvent`에 `chainKey`·`blockHeight` 전달. 증명검증·queryId·재생방지는 원본 그대로 유지 | **P0 (보안 필수)** |
-| L2 | `ProofmarkASC.sol` (CC3) | Attestcoin 증명 검증 + 상태기계 + 순서 커서 | P0 |
-| L2 | `ProofmarkRegistry.sol` | dApp이 부르는 유일한 표면 | P0 |
-| L3 | `GatedRwaNote.sol` | "빼면 무너진다"를 눈으로 | P0 |
-| L4 | `@proofmark/sdk` + 증명 REST API | 통합 30분 | P1 |
-| L5 | `ProofmarkMirror.sol` (스포크) | 멀티체인 주장의 실물 | P1 |
-| L6 | 선택공개 / ZK 속성 증명 | 성년·거주국 등 | P2 |
+| L0 | `ComplianceSource.sol` on Sepolia | Issue, revoke, sanction, publish epochs. Purpose-built events only, never a generic `Transfer` | P0 |
+| L1 | Jurisdiction adapter, reconciliation, AML, evidence, epoch builder, worker | Where the trust actually lives | P0 |
+| L2 | `ASCBaseX.sol`, the `ASCBase` fork | Passes `chainKey` and `blockHeight` to `_processAndEmitEvent`. Verification, queryId and replay protection stay as the original | P0, security |
+| L2 | `ProofmarkASC.sol` on CC3 | Proof verification, state machine, ordering cursor | P0 |
+| L2 | `ProofmarkRegistry.sol` | The only surface a dApp calls | P0 |
+| L3 | `GatedRwaNote.sol` | Makes the removal test visible | P0 |
+| L4 | `@proofmark/sdk` and a proof REST API | Integration in half an hour | P1 |
+| L5 | `ProofmarkMirror.sol` on a spoke | Substance behind the multichain claim | P1 |
+| L6 | Selective disclosure and ZK attribute proofs | Age, residence and similar | P2 |
 
-### 5.2 반영 모드 — **에폭 배치가 선택이 아니라 필수다**
+### 5.2 Two application modes
 
-> ⚠️ **2026-08-30 갱신 — 전제가 두 번 바뀌었다 (E2E 실측 완료).** ① 파우셋 실수령은 README의 100 CTC가 아니라 **10,000 CTC**. ② 쿼리 실단가는 추정한 11 CTC가 아니라 **0.0002 CTC**(가스만, 394,982 gas @ 0.5 gwei). 잔고 차감액이 가스비와 정확히 일치해 **별도 오라클 수수료는 없었다**. 즉 테스트넷 자원 제약은 존재하지 않는다.
+> **The premise changed twice, and measurement settled it.** The faucet gave 10,000 CTC rather than the README's 100. A query costs 0.0002 CTC in gas alone, 394,982 gas at 0.5 gwei, not the 11 CTC we had estimated, and the balance change matched the gas exactly, so no separate oracle fee exists. There is no testnet resource constraint.
 >
-> 따라서 "쿼리가 없어서 배치한다"는 논거는 **완전히 폐기**한다. 남는 배치 근거는 메인넷 원가와 운영 복잡도다 — 다만 아래 ❗를 볼 것.
+> "We batch because queries are scarce" is therefore withdrawn entirely.
 
-> ✅ **확정 (8/30) — 우리 제품은 무료 경로 위에 있다.** attestcoin.org 공식: *"Reading other chains stays free… Every time an app sends action across chains, it pays in ATC."* 우리 제품은 전부 **Readability**이고, 실측에서도 `execute()` 차감액이 가스비와 정확히 일치했다(별도 수수료 0). → **§14의 'ATC 지속 수요원' 논거는 폐기했다.** 유료인 것은 Writability(개발 중)다. **읽기가 무료라는 건 우리에게 불리한 사실이 아니라 dApp 통합에 조회 비용 장벽이 없다는 뜻이다** — 없는 토큰 수요를 지어내는 것보다 채택 논거로 쓰는 편이 실사에서 강하다(§15-7).
+> **Settled: the product sits on the free path.** attestcoin.org states "Reading other chains stays free. Every time an app sends action across chains, it pays in ATC." Everything we do is readability, and the measurement agrees. The claim in section 14 about creating ATC demand is withdrawn; what costs ATC is writability, still in development. Free reads are not a fact against us. They mean a dApp integrates with no per-query cost, and saying that plainly beats inventing token demand.
 
-**배치의 진짜 근거는 Creditcoin이 아니라 이더리움 L1이다.** CC3 제출은 0.0002 CTC라 무시할 수 있지만, 발급 자체는 **L1 tx**다. 사용자 10만 명이면 L1 트랜잭션 10만 건이고 그 가스는 어떤 시장 상황에서도 발급사가 문다. 에폭 루트는 **L1 쓰기를 사용자 수와 무관하게 고정**시킨다 — 10만 명이든 1명이든 에폭당 tx 1건이다.
+**What drives batching is Ethereum L1, not Creditcoin.** The CC3 submission costs 0.0002 CTC and can be ignored. Issuance itself is an L1 transaction, and a hundred thousand users means a hundred thousand of them, with the issuer paying that gas in any market. An epoch root fixes L1 writes independently of user count: one transaction per epoch whether it covers one subject or a hundred thousand.
 
-부차적으로 운영 측면도 같은 방향을 가리킨다: 제출 tx마다 8~10분 어테스트 대기와 실패 재시도가 붙으므로, **지연과 운영 복잡도가 사용자 수에 비례**하는 구조는 제품이 될 수 없다.
+Operations point the same way. Every submission carries an eight to ten minute attestation wait and its retries, so a design whose latency and operational load scale with user count does not become a product.
 
-> 이 논거는 실측(CC3 수수료 없음)에 기반하고 미확인 ATC 가정에 의존하지 않는다. 그래서 앞의 ❗가 어떻게 결론 나든 **무너지지 않는다.**
+> This argument rests on measurement rather than an unverified assumption, so it survives whatever the ATC question turns out to be.
 
-| | Mode A — 개별 증명 | Mode B — 에폭 명부 |
+| | Mode A, individual proof | Mode B, epoch roster |
 |---|---|---|
-| 증명 대상 | `MarkIssued` 이벤트 1건 | `RosterEpochPublished` 루트 1건 |
-| 크로스체인 쓰기 | 사용자당 1건 | **에폭당 1건 (사용자 수 무관)** |
-| 사용자 10만 명 반영 시 | **L1 발급 tx 100,000건** + CC3 제출 100,000건 | **L1 tx 에폭 수만큼** (하루 8회면 8건) + CC3 8건 |
-| 폐기 표현 | 별도 이벤트 필요 | **루트에서 빠지면 끝** |
-| 지연 | 파이널리티 + 어태스트(~8분) | 에폭 주기 + ~8분 |
-| 용도 | 긴급 폐기 · 첫 발급 즉시 사용 | **정상 운영 경로** |
+| What is proven | one `MarkIssued` event | one `RosterEpochPublished` root |
+| Cross-chain writes | one per user | one per epoch, regardless of user count |
+| At 100,000 users | 100,000 L1 issuance transactions plus 100,000 CC3 submissions | one L1 transaction per epoch, eight a day, plus eight on CC3 |
+| Expressing revocation | needs its own event | falling out of the root is the whole mechanism |
+| Latency | finality plus attestation, about 8 min | epoch interval plus about 8 min |
+| Used for | urgent revocation, and a fresh mark usable immediately | the normal operating path |
 
-> **"왜 배치하는가"의 답이 취향이 아니라 프로토콜 경제다.** 읽기 무료·쓰기 유료라는 ATC 설계를 읽고 나온 구조이고, 사용자 수와 무관하게 비용이 고정된다. 이건 심사에서 통합 깊이를 증명하는 가장 강한 서술이다 — 프로토콜을 써 본 사람만 하는 설계다.
+> The answer to "why batch" is cost, not taste. The design comes from reading how the protocol charges, and it fixes cost independently of user count. That is the strongest evidence of integration depth we can offer, because it is a design only someone who has used the protocol arrives at.
 
-**폐기 다발은 `verifyBatch`가 아니라 tx당 다중 로그로 처리한다.** 실측 확인: `verifyBatch`는 SDK·프리컴파일에만 있고 `ASCBase.execute()`는 단일 증명만 받는다. 반면 `EvmV1Decoder.getLogsByEventSignature()`는 매칭 로그를 **배열 전체로** 반환한다 — 예제가 `logs[0]`만 쓰는 것은 주석에 명시된 단순화지 제약이 아니다.
+**Bursts of revocations go through multiple logs in one transaction, not `verifyBatch`.** Checked against the code: `verifyBatch` exists in the SDK and the precompile but not in `ASCBase`, and `execute()` takes a single proof. Meanwhile `EvmV1Decoder.getLogsByEventSignature()` returns every matching log as an array. The example reading only `logs[0]` is a simplification its own comment admits to.
 >
-> → 소스 컨트랙트에 `revokeBatch()`를 두어 **한 tx에 N개 이벤트를 emit**하면, `queryId`가 tx 단위이므로 `execute()` **1회로 N건**이 반영된다. `ASCBase` 포크 없이 얻어지는 이득이다.
+> Put `revokeBatch()` on the source contract, emit N events in one transaction, and because `queryId` is per transaction one `execute()` applies all N. This works without forking `ASCBase`.
 
 ---
 
-## 6. 데이터 모델
+## 6. Data model
 
-### 6.1 클레임 커밋먼트
+### 6.1 Claim commitments
 
 ```
 claim_i     = (key, value, salt_i)        // ("dob","1990-01-01",0x…), ("idDocHash",…), ("accountHolder",…)
 leaf_i      = keccak256(abi.encode(key, value, salt_i))
 claimsRoot  = MerkleRoot(sorted(leaf_1..leaf_n))
-evidenceHash= H(prevHash ‖ stepPayload)   // 심사 단계별 append-only 체인의 head
+evidenceHash= H(prevHash ‖ stepPayload)   // head of the append-only chain, one entry per step
 ```
-`salt`는 사용자 브라우저에만 남는다. 선택공개는 `(key,value,salt,경로)` 제시 → `claimsRoot` 대조.
+The salts stay in the user's browser. Selective disclosure means presenting `(key, value, salt, path)` and checking it against `claimsRoot`.
 
-### 6.2 온체인 마크
+### 6.2 The on-chain mark
 
 ```solidity
 struct Mark {
     uint8   status;        // 1 ACTIVE · 2 REVOKED · 3 DENIED · 4 SUSPENDED
     uint8   kind;          // 1 INDIVIDUAL · 2 ENTITY · 3 SANCTION
-    uint8   assurance;     // 발급사 자체 등급 1..5 (등가성 주장 아님)
-    uint16  regime;        // 어느 규제 체계 하에서 수행했는가 (예: KR_FSC_NONFACE)
-    uint16  jurisdiction;  // ISO-3166 numeric (발급 관할)
-    uint32  methods;       // ★ 수행한 확인 행위 비트맵 — 국제 상호운용의 핵심
+    uint8   assurance;     // issuer's own grade 1..5, not a claim of equivalence
+    uint16  regime;        // which framework the checks ran under, e.g. KR_FSC_NONFACE
+    uint16  jurisdiction;  // ISO-3166 numeric, the issuing jurisdiction
+    uint32  methods;       // bitmap of checks performed, what makes the mark portable
     uint40  issuedAt;
-    uint40  expiry;        // 위험등급이 결정 (밴드 1~5 → 365~30일)
+    uint40  expiry;        // set by risk band, 365 days at band 1 down to 30 at band 5
     uint32  epoch;
     bytes32 claimsRoot;
     bytes32 evidenceHash;
     address issuer;
 }
 ```
-**이름·생년월일·신분증번호·계좌번호는 없다. 앞으로도 없다.**
+No name, no date of birth, no document number, no account number. That does not change.
 
-### 6.3 명부 트리 — 음의 사실을 증명해야 한다
+### 6.3 The roster tree, which has to prove a negative
 
-진짜 난제는 "발급됐다"가 아니라 **"폐기되지 않았다 / 제재 명단에 없다"** 다. 포함 증명은 쉽지만 비포함 증명은 자료구조가 결정한다.
+The hard part is not proving a mark was issued. It is proving it was not revoked and is not on a sanctions list. Membership proofs are easy; non-membership is decided by the data structure.
 
-| 후보 | 비포함 증명 | 깊이 | 판단 |
+| Candidate | Non-membership | Depth | Verdict |
 |---|---|---|---|
-| 평범한 머클트리 | 불가 | log n | 화이트리스트 전용으로만 성립 |
-| **정렬 키 머클트리 (인접 증명)** | `leaf_i.key < target < leaf_{i+1}.key` | ~20 (100만건) | **채택** — 가스 저렴, 구현 명료 |
-| Sparse Merkle Tree | 기본 리프로 자연 지원 | 160~256 | 검증 가스 과다 |
+| Plain Merkle | not possible | log n | works only as a whitelist |
+| Sorted-key Merkle with adjacency proofs | `leaf_i.key < target < leaf_{i+1}.key` | about 20 at a million entries | chosen: cheap to verify, clear to implement |
+| Sparse Merkle | natural, through default leaves | 160 to 256 | verification costs too much gas |
 
-리프 = `H(subjectKey ‖ markHash)`, `subjectKey = keccak256(chainNamespace ‖ subject)` — CAIP-10 형태로 비EVM 확장 여지를 남긴다.
-**폴백(D-6 판단):** 시간이 부족하면 화이트리스트만 루트로 다루고 폐기·제재는 전부 툼스톤 이벤트로. 기능은 유지되고 쿼리 비용만 오른다.
+A leaf is `H(subjectKey ‖ markHash)` with `subjectKey = keccak256(chainNamespace ‖ subject)`, CAIP-10 shaped so non-EVM subjects remain possible.
+**Fallback.** If time runs short, keep only the whitelist in the root and express revocation and sanctions through tombstone events. The functionality survives; the query cost rises.
 
-### 6.4 판정 규칙 (fail-closed 4원칙 — 전부 컨트랙트 강제)
+### 6.4 Decision rules, fail closed and enforced in the contract
 
 ```
 isVerified(W, policy) =
@@ -327,153 +327,153 @@ isVerified(W, policy) =
   &&  marks[W].assurance >= policy.minAssurance
   &&  marks[W].expiry > block.timestamp
   &&  block.timestamp - marks[W].issuedAt <= policy.maxAge
-  &&  tombstone[W] == 0                    // 폐기·제재가 항상 이긴다
-  &&  _fresh(W, policy)                      // 출처에 따라 다르다 — 아래
+  &&  tombstone[W] == 0                    // revocation and sanctions always win
+  &&  _fresh(W, policy)                      // depends on provenance, see below
 ```
 
-**출처(provenance)에 따라 신선도 규칙이 다르다.** 이 구분이 없으면 Mode A로 물질화된 마크가 에폭 검사에서 전부 탈락한다 (에폭이 없으므로).
+**Freshness depends on provenance.** Without that split, every mark materialised through Mode A fails the epoch check, because it has no epoch.
 
 ```
 _fresh(W, policy) =
-   marks[W].origin == Roster                    // Mode B — 명부 스냅샷
+   marks[W].origin == Roster                    // Mode B, a roster snapshot
      ? marks[W].epoch == latestEpoch && block.timestamp < epochValidUntil
-     : !policy.requireRoster                    // Mode A — 개별 증명
+     : !policy.requireRoster                    // Mode A, an individual proof
 ```
 
-| 출처 | 무엇을 보장하나 | 무엇을 보장 못 하나 |
+| Provenance | Guarantees | Does not guarantee |
 |---|---|---|
-| **Direct** (Mode A) | "L1 블록 N에서 실제로 발급됐다" — 증명된 과거 사실. 우리가 게시를 멈춰도 낡지 않는다 | 그 뒤의 폐기가 **크로스체인으로 제출되지 않았으면** 모른다. 툼스톤은 제출된 것만 반영한다 |
-| **Roster** (Mode B) | 에폭 시점의 **유효 집합 전체** — 빠진 자는 폐기된 자다 | 에폭 주기만큼 늦다 |
+| **Direct**, Mode A | The mark was issued at L1 block N, a proven past fact. It does not go stale when we stop publishing | A later revocation that was never submitted cross-chain. Tombstones reflect only what arrived |
+| **Roster**, Mode B | The full valid set at that epoch. Whoever is missing has been revoked | Freshness beyond one epoch interval |
 
-→ `Policy.requireRoster`를 둔다. 고위험 dApp은 명부 기반만 받고, 저위험은 개별 증명도 받는다. **Direct가 Roster보다 약한 보장이라는 사실을 정책으로 드러내지, 코드로 감추지 않는다.**
+Hence `Policy.requireRoster`. A high-risk dApp accepts roster-backed marks only; a low-risk one takes individual proofs. Direct being the weaker guarantee is stated in the policy rather than buried in code.
 
-1. **명부가 만료되면 전원 미검증.** "모르면 통과"는 없다.
-2. **deny > allow.** 툼스톤은 어떤 에폭 루트보다 우선한다.
-3. **신선하지 않은 캐시는 참이 아니다** — 재물질화를 요구한다.
-4. **에폭은 단조 증가.** 롤백은 명시적 거버넌스 경로로만.
+1. **An expired roster verifies nobody.** Unknown is never a pass.
+2. **Deny beats allow.** A tombstone outranks any epoch root.
+3. **A stale cache is not a truth.** It has to be re-materialised.
+4. **Epochs increase monotonically.** A rollback needs an explicit governance path.
 
-### 6.5 dApp 통합 표면
+### 6.5 What a dApp integrates against
 
-| 모드 | 호출 | 특징 |
+| Mode | Call | Character |
 |---|---|---|
-| **캐시 모드** | `isVerified(W, policyId)` | 스토리지 읽기. **누구나** `materialize(W, mark, proof)`로 채울 수 있다(퍼미션리스) → 발급사가 게을러도 게이트가 열리지 않는다 |
-| **증명 모드** | `verifyWithProof(W, mark, proof, epoch, policyId)` | 상태 쓰기 없이 항상 최신. 고위험 거래용 |
+| Cache | `isVerified(W, policyId)` | A storage read. Anyone can fill the cache through `materialize(W, mark, proof)`, so an inattentive issuer never leaves a gate stuck open |
+| Proof | `verifyWithProof(W, mark, proof, epoch, policyId)` | Always current, writes no state. For high-value transactions |
 
 ---
 
-## 7. 핵심 난제와 해법 (심사위원이 물어볼 것)
+## 7. The hard parts, and what we did about them
 
-| # | 난제 | 해법 | 남는 한계 (문서에 명시) |
+| # | Problem | Approach | What remains |
 |---|---|---|---|
-| 1 | **관할별 KYC 정의 불일치** | §4 — 결론이 아니라 `methods` 비트맵을 싣고 등가성 판정은 소비자에게 | 우리는 등가성을 보증하지 않는다. 그게 의도다 |
-| 2 | **음의 사실 증명** | 에폭 명부 루트(§6.3) + 툼스톤 우선순위 | 에폭 주기 내 공백은 툼스톤 레인이 메운다 |
-| 3 | **전파 지연** | **실측 어태스트 지연 8.2분** + 파이널리티. 숨기지 않고 제품 파라미터로 공개 | 실시간 차단이 필요하면 소스 체인에서 직접 게이트해야 한다 |
-| 4 | **쓰기 원가** — 사용자당 쓰기 1건은 메인넷에서 성립 불가 | Mode B 에폭 배치 + `verifyBatch`. 비용이 사용자 수와 무관해진다 | 에폭 주기만큼 반영이 늦다 (§7-2 툼스톤 레인이 보완) |
-| 5 | 신선도 | 에폭마다 `validUntil` 게시 → 만료 시 fail-closed | 발급사가 멈추면 게이트가 닫힌다(안전한 실패) |
-| 6 | 미러 체인 신뢰 | 스포크 루트는 허브의 Attestcoin 검증 루트와 대조 가능. 불일치는 누구나 반증 | 반증 인센티브(슬래싱)는 로드맵 |
-| 7 | 재생 공격 | `ASCBase`가 이미 `queryId = keccak256(chainKey, blockHeight, txIndex)`로 막는다 (실측 확인). 우리는 여기에 소스 주소 고정을 더한다 | 같은 tx의 재제출만 막는다 — 아래 13·14는 별개 문제 |
-| **13** | **chainKey 위조** — 핸들러가 어느 체인에서 온 증명인지 모른다 | `ASCBase._processAndEmitEvent(action, queryId, tx)`에 `chainKey`·`blockHeight`가 **전달되지 않는다**(코드 확인). CC3는 chainKey 1(Sepolia)과 3(메인넷)을 동시 지원하므로, 동일 주소 컨트랙트가 메인넷에 있으면 거기서 발행한 이벤트가 통과한다. **`CREATE2` 결정적 배포를 쓰면 공격자가 메인넷에 먼저 같은 주소를 점유할 수 있다** | **`ASCBase` 포크로 시그니처 확장 + `require(chainKey == EXPECTED)`. P0** |
-| **14** | **순서 역전** — 폐기된 마크가 부활한다 | 제출이 permissionless이고 순서 강제가 없다. `MarkIssued`(block 100)를 `MarkRevoked`(block 200) **뒤에** 제출하면 ACTIVE로 되돌아간다. queryId가 달라 재생 방지에 안 걸리고 둘 다 정당한 증명이다 | `mapping(bytes32 => uint64) lastAppliedHeight` 커서로 역행 거부. **`blockHeight`가 핸들러에 있어야 하므로 13과 같은 포크로 해결. P0** |
-| 8 | 더스팅 그리핑 (제재 주소가 1 wei 보내 남의 인증을 끔) | 온체인 노출 판정에서 송신/수신 구분 | — |
-| 9 | 키 리스크 | 발급키·에폭키·오너키 3분리 + 2단계 오너십 | 발급키 탈취 시 위조 발급 가능 → 에폭 루트 대조로 탐지 |
-| 10 | 오탐 | 이의제기 경로 + 오탐 해소 목록(다음 재대사가 같은 사람을 다시 폐기하지 않게) | 판단은 사람이 한다 |
-| 11 | 개인정보 보호법 (KR PIPA / EU GDPR) | 온체인 0바이트 · 동의문 버전을 서명 원문에 결속 · 삭제권은 오프체인 금고에서 이행(온체인 커밋먼트는 원문 없이 무의미) | 우리는 본인확인기관이 아니다 — 검증 실행은 벤더 위임 |
-| 12 | 벤더 미연동 상태에서의 정직성 | 연동 안 된 확인은 **비트를 세우지 않는다** → 소비자 정책이 자동으로 거른다 | 데모의 KR 어댑터는 모의. 화면·문서·마크 3곳에 표시 |
+| 1 | KYC means different things per jurisdiction | Section 4: carry the `methods` bitmap rather than a verdict, and leave equivalence to the consumer | We guarantee no equivalence, which is the point |
+| 2 | Proving a negative | Epoch roster root, section 6.3, plus tombstone priority | The gap inside an epoch interval is covered by the tombstone lane |
+| 3 | Propagation delay | Measured attestation lag of 6.5 to 8.8 minutes on top of finality, published as a product parameter rather than hidden | Real-time blocking has to gate on the source chain |
+| 4 | Write cost. One write per user does not survive mainnet | Mode B epoch batching, which decouples cost from user count | Application lags by one epoch interval, covered by row 2's tombstone lane |
+| 5 | Freshness | Each epoch publishes `validUntil`, and expiry fails closed | If the issuer stops, gates close. That is the safe direction |
+| 6 | Trusting a mirror | A spoke root is comparable to the hub's verified root, and anyone can disprove a mismatch | Slashing incentives for disproving are roadmap |
+| 7 | Replay | `ASCBase` already blocks it through `queryId = keccak256(chainKey, blockHeight, txIndex)`. We add source address pinning | It only stops resubmitting the same transaction. Rows 13 and 14 are separate problems |
+| **13** | chainKey spoofing. The handler cannot tell which chain a proof came from | `ASCBase._processAndEmitEvent(action, queryId, tx)` receives neither `chainKey` nor `blockHeight`. CC3 serves chainKey 1 and 3 at once, so a same-address contract on mainnet can emit an event that passes. CREATE2 makes claiming that address first straightforward | Fork `ASCBase` to widen the signature and `require(chainKey == EXPECTED)`. P0 |
+| **14** | Reordering revives a revoked mark | Submission is permissionless and unordered. Send `MarkIssued` from block 100 after `MarkRevoked` from block 200 and the mark returns to ACTIVE. The queryIds differ so replay protection never fires, and both proofs are valid | A `lastAppliedHeight` cursor rejects the older height. It needs `blockHeight` in the handler, so the same fork covers it. P0 |
+| 8 | Dusting as griefing, where a sanctioned address sends 1 wei to disable someone's mark | On-chain exposure distinguishes sending from receiving | |
+| 9 | Key risk | Separate issuer, epoch and owner keys, with two-step ownership transfer | A stolen issuer key still forges issuances. Comparison against the epoch root detects it |
+| 10 | False positives | An appeal path plus a cleared list, so the next rescreening does not revoke the same person again | A human makes the call |
+| 11 | Data protection law, PIPA and GDPR | Zero bytes on chain, the consent version bound into the signed message, and erasure carried out in the offline vault. An on-chain commitment means nothing without the original | We are not an identity verification authority. The verification itself is delegated to vendors |
+| 12 | Honesty while vendors are unconnected | An unconnected check leaves its bit unset, and consumer policies filter on that automatically | The demo's KR adapter is a mock, and the screen, the docs and the mark all say so |
 
 ---
 
-## 8. 멀티체인 접근 모델
+## 8. How other chains read this
 
-Attestcoin **Writability는 개발 중**이다. "Creditcoin이 다른 체인에 상태를 밀어 넣는다"는 지금 주장할 수 없다.
+Attestcoin's writability is still in development, so we cannot claim Creditcoin pushes state to other chains.
 
-| 역할 | 체인 | 신뢰 근거 | 범위 |
+| Role | Chain | Trust basis | Scope |
 |---|---|---|---|
-| **원본(Origin)** | Ethereum Sepolia | 발급이 실제로 일어난 곳 | P0 |
-| **정본(Hub of record)** | Creditcoin CC3 | **Attestcoin 어태스터 네트워크의 수학적 검증** | P0 |
-| **사본(Spoke)** | 임의 EVM 체인 | 허브 검증 루트와 **대조 가능한** 미러 + 증명 서빙 API | P1 |
-| (로드맵) 푸시 | Creditcoin → 스포크 | Attestcoin Writability | P2 |
+| Origin | Ethereum Sepolia | where issuance actually happened | P0 |
+| Hub of record | Creditcoin CC3 | mathematical verification by the Attestcoin attester network | P0 |
+| Spoke | any EVM chain | a mirror comparable to the hub's verified root, plus a proof-serving API | P1 |
+| Push, roadmap | Creditcoin to spoke | Attestcoin writability | P2 |
 
-> 제출 문구: *"Creditcoin is the chain of record for compliance state. Any chain can read it; only Creditcoin can prove it."*
+> For the submission: *"Creditcoin is the chain of record for compliance state. Any chain can read it; only Creditcoin can prove it."*
 
 ---
 
-## 9. 스코프와 14일 일정
+## 9. Scope and schedule
 
 ### 9.1 P0 / P1 / P2
 
-| 등급 | 항목 | 완료 정의(DoD) |
+| Priority | Item | Definition of done |
 |---|---|---|
-| **P0** | Sepolia `ComplianceSource` 배포 + Verify | 전용 이벤트 4종, 테스트 통과 |
-| **P0** | KR 어댑터 인터페이스 + 맵핑 대사 + methods 기록 | 신분증·계좌 축의 일치 판정이 증적에 남는다 (벤더는 모의·라벨 명시) |
-| **P0** | AML 심사 (OFAC·UN·EU 실명단) | 실판정 BLOCK/ALLOW |
-| **P0** | 증적 해시체인 → `evidenceHash` | 사본으로 누구나 재계산 대조 |
-| **P0** | ~~**로컬 모의 BlockProver 하네스**~~ | ✅ **완료 (8/30)** — `encodedTransaction`이 RLP가 아니라 **ABI 인코딩**이라 합성 픽스처 제작 가능. `vm.etch`로 프리컴파일 자리에 모의 주입 → **어테스트 8분 대기 없이** 전 로직 검증 |
-| **P0** | **내결함성 워커** — SDK 대기 함수 래핑(재시도·백오프·상태 영속화) | 프로세스를 죽였다 살려도 이어받아 완주. **R2b 대응, 데모 방어선** |
-| **P0** | Attestcoin 워커 + `ProofmarkASC` + `Registry` (CC3 배포) | Sepolia → CC3 **E2E 1회 성공**, tx 해시 공개 — ✅ 튜토리얼 경로로 8/30 선행 검증 완료 |
-| **P0** | `GatedRwaNote` 데모 | 미인증 revert → 발급 후 성공 → 폐기 후 재차단 |
-| **P0** | README(기술문서 요건) + 데모 영상 3분 | 심사위원 5분 내 재현 |
-| **P1** | 에폭 루트 (Mode B) + 정렬 머클 비포함 증명 | 루트 1건으로 N명 반영 |
-| **P0** | ~~**`ASCBase` 포크 + chainKey 고정 + 순서 커서**~~ | ✅ **완료 (8/30)** — `ASCBaseX.sol`+`ProofmarkASC.sol`, 14 테스트 통과. `test_RejectsProofFromWrongChain`·`test_StaleIssueCannotResurrectRevokedMark` **뮤테이션 검증 완료**(가드 제거 시 실패 확인) |
-| **P1** | `revokeBatch()` — tx당 다중 로그 배치 | 한 tx에 N건 emit → `execute()` 1회로 N건 반영 |
-| **P2** | ~~`verifyBatch`~~ | 컨트랙트 미지원 확인. 필요성 재검토 후 판단 |
-| **P1** | Policy 확장형 (requireAny·regime·jurisdiction) | EU/US 정책 예시 동작 |
-| **P1** | `@proofmark/sdk` + 증명 REST API | 외부인 30분 통합 |
-| **P1** | 스포크 미러 1개 | 허브 대조 화면 |
-| **P2** | 전자여권 NFC 어댑터 | 국제화의 다음 관문 |
-| **P2** | 선택공개 / ZK 속성 증명 | |
-| **P2** | 재대사 크론 | 콘솔 수동 실행으로 대체 가능 |
+| P0 | Deploy and verify `ComplianceSource` on Sepolia | Four purpose-built events, tests passing |
+| P0 | KR adapter interface, reconciliation, methods recording | The document and account axes leave their agreement in the evidence. Vendors are mocked and labelled |
+| P0 | AML screening against real OFAC, UN and EU lists | Real BLOCK and ALLOW decisions |
+| P0 | Evidence hash chain into `evidenceHash` | Anyone with a copy can recompute and compare |
+| P0 | ~~Local mock BlockProver harness~~ | Done. `encodedTransaction` is ABI encoded rather than RLP, so synthetic fixtures are possible. `vm.etch` injects the mock in the precompile's place, and the whole path is testable without the eight-minute wait |
+| P0 | Fault-tolerant worker wrapping the SDK wait with retries, backoff and persistence | Kill the process, restart it, and the job still finishes |
+| P0 | Worker, `ProofmarkASC` and `Registry` deployed on CC3 | One successful Sepolia to CC3 round trip with public transaction hashes. Done twice |
+| P0 | `GatedRwaNote` demo | Unverified reverts, issuance succeeds, revocation blocks again |
+| P0 | README as the required technical document, plus a three-minute demo video | A judge reproduces it in five minutes |
+| P1 | Epoch roots, Mode B, with sorted-key non-membership proofs | One root applies N subjects |
+| P0 | ~~`ASCBase` fork, chainKey pinning, ordering cursor~~ | Done. `ASCBaseX.sol` and `ProofmarkASC.sol`, 14 tests. `test_RejectsProofFromWrongChain` and `test_StaleIssueCannotResurrectRevokedMark` are mutation tested: remove the guard and exactly that test fails |
+| P1 | `revokeBatch()`, batching through multiple logs per transaction | Emit N in one transaction, apply all N in one `execute()` |
+| P2 | ~~`verifyBatch`~~ | Not supported on the contract side. Revisit whether it is needed |
+| P1 | Extended policies: `requireAny`, regime, jurisdiction | Working EU and US policy examples |
+| P1 | `@proofmark/sdk` and a proof REST API | An outsider integrates in half an hour |
+| P1 | One spoke mirror | A screen comparing it against the hub |
+| P2 | ePassport NFC adapter | The next step for other jurisdictions |
+| P2 | Selective disclosure and ZK attribute proofs | |
+| P2 | Rescreening cron | A manual console run covers it for now |
 
-### 9.2 일정 (마감 2026-09-14 12:59 KST)
+### 9.2 Schedule, deadline 2026-09-14 12:59 KST
 
-| 기간 | 목표 | 게이트 |
+| Window | Goal | Gate |
 |---|---|---|
-| **D-14** (8/30) | ✅ 환경 검증 완료 · ✅ **CC3 CTC 10,000 수령** · Sepolia ETH 수령 · 이벤트 스키마 초안 | Sepolia ETH 입금 |
-| **D-13~D-12** (8/31~9/1) | `Hello Bridge` 실왕복 1회 · Tutorial 4(Loan Flow) 독해 · **이벤트 스키마 확정** | **E2E 왕복 성공.** 실패 시 이 시점에 아키텍처 변경 |
-| **D-11~D-10** (9/2~9/3) | `ComplianceSource` Sepolia 배포 + KR 어댑터 · 맵핑 대사 · AML 심사 | 이벤트 4종 동결 (이후 변경은 워커·ASC 동시 수정) |
-| **D-9~D-8** (9/4~9/5) | **로컬 모의 하네스** → `ASCBaseX` 포크 → `ProofmarkASC`·`Registry` 전 로직 검증 → CC3 배포 | anvil 전량 통과 후 배포. ⚠️ **`EvmV1Decoder`는 `public` 함수 14개를 가진 라이브러리라 `--libraries` 링크가 필수**(빌드 산출물 `linkReferences`로 확인). ~~기배포분 `0x731c…9F9f` 재사용~~ — **실측 결과 바이트코드가 다르다**(기배포 runtime 19,199 chars vs 로컬 26,524). 같은 컨트랙트가 아니므로 **직접 배포한다.** 링크 불일치는 조용히 실패하고 8분 사이클을 태운다 |
-| **D-7~D-6** (9/6~9/7) | Mode B 에폭 루트 + 비포함 증명 · 폐기 레인 · `verifyBatch` | **D-6 저녁: Mode B 폴백 판단** |
-| **D-5~D-4** (9/8~9/9) | `GatedRwaNote` · 웹 데모 · SDK · 스포크 미러 | 폐기→차단 시나리오 온체인 실행 |
-| **D-3~D-2** (9/10~9/11) | README·기술문서·테스트 보강·주소/tx 정리 | 외부인 재현 리허설 1회 |
-| **D-1** (9/12) | 덱 PDF · 데모 영상 · 제출 폼 초안 | 공개 URL 시크릿창 확인 |
-| **D-0** (9/13) | **KST 9/14 01:00 목표 제출** | 제출 완료 캡처 |
+| D-14, 8/30 | Environment verified, 10,000 CC3 CTC and Sepolia ETH received, event schema drafted | Sepolia ETH arrives |
+| D-13 to D-12, 8/31 to 9/1 | One real Hello Bridge round trip, read Tutorial 4, freeze the event schema | A successful round trip. A failure here means changing the architecture now |
+| D-11 to D-10, 9/2 to 9/3 | Deploy `ComplianceSource`, build the KR adapter, reconciliation and AML screening | The four events freeze. Later changes cost simultaneous edits to worker and ASC |
+| D-9 to D-8, 9/4 to 9/5 | Local mock harness, then the `ASCBaseX` fork, then `ProofmarkASC` and `Registry`, then deploy to CC3 | Deploy only after anvil is green. `EvmV1Decoder` has 14 public functions, so a `--libraries` link is mandatory, confirmed by `linkReferences` in the build output. Do not reuse the pre-deployed `0x731c…9F9f`: its runtime is 19,199 chars against our 26,524, so it is not the same contract. A bad link fails quietly and costs an eight-minute cycle |
+| D-7 to D-6, 9/6 to 9/7 | Mode B epoch roots, non-membership proofs, the revocation lane | Evening of D-6: decide on the Mode B fallback |
+| D-5 to D-4, 9/8 to 9/9 | `GatedRwaNote`, web demo, SDK, spoke mirror | Run the revoke-then-block scenario on chain |
+| D-3 to D-2, 9/10 to 9/11 | README, technical documentation, more tests, tidy addresses and transactions | One reproduction rehearsal by someone outside the team |
+| D-1, 9/12 | Deck PDF, demo video, submission form draft | Check every public URL in a private window |
+| D-0, 9/13 | Submit, targeting 01:00 KST on 9/14 | Screenshot of the completed submission |
 
-> ⚠️ 마감이 한국시간 월요일 낮이다. **주말에 끝난다.** 일요일 밤을 버퍼로 잡지 않는다.
+> The deadline lands at midday Monday Korean time, so the work finishes over the weekend. Sunday night is not a buffer.
 
-### 9.3 온체인 쿼리 운영 규칙
+### 9.3 Rules for spending on-chain queries
 
-쿼리 예산은 해소됐다(10,000 CTC). 남은 진짜 병목은 **어태스트 대기 8.2분**이다 — 돈이 아니라 시간이 부족하다.
+The budget question closed with 10,000 CTC. What is short is time: an attestation takes about eight minutes.
 
-| 규칙 | 근거 |
+| Rule | Reason |
 |---|---|
-| **로컬 모의 하네스를 통과하지 못한 코드는 온체인에 쏘지 않는다** | 실패 1회 = 8분 손실. 하루 왕복 횟수가 시간으로 제한된다 |
-| 온체인 검증이 필요한 변경은 묶어서 1회에 태운다 | 8분 × N번보다 8분 × 1번 |
-| 잔고를 주 1회 확인, 2,000 CTC 밑이면 리필 | 소진 위험은 낮지만 0이 되면 그날이 멈춘다 |
-| Sepolia ETH는 별도 관리 | 공용 파우셋은 일일 한도가 있다 |
+| Nothing goes on chain until it passes the local mock harness | One failure costs eight minutes, and the day holds only so many round trips |
+| Batch changes that need on-chain verification into one run | Eight minutes once beats eight minutes N times |
+| Check the balance weekly, refill under 2,000 CTC | Running out is unlikely, and it stops the day if it happens |
+| Track Sepolia ETH separately | Public faucets have daily limits |
 
-### 9.4 이미 실측된 것 / 아직 가정인 것
+### 9.4 Measured against assumed
 
-| 항목 | 상태 |
+| Item | Status |
 |---|---|
-| 어태스트 지연 ~8.2분 | ✅ 실측 |
-| chainKey: Sepolia=1, Mainnet=3 | ✅ 실측 |
-| Proof Builder API 동작·응답 0.58s | ✅ 실측 |
-| ~~파우셋 9쿼리/일~~ → **실수령 10,000 CTC** | ✅ 실측 — README 서술과 불일치 |
-| **쿼리 실단가 0.0002 CTC** (394,982 gas @ 0.5 gwei, 별도 수수료 없음) | ✅ **실측 8/30** — 예산 제약 없음 확인 |
-| **burn → ASC 반영 총 9분 43초** (어테스트 대기 ~8.5분 + 증명·제출 ~1분) | ✅ **실측 8/30** |
-| `verifySingle` 가스: 추정 421,105 / 실사용 **394,982** | ✅ **실측 8/30** |
-| Sepolia mint 50,969 gas · burn 30,721 gas | ✅ 실측 8/30 |
-| **Readability에 ATC 수수료 없음** | ✅ **확정 8/30** — 공식 문서 + 실측 일치. 열린 질문에서 내림 |
-| `verifySingle`/`verifyBatch` 실가스 | ❌ `가정` — D-13에 실측 |
-| Proof Builder 레이트리밋 | ❌ `가정` — D-13에 실측 |
-| Sepolia 파이널리티 → 어태스트까지 총 지연 | ❌ `가정` — D-13에 실측 |
+| Attestation lag, 6.5 to 8.8 min | measured, three observations |
+| chainKey: Sepolia 1, mainnet 3 | measured |
+| Proof Builder API works, 0.58s response | measured |
+| ~~Nine queries a day~~, actually 10,000 CTC | measured, and it contradicts the README |
+| Cost per query 0.0002 CTC, 394,982 gas at 0.5 gwei with no separate fee | measured. No budget constraint |
+| Burn to ASC application, 9m 43s: 8.5 min waiting plus about a minute for proof and submission | measured |
+| `verifySingle` gas: estimated 421,105, used 394,982 | measured |
+| Sepolia mint 50,969 gas, burn 30,721 gas | measured |
+| No ATC fee on the readability path | settled. Official wording and our measurement agree |
+| `verifyBatch` gas | `assumed`, never measured because the path is unused |
+| Proof Builder rate limits | `assumed`, not yet measured |
+| Sepolia finality to attestation, as a separate figure | `assumed`, folded into the end-to-end number above |
 
 ---
 
-## 9.5 배포 실측 (2026-08-30) — 테스트넷 배포 요건 충족
+## 9.5 Deployment, which satisfies the testnet requirement
 
-정본은 `deployments/cc3-testnet.json`. 재배포하면 여기부터 고친다.
+`deployments/cc3-testnet.json` is canonical. A redeployment updates it first.
 
-| 컨트랙트 | 체인 | 주소 |
+| Contract | Chain | Address |
 |---|---|---|
 | `EvmV1Decoder` | CC3 Testnet | `0xff3558704c75ed69e1D657474210365b24d31938` |
 | `ProofmarkASC` | CC3 Testnet | `0x93C62D3016123Da0aBdB4AC1857564c30CbE5629` |
@@ -481,19 +481,19 @@ Attestcoin **Writability는 개발 중**이다. "Creditcoin이 다른 체인에 
 | `ComplianceSource` | **Sepolia** | `0x93C62D3016123Da0aBdB4AC1857564c30CbE5629` |
 | `GatedRwaNote` | CC3 Testnet | `0xA8Dfe6f5063a8159524DedbBAc75f034C3BF0625` |
 
-> ⚠️ **ASC(CC3)와 ComplianceSource(Sepolia) 주소가 같다.** 같은 배포자·같은 nonce면 체인이 달라도 CREATE 주소가 같아지는 산술적 결과다. 검증했다 — 바이트코드가 다르고(18,120 vs 7,478자) 각자 자기 인터페이스에만 응답하며 교차 호출은 revert한다. **다만 스크립트가 실수로 ASC 주소를 `configureSource`에 넣어도 겉보기가 똑같으므로, 재배포 시 반드시 양쪽 `cast code`를 대조할 것.**
+> **The ASC on CC3 and ComplianceSource on Sepolia share an address.** Same deployer, same nonce, different chains, so CREATE lands in the same place. We verified it: the bytecode differs, 18,120 chars against 7,478, each responds only to its own interface, and cross-calls revert. The risk is that a script passing the ASC address to `configureSource` by mistake would look identical, so a redeployment compares `cast code` on both chains.
 
-**사후 검증 (전부 통과)**
+**Post-deployment checks, all passing**
 
 ```
-asc.expectedChainKey  : 1          (= Sepolia, getSupportedChains() 로 런타임 확인)
-asc.sourceContract    : 0x93C6…5629 (Sepolia 쪽 ComplianceSource)
-reg.ASC               : 0x93C6…5629 (CC3 쪽 ASC)
+asc.expectedChainKey  : 1          Sepolia, confirmed at runtime through getSupportedChains()
+asc.sourceContract    : 0x93C6…5629 ComplianceSource on Sepolia
+reg.ASC               : 0x93C6…5629 the ASC on CC3
 src.isIssuer(deployer): true
-note.POLICY_ID        : 1          (KR 정책, methods mask 0x10024)
+note.POLICY_ID        : 1          KR policy, methods mask 0x10024
 ```
 
-**게이트가 닫혀 있다는 온체인 증거**
+**On-chain evidence that the gate is closed**
 
 ```
 $ cast call $NOTE "mint(address,uint256)" $ME 1e18 --from $ME --rpc-url $CC3
@@ -501,265 +501,265 @@ revert 0x17887111…  = RecipientNotVerified(0xFD12…bD5E, 1)
 $ cast call $REG "isVerified(address,uint256)(bool)" $ME 1 → false
 ```
 
-> 🔴 **README 필독 주의 — `--from` 없이 부르면 다른 결론이 난다.** `cast call`은 msg.sender를 0으로 두므로 `mint`가 **`OwnableUnauthorizedAccount`(`0x118cdaa7`)** 로 먼저 막힌다. 게이트가 아니라 소유권 검사에 걸린 것인데 겉보기엔 똑같이 "revert"다. 심사위원 재현 절차에 **반드시 `--from`을 명시**해야 한다. 이 함정에 우리가 먼저 걸렸다.
+> **Without `--from` you reach a different conclusion.** `cast call` leaves msg.sender at zero, so `mint` stops at `OwnableUnauthorizedAccount` (`0x118cdaa7`) before the gate ever runs. That is the ownership check, not the gate, and both look like a revert. Reproduction steps must state `--from`. We walked into this ourselves.
 
-### 9.6 실발급 E2E (2026-08-30) — 데모 대본 1~6번의 온체인 증거
+### 9.6 End-to-end issuance
 
-한국 절차로 마크를 발급해 크로스체인으로 전파하고 게이트가 열리는 것까지 전 구간 성공.
+A mark issued through the Korean flow, propagated cross-chain, opening the gate. Every step succeeded.
 
-| 단계 | 결과 |
+| Step | Result |
 |---|---|
-| 워커 기동 | ASC `expectedChainKey`/`sourceContract` 일치 확인 후 커서 11,597,795 |
-| **Sepolia 발급** | tx `0x93e4f981…9a01` · block 11,597,799 · **gas 27,933** |
-| 워커 감지 | 발급 후 **86초** (확인 4블록 대기 포함) |
-| 어테스트 완료 | 발급 후 **6분 30초** (39블록) |
-| **CC3 증명 제출** | tx `0xe0f8f6d4…` · **gas 386,008** |
-| **`isVerified` → true** | 발급 후 **7분 55초** |
-| **`note.mint` 성공** | tx `0x8f6789cf…c138` · gas 271,866 · 잔고 1.0 |
+| Worker start | ASC `expectedChainKey` and `sourceContract` checked, cursor at 11,597,795 |
+| Sepolia issuance | tx `0x93e4f981…9a01`, block 11,597,799, 27,933 gas |
+| Worker detection | 86 seconds later, including four confirmation blocks |
+| Attestation complete | 6m 30s after issuance, 39 blocks |
+| CC3 proof submission | tx `0xe0f8f6d4…`, 386,008 gas |
+| `isVerified` turns true | 7m 55s after issuance |
+| `note.mint` succeeds | tx `0x8f6789cf…c138`, 271,866 gas, balance 1.0 |
 
-**발급한 마크 (한국 어댑터 조합)**
+**The mark that was issued**
 
 ```
 methods = 0x19003f
   = WALLET_CONTROL | ID_DOC_IMAGE | ID_DOC_AUTHENTICITY | FACE_MATCH | LIVENESS
   | BANK_ACCOUNT | SANCTIONS_SCREENED | JURISDICTION_CHECK | ONCHAIN_EXPOSURE
-  ⊇ KR 정책 requireAll 0x10024 (진위확인 + 계좌실명 + 제재대사)
+  covers the KR policy requireAll of 0x10024: authenticity, bank account, sanctions
 regime = 1 (KR_FSC_NONFACE) · jurisdiction = 410 (KR) · assurance = 2
 ```
 
-**크로스체인 전달 무결성 — CC3 수신값이 Sepolia 발급값과 전 필드 일치**
+**Cross-chain integrity: every field on CC3 matches what Sepolia issued**
 
 ```
 status 1(ACTIVE) · origin 1(Direct) · kind 1 · assurance 2 · regime 1 · jurisdiction 410
 methods 0x19003f · epoch 0 · issuer 0xFD12…bD5E
-claimsRoot   0xd78af317ce2a4285946d7bd54065896f31492ca7a4de6c8cfdfcdf88226bca97  ✓ 원본 일치
-evidenceHash 0xfab2199203e7f2e7a6176d54dcd8d1870d3a691b2b544b80735938db23cf297a  ✓ 원본 일치
+claimsRoot   0xd78af317ce2a4285946d7bd54065896f31492ca7a4de6c8cfdfcdf88226bca97  matches
+evidenceHash 0xfab2199203e7f2e7a6176d54dcd8d1870d3a691b2b544b80735938db23cf297a  matches
 ```
 
-> **`origin`이 1(Direct)인 것이 설계의 요점이다.** 이 값은 소스 이벤트가 실어 보낸 게 아니라 **ASC가 관측해서 쓴 값**이다(`ProofmarkASC.sol:149`). 발급사가 Roster 출처를 위조 주장할 수 없다. §6.4의 신선도 분기가 이 값에 걸린다.
+> `origin` reading 1 (Direct) is the design working. The value came from the ASC observing which action it processed, not from the source event (`ProofmarkASC.sol:149`), so an issuer cannot claim roster provenance it never earned. The freshness split in section 6.4 turns on this field.
 
-**전파 지연 실측 = 7분 55초.** §7-3에 쓴 대로 "즉시"가 아니다. 이 숫자를 제품 파라미터로 공개한다.
+**Propagation measured at 7m 55s.** Not instant, as section 7 row 3 says. The number is published as a product parameter.
 
-> 🔴 **이 마크의 `methods` 는 합성값이다 — 정직성 위반이고 폐기 대상.**
-> 이 E2E는 **파이프라인 검증**이 목적이라 `attrs` 를 손으로 만들어 넣었다. 그 결과 온체인 마크가
-> `ID_DOC_AUTHENTICITY`·`FACE_MATCH`·`LIVENESS`·`BANK_ACCOUNT` 를 주장하는데 **우리는 그 확인을 하지 않았다.**
-> 벤더 미연동 상태이므로 세울 수 없는 비트다(§4.2).
+> **This mark's `methods` were synthetic, which made it a lie, and it was revoked.**
+> The run existed to validate the pipeline, so `attrs` were hand-authored. The resulting mark claimed
+> `ID_DOC_AUTHENTICITY`, `FACE_MATCH`, `LIVENESS` and `BANK_ACCOUNT`, and none of those checks ran.
+> With no vendors connected those bits cannot honestly be set, per section 4.2.
 >
-> 검증된 것과 검증되지 않은 것을 갈라 적는다:
+> Separating what the run proved from what it did not:
 >
-> | 이 E2E가 증명한 것 | 이 E2E가 증명하지 **않은** 것 |
+> | Proven | Not proven |
 > |---|---|
-> | 크로스체인 전달 무결성 (전 필드 일치) | 신분증 진위확인·계좌 실명확인을 실제로 수행하는 것 |
-> | 워커 내결함성·멱등성 | 그 마크가 나타내는 심사가 실제로 있었다는 것 |
-> | 게이트가 마크에 반응해 열린다는 것 | KR 정책을 **정직하게** 통과할 수 있다는 것 |
-> | 전파 지연 7분 55초 | — |
+> | Cross-chain integrity, every field intact | That document authenticity or account verification actually ran |
+> | Worker resilience and idempotence | That the screening the mark describes took place |
+> | That the gate responds to a mark | That the KR policy can be passed honestly |
+> | Propagation of 7m 55s | |
 >
-> **조치 완료 (2026-08-30):** 폐기했다. Sepolia `revoke(subject, 4=ISSUER_ERROR, 0)` tx `0x6d630831…050f` → 어테스트 후 CC3 반영 tx `0xc3d4d056…` (gas 382,312). **전파 8분 43초.**
-> 결과: `tombstone=true` · 마크 `status=2(REVOKED)` · 정책 1·2 모두 `isVerified=false` · `note.mint` → `RecipientNotVerified`.
-> **폐기가 deny > allow 로 두 정책을 모두 막는 것이 온체인으로 확인**됐다(§6.4 판정 규칙 2번). 부수적으로 §10 데모 대본 8번이 실증됐다.
-> 우리 제품이 막으려는 것이 바로 "하지 않은 확인을 주장하는 마크"인데 그것을 우리 테스트넷에 남겨둘 수 없다(§15-4·§15-7).
+> **Revoked 2026-08-30.** Sepolia `revoke(subject, 4=ISSUER_ERROR, 0)` in tx `0x6d630831…050f`, applied on CC3 in tx `0xc3d4d056…` at 382,312 gas. Propagation took 8m 43s.
+> Result: `tombstone=true`, mark `status=2 REVOKED`, `isVerified` false under both policies, `note.mint` reverting with `RecipientNotVerified`.
+> A tombstone blocking both policies confirms deny beats allow on chain, rule 2 of section 6.4, and demonstrates demo scene 8 as a side effect.
+> A mark claiming checks that never happened is precisely what this product exists to stop, so leaving it on our own testnet was not an option.
 
 
 
-> ⚠️ **운영 주의:** 워커 커서는 기본값이 **현재 헤드**다. 발급을 먼저 보내면 워커가 그 이벤트를 못 본다. **워커를 먼저 띄우고 발급**하거나 `WORKER_START_BLOCK`을 명시할 것. 데모 리허설에서 가장 걸리기 쉬운 함정이다.
-
----
+> **Operational note.** The worker cursor starts at the current head by default, so issuing first means the event is never seen. Start the worker, then issue, or set `WORKER_START_BLOCK`. This is the easiest thing to get wrong in a rehearsal.
 
 ---
 
-## 9.7 AML 심사 엔진 실측 (2026-08-30)
+---
 
-**모의 데이터를 쓰지 않는다.** OFAC·UN·EU 원본 XML 57MB를 직접 적재한다(`aml/fetch-lists.sh`).
+## 9.7 AML screening engine, measured
 
-| 명단 | 엔트리 | 비고 |
+No fixtures. `aml/fetch-lists.sh` loads 57MB of source XML from OFAC, the UN and the EU.
+
+| List | Entries | Note |
 |---|---|---|
-| OFAC SDN | 19,321 | 암호화폐 주소 1,007건 포함 |
-| UN Consolidated | 1,011 | 개인 736 + 단체 |
+| OFAC SDN | 19,321 | includes 1,007 crypto addresses |
+| UN Consolidated | 1,011 | 736 individuals plus entities |
 | EU FSF | 6,234 | |
-| **합계** | **26,566** · 이름·별칭 **78,365** · **EVM 제재주소 124** | 파싱 0.5초 |
+| **Total** | **26,566** entries, **78,365** names and aliases, **124** sanctioned EVM addresses | parsed in 0.5s |
 
-**성능 실측 (`aml/eval.ts` · 회귀는 `aml/engine.test.ts` 13건이 지킨다)**
+**Measured with `aml/eval.ts`. `aml/engine.test.ts` holds the numbers in place.**
 
-| 지표 | 값 |
+| Metric | Value |
 |---|---|
-| 재현율 | **100%** (명단 개인 200명을 자기 이름·생년월일·국가로 조회 → 전원 적발) |
-| 특이도 | **100%** (평범한 한국 이름 600명 + 서구 이름 10명 → 오탐 0) |
-| 회피 저항 | **7/7** — 보이지 않는 문자·키릴 동형문자·발음기호·전각·어순 뒤집기·구두점 삽입 |
-| 제재 지갑 | 이름과 무관하게 차단 (OFAC `idList` 유래) |
+| Recall | **100%**. 200 listed individuals looked up by their own name, date of birth and country, all caught |
+| Specificity | **100%**. 600 ordinary Korean names and 10 western names, no false positives |
+| Evasion | **7 of 7**: invisible characters, Cyrillic homoglyphs, diacritics, full width, reversed order, inserted punctuation |
+| Sanctioned wallet | Blocked regardless of name, from the OFAC `idList` |
 
-**첫 측정은 특이도 67%였다 — 오탐 33%.** 원인은 포함 보정(`contain`)을 토큰 수와 무관하게 준 것이었다. 2토큰끼리 겹치면 `ji` 같은 흔한 조각이 만점을 받아 흔한 한국 이름이 무더기로 걸렸다. **포함 보정을 짧은 쪽 3토큰 이상일 때만** 주도록 고쳐 오탐 0으로 내렸고, 재현율은 100%를 유지했다.
+**The first measurement came back at 67% specificity, a third of ordinary names flagged.** The containment bonus applied regardless of token count, so two tokens overlapping gave a common fragment like `ji` full marks and ordinary Korean names were caught in bulk. Restricting the bonus to cases where the shorter side has three or more tokens took false positives to zero and left recall at 100%.
 
-**로마자 전개의 취급 — 이 제품의 핵심 판단**
+**How romanised expansion is treated, which is the judgement this product turns on**
 
 ```
-김정은 (KP, 생년월일 일치)  → BLOCK 밴드5   전개 적중 + 뒷받침 있음
-최영호 (KR)                 → ALLOW 밴드2   전개 적중 있으나 뒷받침 없음
+Kim Jong Un    KP, date of birth matches   BLOCK band 5   expansion hit, corroborated
+Choi Yeong-ho  KR                          ALLOW band 2   expansion hit, nothing corroborates it
 ```
 
-전개 표기는 **우리가 만든 추론**이지 명단에 실린 사실이 아니다. `최영호`와 명단의 `최용호`는 발음기호를 뗀 표기에서 둘 다 `yong`이 되어 100점 일치한다(테스트로 재현). 그래서 **뒷받침(생년월일·국가·지갑) 없는 전개 적중은 판정을 움직이지 않는다** — 적중 자체는 증적에 남아 감사 경로를 유지한다.
+An expanded spelling is our inference, not something any list asserts. Strip the diacritics and Choi Yeong-ho and the listed Choi Yong-ho both become `yong`, scoring 100 against each other, and a test reproduces the collision. So an expansion hit with no corroboration from date of birth, country or wallet does not move the decision. The hit itself stays in the evidence, which keeps the audit trail intact.
 
-**정직성이 코드로 강제된다**
+**Honesty is enforced by code**
 
 ```
 methodsApplied = 0x190000
   = SANCTIONS_SCREENED | JURISDICTION_CHECK | ONCHAIN_EXPOSURE
-  PEP_SCREENED  → 비트 0 (데이터 미연동)
-  ADVERSE_MEDIA → 비트 0 (데이터 미연동)
+  PEP_SCREENED  bit 0, no data source connected
+  ADVERSE_MEDIA bit 0, no data source connected
 ```
 
-하지 않은 심사는 비트를 세우지 않고, 소비자 정책이 그것을 자동으로 거른다(§4.4). FATF 관할 표는 `verified: false`로 표시돼 증적에 '미검증'으로 기록된다 — 원문 대조 전에 확신을 남기지 않는다.
+Screening that did not run leaves its bit unset, and a consumer policy filters on that automatically, per section 4.4. The FATF jurisdiction table carries `verified: false`, and the evidence records it as unverified rather than implying a certainty we have not earned.
 
-**증적 결정성** — 같은 입력이면 같은 다이제스트(테스트로 고정). `engineVersion`이 함께 실려, 명단 판본이 같아도 매칭 규칙이 바뀌면 재현 가능하게 구분된다.
+**Evidence is deterministic.** The same input produces the same digest, pinned by a test. `engineVersion` travels with it, so a change to the matching rules stays distinguishable even when the list edition is unchanged.
 
-**증적에는 이름 원문이 없다 — 초판에는 있었고 그것이 결함이었다.**
+**The evidence carries no cleartext name. The first version did, and that was a defect.**
 
-첫 구현은 증적에 `normalizedName`·`nameTokens`·`romanizedVariants`를 **평문**으로 담았다. 오프체인이니 괜찮다고 볼 수도 있으나 **삭제권과 감사추적이 충돌한다**: 증적에 PII가 있으면 금고에서 원문을 지우는 순간 증적도 지워야 하고, 그러면 §7-11의 "삭제권은 금고에서 이행한다"는 정리가 깨진다.
+The first implementation stored `normalizedName`, `nameTokens` and `romanizedVariants` in cleartext. Evidence lives off chain, which makes that look acceptable, but it puts the right to erasure against the audit trail: with PII in the evidence, erasing the vault means erasing the evidence too, and the arrangement in section 7 row 11 falls apart.
 
-→ 이름 관련 필드를 **발급사 보유 키로 HMAC** 한 다이제스트로 교체했다. `evidenceKey`는 **필수 인자**다(기본값을 두면 누군가 그대로 배포한다).
+Every name field became an HMAC digest under a key the issuer holds. `evidenceKey` is a required argument, because a default is what someone ships to production.
 
-> ⚠️ **가명화이지 익명화가 아니다.** 이름은 엔트로피가 낮아 무염 해시는 사전공격에 뚫린다. 키 보유자는 후보 대조로 원문을 확인할 수 있고 **그것이 의도다**(감사 재현성). 증적 파일만 유출되면 이름을 얻지 못한다. `keyId`를 함께 실어 로테이션을 추적한다.
+> **Pseudonymisation, not anonymisation.** Names carry little entropy, so an unsalted hash falls to a dictionary attack. The key holder can confirm a candidate, and that is deliberate, because audits have to reproduce. A leaked evidence file on its own yields no names. `keyId` travels alongside so rotation stays traceable.
 
-**부수 발견 — 한글에서 PII 탐지기가 실패한다.** 이 유출을 처음엔 못 잡았다. 탐지 코드가 `JSON.stringify(ev).includes('박서준')`이었는데 `false`가 나왔다. 값은 그대로 있었다:
+**A side finding: the PII detector failed on Hangul.** The leak went unnoticed at first. The check was `JSON.stringify(ev).includes(name)` and it returned false while the value sat right there:
 
 ```
-입력  '박서준'  NFC → bc15 c11c c900              (3 코드포인트)
-증적에 저장된 값  NFD → 1107 1161 11a8 1109 …     (8 코드포인트, 자모 분해)
+input   NFC → bc15 c11c c900                (3 code points)
+stored  NFD → 1107 1161 11a8 1109 …         (8 code points, jamo decomposed)
 ```
 
-같은 글자인데 코드포인트 열이 다르다. **한국인 이름을 다루는 KYC 제품에서 PII 탐지기가 한글에서 실패하는 것**은 그냥 넘길 문제가 아니므로, 탐지기가 NFC/NFD/NFKC/NFKD를 가로질러 비교하도록 고치고 **탐지기 자체를 테스트로 검증**했다(`단순 includes 는 못 잡는다`를 먼저 단언하고, 그 다음 탐지기가 잡는지 확인).
+Same characters, different code point sequence. A PII detector that fails on Korean names is not something to leave in a product that screens Korean names, so the detector now compares across NFC, NFD, NFKC and NFKD, and a test checks the detector itself: it asserts first that a plain `includes` misses the value, then that the detector catches it.
 
 ---
 
-## 10. 데모 대본 (3분)
+## 10. Demo script, three minutes
 
-| # | 장면 | 보여주는 것 |
+| # | Scene | What it shows |
 |---|---|---|
-| 1 | 지갑 연결 + 신분증 인증 + 계좌 인증 | 한국 절차 그대로. **개발자도구로 서버 전송 페이로드 노출 — 32바이트뿐** |
-| 2 | 맵핑 대사 화면 | 입력 PII ↔ 신분증 ↔ 예금주 3축 일치. **일치 여부만 남고 값은 사라진다** |
-| 3 | AML 심사 | 실명단 3종. 제재 인물 입력 → 즉시 BLOCK |
-| 4 | Sepolia 발급 tx | Etherscan. 마크에 `methods` 비트맵이 보인다 |
-| 5 | **어태스트 대기 → 증명 → CC3 검증** | **이 대회의 핵심 장면. 클로즈업.** 8분 대기는 타임랩스 + "편집됨" 명시 |
-| 6 | GatedRwaNote 전송 성공 | 정책 통과 |
-| 7 | **정책이 다른 두 dApp** | 같은 마크인데 KR 정책은 통과, EU 정책은 거절(진위확인 비트 없음) → **국제화 설계가 눈에 보이는 장면** |
-| 8 | 제재 등재 → 재대사 → Sepolia 폐기 → 전파 → 같은 전송 실패 | 수명주기가 실제로 돈다 |
-| 9 | 온체인 데이터 전체 덤프 | **개인정보 0바이트** |
+| 1 | Connect wallet, ID document, bank account | The Korean flow as it is. Open devtools and the payload leaving the browser is 32 bytes |
+| 2 | Reconciliation | Declared details, document and account holder agreeing. Only the agreement survives; the values do not |
+| 3 | AML screening | Three real lists. Type a sanctioned name and it blocks immediately |
+| 4 | Sepolia issuance | On Etherscan, with the `methods` bitmap visible in the mark |
+| 5 | Attestation, proof, verification on CC3 | The scene the competition is about. The eight-minute wait is a timelapse, labelled as edited |
+| 6 | A GatedRwaNote transfer succeeding | The policy passes |
+| 7 | Two dApps, two policies | One mark passing the pilot policy and failing production for want of the authenticity bit. This is where portability becomes visible |
+| 8 | Sanction hit, rescreening, revocation on Sepolia, propagation, the same transfer failing | The lifecycle running for real |
+| 9 | A full dump of the on-chain data | Zero bytes of personal data |
 
 ---
 
-## 11. 리스크 등록부
+## 11. Risk register
 
-| # | 리스크 | 영향 | 완화 | 판단 시점 |
+| # | Risk | Impact | Mitigation | Decision point |
 |---|---|---|---|---|
-| R1 | **Sepolia ETH 미수령** | **치명 (현재 유일한 블로커)** | CC3 CTC는 10,000 수령 완료(8/30). Google Web3 파우셋만 남음 | **D-14 오늘** |
-| R2 | ~~쿼리 예산 고갈~~ | **해소 (8/30)** | 실단가 0.0002 CTC. 로컬 모의 하네스는 **속도** 때문에 계속 P0 — 어태스트 8.5분이 진짜 병목 | 종결 |
-| **R2b** | **SDK `waitUntilHeightAttested()`가 단발 API 타임아웃에 죽는다** | **상** | 실측으로 확인(8/30): 8분 대기 후 `AxiosError: timeout of 10000ms` 하나로 전체 실패. **우리 워커는 SDK 대기 함수를 감싸 재시도+백오프+상태 영속화를 직접 구현한다.** burn tx는 유효하므로 재실행으로 복구 가능 | **P0 구현 항목** |
-| ~~R2c~~ | ~~§14 ATC 수요 논거~~ | **종결 (8/30)** | 공식 문서 + 실측으로 확인 → 논거 **폐기**하고 생태계 논거로 대체. 제출물에 ATC 수요 창출을 쓰지 않는다 | 종결 |
-| R3 | Mode B(비포함 증명) 일정 초과 | 중 | §6.3 폴백(툼스톤 전용) | **D-6 저녁** |
-| R4 | **독창성 규정** — 호패 코드 재사용 논란 | 치명 | **신규 레포에서 새로 작성.** 이전은 *지식*(AML 정규화·매칭 설계·fail-closed 규칙)이지 코드가 아니다. README에 선행 작업을 **먼저 밝힌다** | D-12 |
-| R5 | "그냥 오라클 붙인 앱"으로 읽힘 | 상 | §4.2 제거 테스트 + 쿼리 경제 서술을 제출 요약 첫 문단으로 | D-2 |
-| R6 | 지연을 "즉시 폐기"로 과장 → 신뢰 붕괴 | 상 | 8.2분 실측 공개. **"즉시"라고 쓰지 않는다** | 상시 |
-| R7 | KR 벤더 미연동을 연동된 것처럼 읽힘 | 상 | methods 비트를 세우지 않음 + 3곳 라벨 | D-4 |
-| R8 | 규제 오독 (본인확인기관 참칭, 등가성 주장) | 상 | assurance는 자체 등급임을 명시. 등가성 판정은 소비자 몫 | 상시 |
-| R9 | 공용 Sepolia RPC 레이트리밋 | 중 | Alchemy/Infura 키 예비 확보 | D-11 |
-| R10 | 인력 부족 | 중 | P0 외 전부 버릴 수 있게 설계 | D-6 |
+| ~~R1~~ | ~~Sepolia ETH not received~~ | closed | Both faucets landed on 8/30 | closed |
+| ~~R2~~ | ~~Query budget exhaustion~~ | closed | 0.0002 CTC per query. The mock harness stays P0 for speed, since the eight-minute attestation is the real bottleneck | closed |
+| R2b | SDK `waitUntilHeightAttested()` dies on a single API timeout | high | Measured: eight minutes lost to one `AxiosError: timeout of 10000ms`. Our worker wraps the wait with retries, backoff and persistence. The source transaction stays valid, so a rerun recovers | implemented |
+| ~~R2c~~ | ~~The ATC demand argument in section 14~~ | closed | Official wording and measurement agreed, so the argument is withdrawn and replaced with the ecosystem case. No submission claims ATC demand | closed |
+| R3 | Mode B non-membership proofs overrun | medium | The section 6.3 fallback, tombstones only | evening of D-6 |
+| R4 | The originality rule, and any suspicion of reused code | severe | Written fresh in a new repository. What carried over is knowledge: AML normalisation, matching design, fail-closed rules. The README states the prior work up front | D-12 |
+| R5 | Reading as "an app with an oracle bolted on" | high | Lead the submission summary with the removal test and the cost argument | D-2 |
+| R6 | Overstating latency as instant revocation | high | Publish the measured range. Never write "instant" | ongoing |
+| R7 | The unconnected KR vendors reading as connected | high | Leave the bits unset and label it on three surfaces | D-4 |
+| R8 | Misreading the regulatory position, claiming to be a verification authority or asserting equivalence | high | State that assurance is our own grade and equivalence is the consumer's call | ongoing |
+| R9 | Public Sepolia RPC rate limits | medium | Keep an Alchemy or Infura key in reserve | D-11 |
+| R10 | Not enough people | medium | Everything outside P0 is designed to be droppable | D-6 |
 
 ---
 
-## 12. 트랙 선택
+## 12. Track
 
-| 트랙 | 판단 |
+| Track | Assessment |
 |---|---|
-| **RWA** | 토큰화 자산은 **보유자 자격 심사가 법적 요건**. `GatedRwaNote`(신용채권 토큰)가 Creditcoin의 신용 DNA와 겹친다. 주최측 서사 정합 최고 → **★ 권고** |
-| DeFi | 게이티드 대출 풀도 성립하나 경쟁 최다 | 차선 |
-| AI / DePIN / Gaming | 부적합 |
+| **RWA** | Tokenised assets carry a legal requirement to screen holders, and `GatedRwaNote` as a credit note sits on Creditcoin's own ground. Chosen |
+| DeFi | A gated lending pool works too, but this is the crowded track | second choice |
+| AI, DePIN, Gaming | not a fit |
 
-**추가 논거:** 우리는 다른 4개 트랙 참가작 전부의 **잠재 고객**이다. "이 해커톤의 나머지 제출작이 우리 SDK를 붙일 수 있다"는 문장은 CEIP 실사에서 강하게 작동한다.
+One more argument: every submission in the other four tracks is a potential customer. That any of them could add our SDK carries weight in due diligence.
 
 ---
 
-## 13. 해커톤 요건 ↔ 본 기획안 대조표
+## 13. Competition requirements against this plan
 
-| 요건 (브리프 §6·§7) | 대응 | 상태 |
+| Requirement | Where | Status |
 |---|---|---|
-| Attestcoin 실동작 통합 코드 | §5 아키텍처 · §5.2 배치 필수화 | 계획 |
-| 셋업·프로토콜 사용 기술 문서 | README(P0) + 본 문서 + `01-env-verification.md` | 진행 |
-| **통합 깊이** | 제거 테스트 + 에폭 배치 + `verifyBatch` + 쿼리 경제 대응 | 계획 |
-| 해커톤 기간 중 오리지널 작업 | R4 — 신규 레포, 선행 작업 선공개 | **결정 필요 (D3)** |
-| 테스트넷 배포 (CC3 + Sepolia) | §9.2 D-9~D-8 게이트 | 계획 |
-| Attestcoin을 core feature로 | 빼면 중앙 릴레이어로 붕괴 | 계획 |
-| Project Sector | §12 RWA | **결정 필요 (D2)** |
-| Integration Summary (최중요) | §5.2 첫 문단 사용 | 계획 |
-| GitHub URL + README | P0 | 계획 |
-| Deck / Whitepaper PDF | D-1 | 계획 |
-| Demo Video URL | §10 대본 | 계획 |
-| 팀 정보 (거주국·시민권) | 미수집 | **결정 필요 (D6)** |
-| 참가 자격(제재 대상 아님 등) | 팀 전원 확인 필요 | **결정 필요** |
+| Working Attestcoin integration | Section 5, and the batching design in 5.2 | done |
+| Technical documentation covering setup and protocol use | README plus this document and `01-env-verification.md` | done |
+| Depth of integration | The removal test, the `ASCBase` fork with its two security findings, batching through multiple logs | done |
+| Original work created during the hackathon | R4: new repository, prior work disclosed up front | settled |
+| Testnet deployment on CC3 and Sepolia | Section 9.5 | done |
+| Attestcoin as a core feature | Remove it and the product collapses into a relayer | done |
+| Project sector | RWA, section 12 | settled |
+| Integration summary, the most important narrative | README section 3 | drafted |
+| GitHub URL and README | written; the repository still needs pushing | **open** |
+| Deck or whitepaper PDF | D-1 | **open** |
+| Demo video URL | Script in section 10 | **open** |
+| Team details, residence and citizenship | not collected | **open** |
+| Eligibility, including not being a sanctioned person | needs confirming for everyone | **open** |
 
 ---
 
-## 14. 시장·수익 (CEIP 실사 대비)
+## 14. Market and revenue, for CEIP due diligence
 
-CEIP 패스트트랙이 상금보다 실질 가치다. 심사 이후가 실사다.
+The CEIP fast track is worth more than the prize money, and what follows judging is due diligence.
 
-| 고객 | 사는 이유 | 안 사면 대신 하는 일 | 과금 |
+| Customer | Why they buy | What they do instead | Pricing |
 |---|---|---|---|
-| RWA·스테이블 발행사 | 화이트리스트는 하루도 안 쉬고 돌아야 하고 감독기관엔 증적을 내야 한다 | 운영 조직 신설 + 증적 체계 자체 구축 | 연 계약 + 운영 SLA |
-| 크로스체인 dApp | 체인마다 KYC를 다시 짓지 않는다 | 벤더 계약 × 체인 수 | 발급 건당 (조회는 무료) |
-| **다국적 dApp** | 관할별로 다른 KYC를 각각 붙이지 않는다 — 정책만 바꾼다 | 관할 수 × 벤더 수 만큼의 통합 | 관할 어댑터 구독 |
-| 지갑 | 송금 전 수취인 확인 | 사고 대응·회수 불가 안내 | 조회 단가 |
-| VASP·커스터디 | 개인지갑 수취인 사전 확인, 트래블룰 | 수기 확인·출금 보류 | 건당 |
+| RWA and stablecoin issuers | A whitelist has to run every day and produce evidence for a supervisor | Stand up an operations team and build the evidence system themselves | Annual contract plus an operational SLA |
+| Cross-chain dApps | Not rebuilding KYC per chain | Vendor contracts multiplied by chain count | Per issuance; queries are free |
+| Multinational dApps | One integration instead of one per jurisdiction. They change the policy, not the plumbing | Jurisdictions times vendors, in integrations | Jurisdiction adapter subscription |
+| Wallets | Checking a recipient before sending | Incident response and explaining that funds cannot be recovered | Per query |
+| VASPs and custodians | Pre-checking personal wallet recipients, travel rule | Manual review and held withdrawals | Per check |
 
-**Creditcoin에 무엇을 돌려주는가:**
+**What this gives back to Creditcoin**
 
-토큰 경제 논거는 쓰지 않는다. Attestcoin은 **읽기가 무료**이고(공식 문서 + 실측 확인) 우리 제품은 전부 그 경로 위에 있으므로, "우리가 ATC 수요를 만든다"는 주장은 사실이 아니다. CEIP는 ATC 소각량이 아니라 *생태계를 강화·확장하고 장기 성장을 견인하는 제품*을 찾는 프로그램이다. 그 기준으로 답한다.
+Not a token economics argument. Attestcoin reads are free, confirmed by both the official wording and our measurement, and our product sits entirely on that path, so claiming we create ATC demand would be false. CEIP looks for products that strengthen and grow the ecosystem rather than for burn volume, and that is the standard we answer to.
 
-| 무엇을 돌려주는가 | 근거 |
+| What | Why |
 |---|---|
-| **Creditcoin을 컴플라이언스의 정본 체인으로 만든다** | 보유자 자격 심사가 법적 요건인 RWA·스테이블 발행사가 Creditcoin을 **읽어야 할 이유**가 생긴다. Attestcoin이 유일하게 무신뢰 크로스체인 읽기를 제공하므로 대체재가 없다 |
-| **이 해커톤 나머지 4개 트랙 참가작 전부가 잠재 고객** | 게이팅이 필요한 dApp은 SDK 한 줄. 생태계 안에서 수요가 순환한다 |
-| **읽기가 무료라는 사실이 곧 채택 장벽이 없다는 뜻** | dApp이 조회 비용 없이 통합한다. 우리 수익은 발급·운영·증적에서 나오고 조회는 영원히 무료로 둘 수 있다 |
-| (로드맵) Writability 전파 | 스포크 체인 푸시는 유료 쓰기가 된다. **현재 사실이 아니라 로드맵으로만 적는다** |
+| Creditcoin becomes the chain of record for compliance | Issuers legally required to screen holders gain a reason to read it, and Attestcoin is the only trustless cross-chain read available |
+| Every submission in the other four tracks is a potential customer | A dApp that needs gating adds one SDK call, and the demand circulates inside the ecosystem |
+| Free reads mean no adoption barrier | A dApp integrates with no per-query cost. Our revenue comes from issuance, operations and evidence, so queries can stay free indefinitely |
+| Writability propagation, roadmap | Pushing to spoke chains becomes a paid write. Written as roadmap, never as current fact |
 
-**팀 자격 (실사에서 가장 강한 카드):**
-국내 4호 VASP 7년 운영(대표·준법감시인·CTO) + 거래소 KYC 구축 엔지니어. 금융위 자금세탁 위험평가 **3분기 연속 최상위**. 신분증 인증과 계좌 인증을 실제로 운영해 본 팀이 그 절차를 온체인으로 옮긴다. 이 대회에서 이 조합은 우리뿐일 가능성이 높다.
+**Why this team**
+Seven years operating Korea's fourth registered VASP, covering the CEO, compliance officer and CTO roles, plus the engineer who built that exchange's KYC. Top rating in the FSC's money laundering risk assessment three quarters running. A team that has actually run document and account verification is moving those procedures on chain, and that combination is unlikely to appear twice in this competition.
 
-**KPI:** 발급 수 · 활성 마크 수 · 게이트 통과 tx · 통합 dApp 수 · 지원 관할 수 · **전파 지연 p50/p95** · 폐기 SLA · 에폭 신선도 위반 0 · 명단 신선도.
-
----
-
-## 15. 지켜야 할 선
-
-1. **PII 온체인 금지.** 예외 없음. 커밋먼트·해시만.
-2. **본인확인기관이 되지 않는다.** 검증 실행은 벤더 위임, 우리는 결과의 수명주기와 이동을 책임진다.
-3. **자산 동결 권한 없음.** 판정을 게시할 뿐 남의 자산을 움직이지 않는다.
-4. **데모에 나오는 모든 것은 실제로 동작한다.** 연출된 심사·가짜 타이머 금지. **미연동은 비트를 세우지 않는 것으로 표현한다.**
-5. **등가성을 주장하지 않는다.** "한국 KYC = EU KYC"라고 쓰지 않는다. 방법을 게시하고 판정은 소비자가 한다.
-6. **문서는 라이브를 기술한다.** 레포에만 있는 것을 "배포했다"고 쓰지 않는다.
-7. **과장 금지.** "즉시"라고 쓰지 않는다. 지연은 8.2분이라고 쓴다.
-8. **Attestcoin 없이도 되는 설계를 만들지 않는다.**
-9. **선행 작업은 먼저 밝힌다.** 호패는 숨길 자산이 아니라 신뢰의 근거다. 단, 코드는 새로 쓴다.
-10. **`.env`를 커밋하지 않는다.** 예제 레포의 패턴을 복사하지 않는다 (`01-env-verification.md` §4).
+**KPIs:** issuances, active marks, transactions passing a gate, integrated dApps, jurisdictions supported, propagation latency at p50 and p95, revocation SLA, zero epoch freshness violations, list freshness.
 
 ---
 
-## 16. 열린 결정
+## 15. Lines we hold
 
-| # | 결정 | 옵션 | 권고 |
+1. **No PII on chain.** No exceptions. Commitments and hashes only.
+2. **We do not become an identity verification authority.** Vendors perform the verification; we are responsible for the result's lifecycle and its movement.
+3. **No power to freeze assets.** We publish decisions and never move anyone's funds.
+4. **Everything in the demo works.** No staged screening, no fake timers. An unconnected check is expressed by leaving its bit unset.
+5. **No equivalence claims.** We never write that Korean KYC equals EU KYC. We publish the methods and the consumer decides.
+6. **Documents describe what is live.** Nothing that exists only in the repository is described as deployed.
+7. **No overstatement.** We do not write "instant". We write the measured range.
+8. **No design that would work just as well without Attestcoin.**
+9. **Prior work is disclosed first.** The earlier project is a reason to trust us, not something to hide. The code is still written fresh.
+10. **`.env` is never committed.** We do not copy the example repository's pattern (`01-env-verification.md` section 4).
+
+---
+
+## 16. Decisions
+
+| # | Decision | Options | Outcome |
 |---|---|---|---|
-| **D1** | 제품명 | **Proofmark** / 마패(Mapae) / AttestKYC | **Proofmark** — 국제 솔루션이 목표가 된 이상 영문 인지성이 우선. 사용자가 쓴 "프루프+마크"에서 그대로 유래해 이름이 곧 설계 설명이 된다. 마패는 한국어 서사·덱 오프닝으로 병행 (`naming.md`에 백업 1순위로 이미 검토됨) |
-| **D2** | 트랙 | RWA / DeFi | **RWA** |
-| **D3** | 호패 자산 | 코드 이전 / 지식만 | **지식만** (R4) |
-| **D4** | KR 어댑터 실연동 범위 | 벤더 계약 시도 / 인터페이스+모의 | **인터페이스+모의 + 미연동 라벨.** 14일에 기관 계약은 불가능. 비트를 안 세우면 거짓말이 구조적으로 불가능해진다 |
-| **D5** | 두 번째 관할 | ePassport NFC / EU / US | **ePassport NFC** — 관할·벤더 무관 검증이라 국제화의 실질 관문. 단 P2 |
-| **D6** | 팀 구성 | 1인 / 다인 | **다인 권장** — 제출 폼이 거주국·시민권을 요구한다. (파우셋 분산 논거는 10,000 CTC 수령으로 소멸) |
-| **D7** | 스포크 체인 | 미정 | D-5 결정 |
+| D1 | Product name | Proofmark, Mapae, AttestKYC | **Proofmark.** For an international product the English name has to carry, and this one comes straight from "proof plus mark", so the name explains the design. Mapae stays in the logo wordmark |
+| D2 | Track | RWA, DeFi | **RWA** |
+| D3 | Prior project assets | port the code, or carry knowledge only | **knowledge only**, per R4 |
+| D4 | How far the KR adapter integrates | attempt vendor contracts, or interface plus mock | **Interface plus mock, labelled.** An institutional agreement cannot be arranged in fourteen days, and leaving the bit unset makes the lie structurally impossible |
+| D5 | Second jurisdiction | ePassport NFC, EU, US | **ePassport NFC.** It verifies without a vendor or a jurisdiction dependency, which is the real gateway. P2 |
+| D6 | Team size | one, or several | **Several.** The submission form asks each member for residence and citizenship | 
+| D7 | Which spoke chain | undecided | decide at D-5 |
 
 ---
 
-## 17. 다음 액션 (오늘, D-14)
+## 17. What is left
 
-1. **Sepolia ETH 수령 — 남은 유일한 블로커.** https://cloud.google.com/application/web3/faucet/ethereum/sepolia (CC3 CTC 10,000은 수령 완료)
-2. AMA 녹화본 시청 → 브리프 §9·§10 갱신 → 본 문서 §13 반영.
-3. **D1·D2·D3·D6 결정** (§16) — D6은 파우셋 예산과 직결되므로 오늘.
-4. `docs/03-event-schema.md` 착수 — **이벤트 4종을 코드 수준으로 확정.** 이게 동결돼야 컨트랙트와 워커를 동시에 짤 수 있고, D-12 이후 변경은 양쪽 동시 수정 비용을 문다.
-5. 자금 도착 즉시 `Hello Bridge` 실왕복 1회 (mint → burn → submit_query → 잔액 확인).
+1. Push the repository to GitHub. The submission needs the URL, and the README is written.
+2. Watch the AMA recording and fold anything new into the brief and section 13.
+3. Confirm the team roster, since the form asks for residence and citizenship per member.
+4. Record the demo video against the section 10 script.
+5. Produce the deck or whitepaper PDF and host it at a public URL.
