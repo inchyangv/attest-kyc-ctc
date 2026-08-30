@@ -19,6 +19,8 @@ artifacts/
 
 # foundry 의존성 (forge install)
 lib/
+!web/lib/
+!web/lib/**
 
 # 워커 런타임 상태
 state/
