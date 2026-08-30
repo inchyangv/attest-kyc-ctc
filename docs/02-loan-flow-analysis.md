@@ -1,121 +1,114 @@
-# Tutorial 4 `Loan Flow` 코드 분석
+# Reading Tutorial 4, `Loan Flow`
 
-> 분석일: 2026-08-30 · 대상: `reference/attestcoin-protocol-examples/loan-flow/` + `contracts/sol/`
-> 목적: 우리 제품이 그대로 차용할 **ASC 확장 패턴**과 **보안 모델**을 확보하고, 예제의 한계를 미리 파악
+> 2026-08-30 · Subject: `reference/attestcoin-protocol-examples/loan-flow/` and `contracts/sol/`
+> Purpose: take the ASC extension pattern and the security model, and find the example's limits before they find us
 
 ---
 
-## 1. 왜 이 예제가 중요한가
+## 1. Why this example matters
 
-4개 튜토리얼 중 유일하게 **크로스체인 상태 머신**을 다룬다.
-Hello Bridge가 "1회성 증명 → 민팅"이라면, Loan Flow는 **여러 번의 크로스체인 확인이 상태 전이를 순차적으로 유발**하는 구조다.
+It is the only tutorial that builds a cross-chain state machine. Hello Bridge proves one fact and mints once. Loan Flow uses repeated cross-chain confirmations to drive a sequence of state transitions.
 
 ```
 Created → Funded → PartlyRepaid → Repaid
                  ↘ Expired
 ```
 
-우리가 만들 제품이 "어떤 사실을 검증하고, 그 결과로 온체인 상태를 바꾸는" 형태라면 **이 골격을 거의 그대로 쓴다.**
+A product that verifies a fact and changes on-chain state as a result reuses this skeleton almost unchanged.
 
 ---
 
-## 2. 시스템 구성
+## 2. System layout
 
-### 2.1 컴포넌트 3+1
+### 2.1 Components
 
-| 위치 | 컨트랙트 | 역할 |
+| Where | Contract | Role |
 |---|---|---|
-| Sepolia (소스) | `TestERC20` | 대출에 쓰이는 ERC20 |
-| Sepolia (소스) | **`AuxiliaryLoanContract`** | 실제 토큰 이동 + **`LoanFunded` / `LoanRepaid` 이벤트 발행** |
-| Creditcoin | **`ASCLoanManager`** (← `ASCBase`) | 증명 검증 + 대출 상태 관리 (권위 있는 원장) |
-| Creditcoin | `EvmV1Decoder` | **라이브러리 — 별도 배포 후 링크 필요** |
-| 오프체인 | `worker.ts` | 양방향 이벤트 감시 + 증명 생성 + 제출 |
+| Sepolia, source | `TestERC20` | the ERC20 the loan uses |
+| Sepolia, source | `AuxiliaryLoanContract` | moves the tokens and emits `LoanFunded` and `LoanRepaid` |
+| Creditcoin | `ASCLoanManager`, extending `ASCBase` | verifies proofs and holds loan state, the authoritative ledger |
+| Creditcoin | `EvmV1Decoder` | a library, deployed separately and linked |
+| Off chain | `worker.ts` | watches both chains, builds proofs, submits them |
 
-### 2.2 배포 순서 (의존성 있음)
+### 2.2 Deployment order matters
 
 ```
 1. TestERC20              → Sepolia
-2. EvmV1Decoder           → Creditcoin   ※ 라이브러리
-3. ASCLoanManager         → Creditcoin   ※ --libraries 로 2번 주소 링크
+2. EvmV1Decoder           → Creditcoin   (library)
+3. ASCLoanManager         → Creditcoin   (--libraries, linked to step 2)
 4. AuxiliaryLoanContract  → Sepolia
-5. authorize_token           (Aux 에 ERC20 화이트리스트 등록)
-6. register_source_contract  (Manager 에 Aux 주소 등록)  ← 보안상 필수
+5. authorize_token           (whitelist the ERC20 on Aux)
+6. register_source_contract  (register Aux on Manager)  required for security
 ```
 
-> ⚠️ **함정**: `EvmV1Decoder`는 `library`라 별도 배포 + `--libraries ...:EvmV1Decoder:<주소>` 링크가 필요하다.
-> 이 단계를 빼먹으면 `ASCLoanManager` 배포가 실패한다. 우리 배포 스크립트에 반드시 반영할 것.
+> `EvmV1Decoder` is a `library`, so it needs its own deployment and a `--libraries ...:EvmV1Decoder:<address>` link. Skip that and `ASCLoanManager` fails to deploy. Our deployment script has to carry the step.
 
 ---
 
-## 3. 핵심: `ASCBase` — 우리가 상속할 골격
+## 3. `ASCBase`, the skeleton we extend
 
-**이것이 Attestcoin dApp의 재사용 가능한 심장부다.** (`contracts/sol/ASCBase.sol`)
+This is the reusable core of an Attestcoin dApp (`contracts/sol/ASCBase.sol`).
 
 ```solidity
 function execute(
-    uint8 action,                                   // 우리가 정의하는 액션 코드
-    uint64 chainKey, uint64 blockHeight,            // 소스 체인 좌표
-    bytes calldata encodedTransaction,              // RLP 인코딩된 트랜잭션+영수증
+    uint8 action,                                   // action code we define
+    uint64 chainKey, uint64 blockHeight,            // source chain coordinates
+    bytes calldata encodedTransaction,              // encoded transaction and receipt
     bytes32 merkleRoot,
     INativeQueryVerifier.MerkleProofEntry[] calldata siblings,
     bytes32 lowerEndpointDigest,
     bytes32[] calldata continuityRoots
 ) external returns (bool) {
     bytes32 queryId = _computeQueryId(chainKey, blockHeight, merkleRoot, siblings);
-    require(!processedQueries[queryId], "Query already processed");   // ② 재사용 방지
-    bool verified = _verifyProof(...);                                 // ① 프리컴파일 검증
+    require(!processedQueries[queryId], "Query already processed");   // 2. replay guard
+    bool verified = _verifyProof(...);                                 // 1. precompile verification
     require(verified, "Proof of inclusion verification failed");
     processedQueries[queryId] = true;
-    _processAndEmitEvent(action, queryId, encodedTransaction);         // ★ 우리가 구현
+    _processAndEmitEvent(action, queryId, encodedTransaction);         // what we implement
     return true;
 }
 ```
 
-### 확장 지점은 단 하나
+### There is exactly one extension point
 
 ```solidity
 function _processAndEmitEvent(uint8 action, bytes32 queryId, bytes memory encodedTransaction) internal virtual;
 ```
 
-**우리 ASC 만들기 = `ASCBase` 상속 + `_processAndEmitEvent` 구현.** 증명 검증·재사용 방지는 공짜로 얻는다.
+Building our ASC means extending `ASCBase` and implementing `_processAndEmitEvent`. Proof verification and replay protection come free.
 
-### `queryId` 계산 — 설계 제약이 숨어있다
+### The `queryId` computation hides a design constraint
 
 ```solidity
-queryId = keccak256(abi.encodePacked(chainKey, blockHeight(8B), txIndex(32B)))  // 총 72 bytes
+queryId = keccak256(abi.encodePacked(chainKey, blockHeight(8B), txIndex(32B)))  // 72 bytes
 ```
 
-`txIndex`는 `VERIFIER.calculateTxIndex(merkleProof)`로 머클 증명에서 역산한다.
+`txIndex` is recovered from the Merkle proof through `VERIFIER.calculateTxIndex(merkleProof)`.
 
-> 🔑 **중요한 함의**: `queryId`는 **트랜잭션 1건을 식별**한다. 액션 종류나 이벤트 인덱스가 포함되지 않는다.
-> → **소스 체인 트랜잭션 1건 = ASC 액션 1회.**
-> → 한 트랜잭션이 여러 이벤트를 emit해도 **첫 번째 하나만 처리 가능**하다 (`_processFundLogs`도 `logs[0]`만 씀).
-> → 우리 설계에서 "한 tx에 여러 사실을 담아 한 번에 처리" 하는 최적화는 **불가능**하다. 사실 하나당 tx 하나로 쪼개야 한다.
-> → 쿼리 비용/지연이 **사실 개수에 비례**한다는 뜻. 배치하려면 소스 체인에서 한 tx에 여러 로그를 담고 ASC가 로그를 순회해야 한다 (§8 참조).
+> **What this implies.** `queryId` identifies one transaction. It carries neither the action nor an event index, so one source transaction gets one ASC action.
+>
+> The example reinforces that impression by reading only `logs[0]` in `_processFundLogs`. That turns out to be a simplification rather than a constraint, and section 8.1 shows the way around it: put N logs in one transaction and have the ASC walk all of them.
 
 ---
 
-## 4. 보안 모델 — 4중 방어 (그대로 베낄 것)
+## 4. Security model: four checks worth copying
 
-예제가 잘 만들어진 부분이다. 하나라도 빠지면 자산 탈취가 가능하다.
+This is the part of the example that is well built. Drop any one of them and assets can be taken.
 
-| # | 방어 | 구현 | 없으면 생기는 공격 |
+| # | Check | How | Attack it prevents |
 |---|---|---|---|
-| ① | **포함 증명** | `VERIFIER.verifyAndEmit()` (프리컴파일 `0x…0FD2`) | 일어나지도 않은 트랜잭션을 주장 |
-| ② | **재사용 방지** | `processedQueries[queryId]` | 같은 증명을 반복 제출해 중복 상환 처리 |
-| ③ | **발행자 검증** | `log.address_ == sourceLoanContract` | **← 가장 중요** |
-| ④ | **영수증/타입 검증** | `receipt.receiptStatus == 1`, `isValidTransactionType` | 실패한 tx를 성공으로 위장 |
+| 1 | Inclusion proof | `VERIFIER.verifyAndEmit()` on the precompile at `0x…0FD2` | Claiming a transaction that never happened |
+| 2 | Replay guard | `processedQueries[queryId]` | Submitting one proof repeatedly to be credited twice |
+| 3 | Emitter check | `log.address_ == sourceLoanContract` | The one that matters most, see below |
+| 4 | Receipt and type check | `receipt.receiptStatus == 1`, `isValidTransactionType` | Passing off a failed transaction as a success |
 
-### ③번을 반드시 이해할 것
+### Understand check 3
 
-README가 직접 설명하는 공격 시나리오:
+The README spells out the attack:
 
-> 누구나 자기 컨트랙트를 배포해서 임의의 `loanId`로 `LoanFunded` 이벤트를 emit하고,
-> 그 트랜잭션의 포함 증명을 만들어 제출하면 — **증명 자체는 완벽하게 유효하다.**
-> 실제로 그 트랜잭션은 소스 체인에서 일어났으니까.
+> Anyone can deploy their own contract, emit `LoanFunded` with any `loanId` they like, build an inclusion proof for that transaction and submit it. The proof is entirely valid, because the transaction really did happen on the source chain.
 
-즉 **"트랜잭션이 존재한다"와 "그 트랜잭션이 우리 시스템에서 의미가 있다"는 전혀 다른 문제다.**
-오라클은 전자만 보증한다. 후자는 **우리가 컨트랙트에서 직접 검증해야 한다.**
+"This transaction exists" and "this transaction means something in our system" are different questions. The oracle answers the first. The contract has to answer the second.
 
 ```solidity
 require(sourceLoanContract != address(0), "Source loan contract not registered!");
@@ -123,15 +116,13 @@ require(log.address_ == sourceLoanContract, "... not emitted by registered sourc
 require(log.topics[0] == FUND_EVENT_SIGNATURE, "Not LoanFunded event");
 ```
 
-> 🚨 **우리 제품의 체크리스트**: 어떤 사실을 크로스체인으로 읽든, 반드시
-> `(발행 컨트랙트 주소 allowlist) + (이벤트 시그니처) + (topics 개수/형태)` 3가지를 검증한다.
-> 이걸 빼면 CertiK 감사에서 즉시 지적당하고, 심사위원이 알아채면 치명적이다.
+> **Our checklist.** Whatever fact we read cross-chain, verify three things: the emitting contract is on an allowlist, the event signature matches, and the topics have the expected shape. An audit finds a missing one immediately.
 
 ---
 
-## 5. 이벤트 디코딩 방식
+## 5. Event decoding
 
-`EvmV1Decoder`가 RLP 인코딩된 트랜잭션/영수증을 파싱한다.
+`EvmV1Decoder` parses the encoded transaction and receipt.
 
 ```solidity
 uint8 txType = EvmV1Decoder.getTransactionType(encodedTransaction);
@@ -144,9 +135,9 @@ EvmV1Decoder.LogEntry[] memory logs = EvmV1Decoder.getLogsByEventSignature(recei
 require(logs.length > 0);
 ```
 
-`LogEntry` 구조: `address_`(발행자), `topics[]`(indexed), `data`(non-indexed)
+`LogEntry` carries `address_` (the emitter), `topics[]` (indexed parameters) and `data` (the rest).
 
-이벤트 시그니처는 **상수로 하드코딩**한다:
+Event signatures are hardcoded as constants:
 
 ```solidity
 // keccak256("LoanFunded(uint256)")
@@ -155,42 +146,40 @@ bytes32 public constant FUND_EVENT_SIGNATURE = 0x9e71d2fb732e...;
 bytes32 public constant REPAY_EVENT_SIGNATURE = 0x040cee90ee47...;
 ```
 
-파라미터 추출:
+Extracting parameters:
 ```solidity
 loanId = uint256(log.topics[1]);        // indexed → topics
 amount = abi.decode(log.data, (uint256)); // non-indexed → data
 ```
 
-> 💡 **설계 팁**: 문서의 "모호하지 않은 이벤트" 원칙이 여기서 이유가 드러난다.
-> 시그니처로만 필터링하므로, 범용 `Transfer` 같은 걸 쓰면 다른 컨트랙트의 이벤트와 구분이 어려워지고
-> indexed 배치를 잘못 잡으면 파싱이 깨진다. **전용 이벤트 + 필요한 필드 전부 포함**이 정답이다.
+> This is where the guidance about unambiguous events earns itself. Filtering happens by signature alone, so a generic `Transfer` becomes hard to distinguish from another contract's, and a wrong indexed layout breaks parsing. Purpose-built events carrying every field the consumer needs.
 
 ---
 
-## 6. ⚠️ 신뢰 비대칭 — 반드시 인지할 구조적 한계
+## 6. The trust asymmetry
 
-**Loan Flow는 절반만 무신뢰다.**
+Loan Flow is trustless in one direction only.
 
 ```
-Sepolia ──── 오라클 증명 (무신뢰) ────▶ Creditcoin     ✅ 암호학적 보증
-Creditcoin ── 워커의 owner 권한 호출 ──▶ Sepolia       ⚠️ 신뢰 필요
+Sepolia ──── oracle proof, trustless ────▶ Creditcoin     cryptographic
+Creditcoin ── worker calls as owner ──────▶ Sepolia       requires trust
 ```
 
-- `AuxiliaryLoanContract.registerLoanFund()` 는 **`onlyOwner`** → 워커(owner)가 그냥 호출한다. 증명 없음.
-- `markLoanAsExpired()` 도 양쪽 다 `onlyOwner`.
-- `ASCLoanManager.registerLoan()` 도 **`onlyOwner`** → 대출 등록 자체가 운영자 권한.
+- `AuxiliaryLoanContract.registerLoanFund()` is `onlyOwner`, so the worker calls it directly with no proof.
+- `markLoanAsExpired()` is `onlyOwner` on both sides.
+- `ASCLoanManager.registerLoan()` is `onlyOwner`, so registering a loan is an operator action.
 
-**이유**: Attestcoin의 **Writability(크로스체인 실행)가 아직 개발 중**이기 때문. 현재는 Readability만 무신뢰다.
+The reason is that Attestcoin's writability, the cross-chain execution path, is still in development. Only readability is trustless today.
 
-### 이게 우리에게 주는 의미
+### What that means for us
 
-1. **정직하게 말해야 한다.** 심사위원/감사자가 "이거 반쪽 아니냐"고 물으면, 프로토콜의 현재 한계와 우리가 신뢰 가정을 어디에 두었는지 명확히 답할 수 있어야 한다. 얼버무리면 감점이다.
-2. **차별화 기회다.** 신뢰가 필요한 방향을 최소화하는 설계(예: 권위 있는 상태를 Creditcoin에만 두고, 소스 체인은 순수 이벤트 발행자로만 사용)를 하면 예제보다 나은 아키텍처가 된다.
-3. **"어느 방향이 무신뢰여야 하는가"가 제품 설계의 첫 질문이다.** 무신뢰가 필요한 방향을 Sepolia→Creditcoin으로 잡아야 한다.
+1. Say it plainly. When a judge or an auditor asks whether this is only half trustless, the answer names the protocol's current limit and where we placed our trust assumption. Hedging costs more than the limitation does.
+2. There is room to do better. Keep the authoritative state on Creditcoin and use the source chain purely as an event emitter, and the trusted direction shrinks to nothing.
+3. Which direction has to be trustless is the first product question. Ours is Sepolia to Creditcoin.
 
-### 서명 검증의 빈틈 (교육용 코드의 한계)
+### A gap in the signature check
 
-`registerLoan`은 lender/borrower 양자 서명을 EIP-191로 검증하지만:
+`registerLoan` verifies lender and borrower signatures with EIP-191, but:
 
 ```solidity
 bytes32 messageHash = keccak256(abi.encodePacked(
@@ -198,105 +187,99 @@ bytes32 messageHash = keccak256(abi.encodePacked(
 ));
 ```
 
-**nonce도, chainId도, 컨트랙트 주소도 포함되지 않는다.**
-→ 동일 조건의 서명을 **재사용**할 수 있고, 다른 체인/다른 배포본에 **리플레이** 가능하다.
-→ 우리 제품에서 서명을 쓴다면 **EIP-712 + nonce + chainId + verifyingContract** 로 가야 한다. 이건 감사에서 100% 지적된다.
+There is no nonce, no chainId and no contract address. A signature for identical terms can be reused, and it replays onto another chain or another deployment. Any signature we use goes through EIP-712 with a nonce, chainId and verifyingContract. An audit will raise this.
 
 ---
 
-## 7. 오프체인 워커 분석 (`worker.ts`)
+## 7. The off-chain worker (`worker.ts`)
 
-### 동작 구조
+### How it runs
 
-5초 폴링 루프 안에서 6종 이벤트를 병렬 감시:
+A five-second polling loop watches six event types in parallel:
 
-| 감시 대상 | 체인 | 반응 |
+| Watched | Chain | Reaction |
 |---|---|---|
-| `LoanRegistered` | Creditcoin | → 소스 체인에 `registerLoanFund` 호출 |
-| `LoanFunded` | Sepolia | → **증명 생성 → `execute(action=0)`** |
-| `LoanRepaid` | Sepolia | → **증명 생성 → `execute(action=1)`** |
-| `LoanFunded`/`LoanExpired`/`LoanPartiallyRepaid`/`LoanRepaid` | Creditcoin | → 로깅만 |
+| `LoanRegistered` | Creditcoin | calls `registerLoanFund` on the source chain |
+| `LoanFunded` | Sepolia | builds a proof and calls `execute(action=0)` |
+| `LoanRepaid` | Sepolia | builds a proof and calls `execute(action=1)` |
+| `LoanFunded`, `LoanExpired`, `LoanPartiallyRepaid`, `LoanRepaid` | Creditcoin | logging only |
 
-추가로 `ccProvider.on('block')` 으로 만기 블록을 감시해 `markLoanAsExpired` 호출.
+It also watches for the deadline block through `ccProvider.on('block')` and calls `markLoanAsExpired`.
 
-`queryFilter` 기반 폴링을 쓴다 — 이유는 코드 주석에 있다: **RPC 노드의 필터 만료(`Filter id does not exist`) 회피.**
+It polls with `queryFilter`, and a comment gives the reason: RPC nodes expire filters and return `Filter id does not exist`.
 
-### 🔴 프로덕션 갭 — 우리는 이대로 쓰면 안 된다
+### Production gaps, which is why we did not copy it
 
-예제는 교육용이라 명시되어 있고, 실제로 다음 문제가 있다:
+The example says it is educational, and it behaves accordingly.
 
-| 문제 | 코드 위치 | 결과 |
+| Problem | Where | Result |
 |---|---|---|
-| **상태가 전부 in-memory** | `loanTracker`, `loanExpiriesAt` | 워커 재시작 시 전부 소실 → `Loan X not found in tracker`로 이벤트 **영구 무시** |
-| **시작 블록이 "지금"** | `sourceFromBlock = await getBlockNumber()` | 다운타임 중 발생한 이벤트를 **영원히 놓침** |
-| **중복 캐시 통째 삭제** | `if (processedTxs.size > 1000) clear()` | 이후 이벤트 **중복 처리** 가능 |
-| **tx 단위 dedup** | `processedTxs.has(txHash)` | 한 tx의 여러 이벤트 중 **첫 개만** 처리 |
-| **재시도 없음** | `catch { console.error }` | 증명 실패/가스 부족 시 **조용히 유실** |
-| **단일 시퀀스** | 순차 await | 대출 1건이 8분 대기하는 동안 **다른 건도 블로킹** |
+| All state in memory | `loanTracker`, `loanExpiriesAt` | A restart loses everything, and events are ignored permanently with `Loan X not found in tracker` |
+| Start block is now | `sourceFromBlock = await getBlockNumber()` | Anything emitted during downtime is missed for good |
+| Dedupe cache cleared wholesale | `if (processedTxs.size > 1000) clear()` | Later events can be processed twice |
+| Dedupe by transaction | `processedTxs.has(txHash)` | Only the first of several events in a transaction is handled |
+| No retry | `catch { console.error }` | A failed proof or an out-of-gas is lost silently |
+| One sequence | sequential await | One loan waiting eight minutes blocks every other |
 
-**우리가 만들 워커의 최소 요건:**
-- [ ] 블록 커서를 **영속 저장** (파일/DB) 하고 재시작 시 이어받기
-- [ ] 처리 이력을 **영속 저장** + `(txHash, logIndex)` 단위 멱등 키
-- [ ] 실패 시 **지수 백오프 재시도** + 데드레터
-- [ ] 대출 상태를 온체인에서 **재조회**해 복구 가능하게 (in-memory 신뢰 금지)
-- [ ] 건별 **독립 처리**(큐/워커풀) — 8분 대기가 서로를 막지 않도록
+**Minimum requirements for ours:**
+- [x] Persist the block cursor to a file or database and resume from it
+- [x] Persist processing history with an idempotence key
+- [x] Exponential backoff on failure, with a dead letter state
+- [x] Re-read state from chain rather than trusting memory
+- [x] Process jobs independently so one eight-minute wait does not block the rest
 
-> 데모에서는 예제 수준으로도 돌아가지만, **심사위원이 코드를 볼 수 있다.** 위 항목 중 몇 개만 잡아도 "프로덕션을 생각한 팀"으로 보인다.
+> All five are implemented. See [`06-worker-design.md`](06-worker-design.md).
 
 ---
 
-## 8. 비용·지연 실측 계산
+## 8. Cost and latency
 
-`Loan Flow` 전체 사이클의 **오라클 쿼리 소모량**:
+Oracle queries consumed by a full Loan Flow cycle:
 
-| 단계 | 오라클 쿼리 | 지연 |
+| Step | Oracle queries | Latency |
 |---|---|---|
-| `register_loan` | 0 (Creditcoin 로컬) | 즉시 |
-| `fund_loan` (완납) | **1** | ~8분 |
-| `repay_loan` (원금) | **1** | ~8분 |
-| `repay_loan` (이자) | **1** | ~8분 |
-| **합계** | **3 쿼리** | **~24분** |
+| `register_loan` | 0, local to Creditcoin | immediate |
+| `fund_loan`, paid in full | 1 | about 8 min |
+| `repay_loan`, principal | 1 | about 8 min |
+| `repay_loan`, interest | 1 | about 8 min |
+| **Total** | **3** | **about 24 min** |
 
-> **정정 (8/30):** 초판에서 "파우셋 100 CTC = 9쿼리 → 하루 3사이클"이라 적었으나,
-> **실수령액은 10,000 CTC**였다(실측). 쿼리 예산 제약은 해소됐다.
+> **Correction.** The first draft repeated the README's "100 CTC buys nine queries, so three cycles a day". The actual grant was 10,000 CTC. There is no query budget constraint.
 
-**진짜 병목은 돈이 아니라 시간이다.** 사이클당 **~24분**이고, 실패하면 그만큼 다시 기다린다.
+The bottleneck is time, not money. A cycle takes about 24 minutes, and a failure costs that again.
 
-| 완화책 | 효과 |
+| Mitigation | Effect |
 |---|---|
-| **로컬 모의 BlockProver 하네스** (anvil) | 증명 없이 ASC 로직 전량 검증 → 8분 왕복을 0초로 |
-| 부분 상환 대신 **1회 완납** 설계 | 쿼리 1개·8분 절약 |
-| **한 tx에 여러 로그** → ASC가 순회 | 사실 N개를 왕복 1회로 (§8.1) |
+| Local mock BlockProver on anvil | Verifies the whole ASC path with no proof, turning an eight-minute round trip into nothing |
+| Pay in full rather than in parts | Saves one query and eight minutes |
+| Several logs in one transaction, walked by the ASC | N facts per round trip, section 8.1 |
 
-### 8.1 ★ 배치의 실제 방법 — `getLogsByEventSignature`는 전부 돌려준다
+### 8.1 How batching actually works: `getLogsByEventSignature` returns everything
 
-예제는 `logs[0]`만 쓰지만, 이건 **단순화일 뿐 프로토콜 제약이 아니다.**
+The example reads only `logs[0]`. That is a simplification, not a protocol constraint.
 
 ```solidity
 EvmV1Decoder.LogEntry[] memory logs = EvmV1Decoder.getLogsByEventSignature(receipt, SIG);
-// 예제: EvmV1Decoder.LogEntry memory log = logs[0];   ← 첫 개만
-for (uint i = 0; i < logs.length; i++) { ... }         ← 전부 순회 가능
+// example: EvmV1Decoder.LogEntry memory log = logs[0];   only the first
+for (uint i = 0; i < logs.length; i++) { ... }         walk them all
 ```
 
-`queryId`가 tx 단위라 **`execute()` 호출은 tx당 1회**로 묶이지만,
-그 1회 안에서 **그 tx의 모든 로그를 처리할 수 있다.**
+`queryId` is per transaction, so `execute()` runs once per transaction. Inside that one call every log in the transaction is available.
 
-> 🔑 **설계 결론**: "소스 체인에서 N건을 **한 트랜잭션으로 묶어 emit** → ASC가 `execute()` 1회로 N건 전부 반영".
-> 크로스체인 왕복 1회(8분·쿼리 1개)로 N건을 처리한다. 이것이 이 프로토콜에서 배치를 얻는 정공법이다.
+> **The conclusion.** Emit N entries from the source chain in one transaction and the ASC applies all of them in a single `execute()`. One cross-chain round trip, eight minutes and one query, covers N facts. This is how batching works in this protocol.
 >
-> `verifyBatch`(최대 10쿼리·연속성 증명 공유)는 **서로 다른 tx 10건**을 묶는 별개 수단이다.
-> 단, **`ASCBase`에는 배치 진입점이 없다** — `execute()`는 단일 증명만 받는다. 배치를 쓰려면 우리가 직접 구현해야 한다.
+> `verifyBatch`, which shares a continuity proof across up to ten queries, is a separate mechanism for ten different transactions. `ASCBase` has no entry point for it, and `execute()` takes a single proof, so using it means implementing it ourselves.
 
-## 9. 우리 제품에 재사용할 스켈레톤
+## 9. The skeleton we reuse
 
 ```solidity
 contract OurASC is Ownable, ASCBase {
     enum Actions { FactA, FactB }
 
-    // 1) 신뢰하는 소스 체인 컨트랙트 (③번 방어)
+    // 1) the trusted source contract, check 3
     address public sourceContract;
 
-    // 2) 이벤트 시그니처 상수
+    // 2) event signature constants
     bytes32 public constant FACT_A_SIG = keccak256("FactAttested(bytes32,address)");
 
     function registerSourceContract(address c) external onlyOwner { sourceContract = c; }
@@ -309,7 +292,7 @@ contract OurASC is Ownable, ASCBase {
     }
 
     function _handleFactA(bytes memory encodedTx) internal {
-        // ④ 영수증/타입 검증
+        // 4. receipt and type checks
         uint8 t = EvmV1Decoder.getTransactionType(encodedTx);
         require(EvmV1Decoder.isValidTransactionType(t), "bad tx type");
         EvmV1Decoder.ReceiptFields memory r = EvmV1Decoder.decodeReceiptFields(encodedTx);
@@ -319,60 +302,58 @@ contract OurASC is Ownable, ASCBase {
         require(logs.length > 0, "no event");
         EvmV1Decoder.LogEntry memory log = logs[0];
 
-        // ③ 발행자 검증 — 절대 빼지 말 것
+        // 3. emitter check, never omit this
         require(sourceContract != address(0), "source not registered");
         require(log.address_ == sourceContract, "untrusted emitter");
         require(log.topics[0] == FACT_A_SIG, "wrong event");
         require(log.topics.length == 3, "bad topics");
 
-        // 파라미터 추출 후 비즈니스 로직
+        // extract parameters, then business logic
         bytes32 factId = log.topics[1];
         address subject = address(uint160(uint256(log.topics[2])));
-        // ... 상태 전이 ...
+        // ... state transition ...
     }
 }
 ```
 
-**재사용 체크리스트**
-- [x] `ASCBase` 상속 → 증명 검증 + 재사용 방지 무료
-- [ ] `_processAndEmitEvent` 에 액션 라우팅
-- [ ] 소스 컨트랙트 allowlist (`registerSourceContract`)
-- [ ] 이벤트 시그니처 상수 + topics 형태 검증
-- [ ] 영수증 성공 여부 검증
-- [ ] `EvmV1Decoder` 별도 배포 + 링크 (배포 스크립트에 반영)
-- [ ] 소스 체인 컨트랙트는 **전용 이벤트**만 emit, 필요한 필드 전부 포함
+**Reuse checklist**
+- [x] Extend `ASCBase` for free proof verification and replay protection
+- [x] Route actions in `_processAndEmitEvent`
+- [x] Allowlist the source contract
+- [x] Signature constants and topic shape checks
+- [x] Receipt status check
+- [x] Deploy and link `EvmV1Decoder`, in the deployment script
+- [x] Purpose-built events only, carrying every field the ASC needs
 
 ---
 
-## 10. 사소한 관찰
+## 10. Smaller observations
 
-- `ASCLoanManager` 생성자가 `VERIFIER`를 재대입한다 (`ASCBase` 생성자에서 이미 대입됨).
-  solc 0.8.30에서 파생 컨트랙트 생성자의 immutable 재대입이 허용됨을 **별도 최소 예제로 컴파일 검증함** — 오류는 아니고 **중복일 뿐**이다. 같은 값이라 동작에 영향 없음. 우리 코드에서는 지우면 된다.
-- `AuxiliaryLoanContract.addAuthorizedToken`에 `// TODO: Need to check if the address is a valid ERC20` 주석이 남아있다. 예제 수준임을 보여주는 흔적.
-- `fund_loan.ts`의 `await tx.wait()` 주석은 실제로 겪은 버그의 기록으로 보인다 — 대기 없이 두 번 펀딩하면 stale allowance로 충돌. 우리 워커도 같은 함정에 빠질 수 있다.
+- The `ASCLoanManager` constructor reassigns `VERIFIER`, which the `ASCBase` constructor already set. A minimal example confirms solc 0.8.30 allows reassigning an immutable in a derived constructor, so this is redundant rather than wrong. Same value, no effect. We drop it.
+- `AuxiliaryLoanContract.addAuthorizedToken` still carries `// TODO: Need to check if the address is a valid ERC20`, which says what kind of code this is.
+- The `await tx.wait()` comment in `fund_loan.ts` reads like a bug someone hit: fund twice without waiting and a stale allowance collides. Our worker can fall into the same hole.
 
 ---
 
-## 11. 파일 맵 (빠른 참조)
+## 11. File map
 
-| 파일 | 내용 |
+| File | Contents |
 |---|---|
-| `contracts/sol/ASCBase.sol` | **★ 확장 골격** — execute / 증명검증 / queryId / 재사용방지 |
-| `contracts/sol/VerifierInterface.sol` | 프리컴파일 인터페이스 + `0x…0FD2` 상수 |
-| `contracts/sol/ASCLoanManager.sol` | ASC 구현 예시 — 액션 라우팅, 로그 검증, 상태 전이 |
-| `contracts/sol/AuxiliaryLoanContract.sol` | 소스 체인 이벤트 발행자 + 토큰 이동 |
-| `contracts/sol/LoanTypes.sol` | 구조체/enum 정의 |
-| `loan-flow/worker.ts` | **★ 오프체인 워커 전체 구조** |
-| `utils/index.ts` | `generateProofFor`, 가스 추정, 제출 헬퍼 |
-| `loan-flow/register.ts` | 서명 생성/제출 패턴 (EIP-191) |
-| `loan-flow/fund_loan.ts` | approve → fundLoan 패턴 |
+| `contracts/sol/ASCBase.sol` | The extension skeleton: execute, proof verification, queryId, replay guard |
+| `contracts/sol/VerifierInterface.sol` | Precompile interface and the `0x…0FD2` constant |
+| `contracts/sol/ASCLoanManager.sol` | An ASC implementation: action routing, log checks, state transitions |
+| `contracts/sol/AuxiliaryLoanContract.sol` | Source chain emitter and token movement |
+| `contracts/sol/LoanTypes.sol` | Structs and enums |
+| `loan-flow/worker.ts` | The whole off-chain worker |
+| `utils/index.ts` | `generateProofFor`, gas estimation, submission helpers |
+| `loan-flow/register.ts` | EIP-191 signature creation and submission |
+| `loan-flow/fund_loan.ts` | The approve then fundLoan pattern |
 
 ---
 
-## 12. 다음 액션
+## 12. Follow-up
 
-- [ ] 파우셋 수령 후 **Hello Bridge 먼저 완주** (환경 E2E 1회 성공 확인)
-- [ ] Loan Flow는 컨트랙트 4개 배포가 필요하므로 **자금 여유 확인 후** 진행 판단
-      → 학습 목적이면 코드 정독(이 문서)으로 충분할 수 있음. 쿼리 예산이 아깝다.
-- [ ] 제품 컨셉 확정되면 §9 스켈레톤으로 **우리 ASC 초안** 작성
-- [ ] 워커는 예제를 복사하지 말고 §7 요건을 반영해 **처음부터 영속 상태로** 설계
+- [x] Complete Hello Bridge once the faucet lands, confirming the environment end to end
+- [x] Loan Flow needs four contract deployments. Reading the code, as in this document, was enough.
+- [x] Draft our ASC from the section 9 skeleton
+- [x] Build the worker around persistent state from the start, as section 7 requires
