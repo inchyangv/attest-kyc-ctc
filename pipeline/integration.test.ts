@@ -43,7 +43,8 @@ describe('real AML engine with the issuance pipeline', { skip: HAVE_LISTS ? fals
   const cleanReq: IssueRequest = {
     wallet: '0x' + 'ab'.repeat(20),
     declared: { fullName: '박서준', dateOfBirth: '1988-03-14', nationality: 'KR', residence: 'KR' },
-    idImage: null,
+    idDocument: null,
+    bankAccount: null,
     walletControlProven: true,
     jurisdiction: 410,
     assurance: 3,
@@ -125,17 +126,25 @@ describe('real AML engine with the issuance pipeline', { skip: HAVE_LISTS ? fals
 
   test('with vendors connected the production policy passes, so nothing is blocked by design', async () => {
     const idVendor: IdDocumentVendor = {
+      name: 'fake',
+      live: true,
       async verify() {
-        return { fullName: '박서준', dateOfBirth: '1988-03-14', docHash: '0xdoc',
-                 authenticityChecked: true, faceMatched: true, livenessPassed: true };
+        return { kind: 'verified', docType: 'RRC', fullName: '박서준', dateOfBirth: '1988-03-14', docHash: '0xdoc',
+                 authenticityChecked: true, authentic: true, faceMatched: false, livenessPassed: false, vendor: 'fake', live: true };
       },
     };
     const bankVendor: BankAccountVendor = {
-      async verifyHolder() { return { holderName: '박서준', verified: true }; },
+      name: 'fake',
+      live: true,
+      async holderName() { return { holderName: '박서준' }; },
+      async oneWonTransfer() { return { authCode: '1234' }; },
     };
 
     const out = await runIssuance(
-      { ...cleanReq, idImage: new Uint8Array([1]), bank: { bankCode: '004', accountNumber: '1' } },
+      { ...cleanReq,
+        idDocument: { docType: 'RRC', fullName: '박서준', dateOfBirth: '1988-03-14', docHash: '0xdoc',
+                      authenticityChecked: true, authentic: true, faceMatched: false, livenessPassed: false, vendor: 'fake', live: true },
+        bankAccount: { bankCode: '004', holderName: '박서준', holderVerified: true, oneWonVerified: true, vendor: 'fake', live: true } },
       new KrAdapter(idVendor, bankVendor), aml, NOW);
     assert.equal(out.status, 'ISSUED');
     if (out.status !== 'ISSUED') return;

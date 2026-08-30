@@ -9,7 +9,10 @@ import { reconcile, normalizeName } from './reconcile.js';
 import { packAttrs, unpackAttrs } from './attrs.js';
 import { Methods, describeMethods } from './methods.js';
 import { MockAmlEngine, EXPIRY_DAYS_BY_BAND } from './aml.js';
-import { KrAdapter, Regime, type IdDocumentVendor, type BankAccountVendor } from './adapters/kr.js';
+import {
+  KrAdapter, Regime, VendorError,
+  type IdDocumentVendor, type BankAccountVendor, type IdDocumentResult, type BankAccountResult,
+} from './adapters/kr.js';
 import { runIssuance, type IssueRequest } from './issue.js';
 import { containsPii, findPii } from './pii-guard.js';
 import { loadEvidenceKey, hmacDigest } from './evidence-key.js';
@@ -186,51 +189,90 @@ describe('reconciliation across three axes', () => {
 
 // 5. Honesty: an unconnected vendor leaves its bit unset
 
-describe('KR adapter honesty', () => {
-  const idVendor: IdDocumentVendor = {
-    async verify() {
-      return { fullName: '홍길동', dateOfBirth: '1990-01-01', docHash: '0xdoc',
-               authenticityChecked: true, faceMatched: true, livenessPassed: true };
-    },
-  };
-  const bankVendor: BankAccountVendor = {
-    async verifyHolder() { return { holderName: '홍길동', verified: true }; },
-  };
+const ID_OK: IdDocumentResult = {
+  docType: 'RRC', fullName: '홍길동', dateOfBirth: '1990-01-01', docHash: '0xdoc',
+  authenticityChecked: true, authentic: true, faceMatched: false, livenessPassed: false, vendor: 'fake', live: true,
+};
+const BANK_OK: BankAccountResult = {
+  bankCode: '004', holderName: '홍길동', holderVerified: true, oneWonVerified: true, vendor: 'fake', live: true,
+};
+const fakeId: IdDocumentVendor = { name: 'fake', live: true, async verify() { return { kind: 'verified', ...ID_OK }; } };
+const fakeBank: BankAccountVendor = {
+  name: 'fake',
+  live: true,
+  async holderName() { return { holderName: '홍길동', ref: 'tx-1' }; },
+  async oneWonTransfer() { return { authCode: '4821', ref: 'tx-2' }; },
+};
 
+describe('KR adapter honesty', () => {
   test('an unconnected vendor leaves its bit unset', async () => {
     const sandbox = new KrAdapter(null, null);
     assert.ok(!sandbox.connected);
     assert.equal(sandbox.regime, Regime.KR_FSC_NONFACE_SANDBOX);
 
-    const r = await sandbox.run({ idImage: new Uint8Array([1]), bank: { bankCode: '004', accountNumber: '1' },
-                                  walletControlProven: true });
+    const r = await sandbox.run({ idDocument: null, bankAccount: null, walletControlProven: true });
     assert.equal(r.methods & Methods.ID_DOC_AUTHENTICITY, 0, 'the document authenticity bit is set with no vendor connected');
     assert.equal(r.methods & Methods.BANK_ACCOUNT, 0, 'the bank account bit is set with no vendor connected');
     assert.equal(r.methods & Methods.WALLET_CONTROL, Methods.WALLET_CONTROL, 'we perform wallet control ourselves, so this bit must be set');
+    assert.equal(r.rejected, null);
   });
 
-  test('the bits appear only once a vendor is connected', async () => {
-    const live = new KrAdapter(idVendor, bankVendor);
+  test('the bits appear only from a live vendor result', async () => {
+    const live = new KrAdapter(fakeId, fakeBank);
     assert.equal(live.regime, Regime.KR_FSC_NONFACE);
-    const r = await live.run({ idImage: new Uint8Array([1]), bank: { bankCode: '004', accountNumber: '1' },
-                               walletControlProven: true });
+    const r = await live.run({ idDocument: ID_OK, bankAccount: BANK_OK, walletControlProven: true });
+    assert.ok(r.methods & Methods.ID_DOC_IMAGE);
     assert.ok(r.methods & Methods.ID_DOC_AUTHENTICITY);
     assert.ok(r.methods & Methods.BANK_ACCOUNT);
-    assert.ok(r.methods & Methods.LIVENESS);
+    assert.equal(r.methods & Methods.LIVENESS, 0, 'no liveness check ran');
   });
 
-  test('a vendor reporting no authenticity check leaves that bit unset', async () => {
-    const partial: IdDocumentVendor = {
-      async verify() {
-        return { fullName: '홍길동', dateOfBirth: '1990-01-01', docHash: '0xdoc',
-                 authenticityChecked: false, faceMatched: true, livenessPassed: false };
-      },
-    };
-    const r = await new KrAdapter(partial, bankVendor).run({
-      idImage: new Uint8Array([1]), bank: { bankCode: '004', accountNumber: '1' }, walletControlProven: true });
+  test('a vendor that did not query the authority leaves that bit unset', async () => {
+    const r = await new KrAdapter(fakeId, fakeBank).run({
+      idDocument: { ...ID_OK, authenticityChecked: false, authentic: false }, bankAccount: BANK_OK, walletControlProven: true });
     assert.ok(r.methods & Methods.ID_DOC_IMAGE, 'the document image was submitted');
     assert.equal(r.methods & Methods.ID_DOC_AUTHENTICITY, 0, 'no lookup means the bit stays at zero');
-    assert.equal(r.methods & Methods.LIVENESS, 0);
+    assert.equal(r.rejected, null, 'not checked is silence, not a failure');
+  });
+
+  test('a sandbox or testbed answer sets no bit even when it says yes', async () => {
+    const r = await new KrAdapter(fakeId, fakeBank).run({
+      idDocument: { ...ID_OK, live: false }, bankAccount: { ...BANK_OK, live: false }, walletControlProven: true });
+    assert.equal(r.methods & Methods.ID_DOC_AUTHENTICITY, 0, 'a sandbox lookup is not the issuing authority');
+    assert.equal(r.methods & Methods.BANK_ACCOUNT, 0, 'the testbed moves no money');
+    assert.equal((r.evidence.idDocument as { live: boolean }).live, false, 'the evidence says which it was');
+  });
+
+  test('an authority that says no stops issuance', async () => {
+    const r = await new KrAdapter(fakeId, fakeBank).run({
+      idDocument: { ...ID_OK, authentic: false }, bankAccount: BANK_OK, walletControlProven: true });
+    assert.equal(r.methods & Methods.ID_DOC_AUTHENTICITY, 0);
+    assert.match(r.rejected ?? '', /did not confirm/);
+  });
+
+  test('a one-won code that was never read back leaves the bank bit unset', async () => {
+    const r = await new KrAdapter(fakeId, fakeBank).run({
+      idDocument: ID_OK, bankAccount: { ...BANK_OK, oneWonVerified: false }, walletControlProven: true });
+    assert.equal(r.methods & Methods.BANK_ACCOUNT, 0);
+  });
+
+  test('the holder lookup compares normalised names', async () => {
+    const a = new KrAdapter(fakeId, fakeBank);
+    const same = await a.lookupHolder({ bankCode: '004', accountNumber: '110-123-456789', birthDate: '900101', declaredName: ' 홍 길동' });
+    assert.equal(same.matches, true);
+    const other = await a.lookupHolder({ bankCode: '004', accountNumber: '110123456789', birthDate: '900101', declaredName: '김철수' });
+    assert.equal(other.matches, false);
+    await assert.rejects(a.lookupHolder({ bankCode: '999', accountNumber: '110123456789', birthDate: '900101', declaredName: '홍길동' }), VendorError);
+    await assert.rejects(a.lookupHolder({ bankCode: '004', accountNumber: '110123456789', birthDate: '1990', declaredName: '홍길동' }), VendorError);
+  });
+
+  test('document input is validated before a vendor is called', async () => {
+    const a = new KrAdapter(fakeId, fakeBank);
+    const image = new Uint8Array([1, 2, 3]);
+    await assert.rejects(a.verifyIdDocument({ docType: 'RRC', image, fullName: '홍길동', birthDate: '19900101', rrn: '123', issueDate: '20200101' }), /rrn/);
+    await assert.rejects(a.verifyIdDocument({ docType: 'RRC', image, fullName: '홍길동', birthDate: '19900101', rrn: '8801011234567', issueDate: '20200101' }), /disagree/);
+    await assert.rejects(a.verifyIdDocument({ docType: 'DL', image, fullName: '홍길동', birthDate: '19900101', licenseNumber: '12', serialNo: 'ABC123' }), /licenseNumber/);
+    await assert.rejects(new KrAdapter(null, fakeBank).verifyIdDocument({ docType: 'DL', image, fullName: '홍길동', birthDate: '19900101', licenseNumber: '112233445566', serialNo: 'ABC123' }), /no ID document vendor/);
   });
 });
 
@@ -262,22 +304,15 @@ describe('runIssuance', () => {
   const req: IssueRequest = {
     wallet: '0x' + 'ab'.repeat(20),
     declared: { fullName: '홍길동', dateOfBirth: '1990-01-01', nationality: 'KR', residence: 'KR' },
-    idImage: new Uint8Array([1]),
-    bank: { bankCode: '004', accountNumber: '110-123' },
+    idDocument: ID_OK,
+    bankAccount: BANK_OK,
     walletControlProven: true,
     jurisdiction: 410,
     assurance: 3,
   };
 
-  const liveId: IdDocumentVendor = {
-    async verify() {
-      return { fullName: '홍길동', dateOfBirth: '1990-01-01', docHash: '0xdoc',
-               authenticityChecked: true, faceMatched: true, livenessPassed: true };
-    },
-  };
-  const liveBank: BankAccountVendor = {
-    async verifyHolder() { return { holderName: '홍길동', verified: true }; },
-  };
+  const liveId = fakeId;
+  const liveBank = fakeBank;
 
   test('unproven wallet control is rejected', async () => {
     const out = await runIssuance({ ...req, walletControlProven: false },
@@ -335,6 +370,20 @@ describe('runIssuance', () => {
     if (out.status !== 'ISSUED') return;
     const leaked = findPii(out.evidence, ['홍길동', '110-123', '1990-01-01']);
     assert.equal(leaked, null, `PII found in the evidence: ${leaked}`);
+  });
+
+  test('a document the authority rejected is not issued', async () => {
+    const out = await runIssuance({ ...req, idDocument: { ...ID_OK, authentic: false } },
+                                  new KrAdapter(liveId, liveBank), new MockAmlEngine({ evidenceKey: TEST_EVIDENCE_KEY }), NOW);
+    assert.equal(out.status, 'REJECTED');
+    if (out.status === 'REJECTED') assert.match(out.reason, /did not confirm/);
+  });
+
+  test('a holder name that disagrees with the document is not issued', async () => {
+    const out = await runIssuance({ ...req, bankAccount: { ...BANK_OK, holderName: '김철수' } },
+                                  new KrAdapter(liveId, liveBank), new MockAmlEngine({ evidenceKey: TEST_EVIDENCE_KEY }), NOW);
+    assert.equal(out.status, 'REJECTED');
+    if (out.status === 'REJECTED') assert.match(out.reason, /reconciliation/);
   });
 });
 

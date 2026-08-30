@@ -5,14 +5,16 @@ import { claimsRoot, newSalt, type Claim } from './claims.js';
 import { reconcile, type ReconcileInput } from './reconcile.js';
 import { packAttrs } from './attrs.js';
 import { EXPIRY_DAYS_BY_BAND, type AmlEngine, type ScreeningSubject } from './aml.js';
-import { KrAdapter } from './adapters/kr.js';
+import { KrAdapter, type BankAccountResult, type IdDocumentResult } from './adapters/kr.js';
 import { describeMethods } from './methods.js';
 
 export interface IssueRequest {
   wallet: string;
   declared: { fullName: string; dateOfBirth: string; nationality: string; residence: string };
-  idImage: Uint8Array | null;
-  bank?: { bankCode: string; accountNumber: string };
+  /** Outcome of the ID document step (issuing-authority lookup). null when it was not performed. */
+  idDocument: IdDocumentResult | null;
+  /** Outcome of the bank account step (holder name plus one-won code). null when it was not performed. */
+  bankAccount: BankAccountResult | null;
   /** Result of verifying the EIP-4361 wallet ownership signature */
   walletControlProven: boolean;
   jurisdiction: number;   // ISO-3166 numeric (KR = 410)
@@ -32,8 +34,12 @@ export type IssueOutcome =
  * Issuance orchestration.
  *
  * 0 wallet control, 1 ID document, 2 bank account, 3 reconciliation, 4 AML,
+ * 5 claim commitment, 6 attrs packing.
  *
- * Every step appends to the evidence chain. Cleartext PII stays out of the evidence too:
+ * Steps 1 and 2 talk to outside parties and take more than one round trip (a captcha from the
+ * authority, the customer reading a code off their bank statement), so they run before this
+ * function and hand in their results. Every step appends to the evidence chain. Cleartext PII
+ * stays out of the evidence.
  */
 export async function runIssuance(
   req: IssueRequest,
@@ -53,13 +59,16 @@ export async function runIssuance(
     return { status: 'REJECTED', reason: 'wallet control not proven', evidenceHash: chain.hash, evidence: chain.export() };
   }
 
-  // 1 and 2. jurisdiction adapter: ID document and bank account
+  // 1 and 2. jurisdiction adapter: ID document and bank account, from their results
   const adapterResult = await adapter.run({
-    idImage: req.idImage,
-    bank: req.bank,
+    idDocument: req.idDocument,
+    bankAccount: req.bankAccount,
     walletControlProven: req.walletControlProven,
   });
   chain.append({ step: 'jurisdiction_adapter', at, payload: adapterResult.evidence });
+  if (adapterResult.rejected) {
+    return { status: 'REJECTED', reason: adapterResult.rejected, evidenceHash: chain.hash, evidence: chain.export() };
+  }
 
   // 3. reconciliation: all three axes must agree
   const recInput: ReconcileInput = {
