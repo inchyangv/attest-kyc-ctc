@@ -41,8 +41,7 @@
     ".next/types/**/*.ts",
     ".next/dev/types/**/*.ts",
     "**/*.mts",
-    "../aml/**/*.ts",
-    "../pipeline/**/*.ts"
+    "../aml/**/*.ts"
   ],
   "exclude": [
     "node_modules",
