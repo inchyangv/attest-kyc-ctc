@@ -13,6 +13,9 @@ const nextConfig: NextConfig = {
     resolveAlias: { '@aml': '../aml', '@pipeline': '../pipeline' },
   },
   webpack: (config) => {
+    // aml/ and pipeline/ sit above web/. Their packages (ethers) must resolve from web/node_modules,
+    // the only node_modules the Vercel build installs.
+    config.resolve.modules = [path.join(process.cwd(), 'node_modules'), 'node_modules'];
     config.resolve.extensionAlias = {
       ...(config.resolve.extensionAlias ?? {}),
       '.js': ['.ts', '.tsx', '.js'],

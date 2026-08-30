@@ -13,6 +13,6 @@ export function Wordmark({ compact: _compact = false }: { compact?: boolean }) {
   return (
     <span className="inline-flex items-baseline gap-1.5">
       <span className="font-display text-[15px] font-semibold leading-none tracking-tight text-fg-strong">Proofmark</span>
-          </span>
+    </span>
   );
 }
