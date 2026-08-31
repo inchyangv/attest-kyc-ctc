@@ -29,6 +29,7 @@ type Data = {
     claimsRoot: string; evidenceHash: string; issuer: string; issuerTombstoned: boolean;
   };
   policies: Policy[];
+  epoch: { latestEpoch: number; root: string | null; validUntil: number; fresh: boolean };
 };
 
 /** Two subjects tell the story. The default (no query) is whatever the API considers the current honest mark. */
@@ -140,6 +141,75 @@ function PolicyCard({ p, mask, revoked }: { p: Policy; mask: number; revoked: bo
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * Mode B state, read from the ASC.
+ *
+ * Two states and no third. Before an epoch exists there is nothing to dress up: every mark on the
+ * chain is `origin = Direct`, which proves issuance and is silent about a revocation nobody
+ * submitted, and the page says exactly that. After one exists, the root and its expiry are shown
+ * with the freshness the contract itself reports, because an expired roster verifies nobody.
+ */
+function EpochRoster({ e }: { e: Data['epoch'] }) {
+  const published = e.latestEpoch >= 1;
+  return (
+    <Section title="Epoch roster (Mode B)"
+      aside={<Tag tone={published ? (e.fresh ? 'ok' : 'bad') : 'gray'}>{published ? (e.fresh ? 'fresh' : 'expired') : 'not published'}</Tag>}
+      lede="Mode A carries one mark at a time. Mode B publishes the whole active set as one sorted-key Merkle root, so falling out of the root is the revocation.">
+      <DetailList>
+        <DetailRow label="Latest epoch" hint="ProofmarkASC.latestEpoch()">
+          <span className="mono">{e.latestEpoch}</span>
+          {!published && <span className="text-fg-muted"> · none published</span>}
+        </DetailRow>
+        <DetailRow label="Roster root" hint="ProofmarkASC.epochRoots(latestEpoch)">
+          {e.root ? <Hash value={e.root} full /> : <span className="text-fg-muted">not set</span>}
+        </DetailRow>
+        <DetailRow label="Valid until" hint="ProofmarkASC.epochValidUntil()">
+          <span className="mono">{e.validUntil ? ts(e.validUntil) : '—'}</span>
+        </DetailRow>
+        <DetailRow label="Freshness" hint="ProofmarkASC.isRosterFresh()">
+          <span className="inline-flex flex-wrap items-center gap-1.5">
+            <Tag tone={e.fresh ? 'ok' : 'bad'}>{e.fresh ? 'fresh' : 'not fresh'}</Tag>
+            <span className="text-fg-muted">{e.fresh ? 'verifyWithRoster answers' : 'verifyWithRoster fails closed for every subject'}</span>
+          </span>
+        </DetailRow>
+      </DetailList>
+      {/* Band takes no arbitrary props, so the marker attribute lives on the wrapper. */}
+      <div data-epoch={published ? 'published' : 'none'}>
+      <Band tone="note" className="mt-3">
+        {published ? (
+          <>
+            <p>
+              Membership in this root is the mark; absence from it is positive evidence of revocation, which is what
+              {' '}<code className="mono text-fg-strong">proveNotInRoster</code> returns. Once the roster passes its
+              {' '}<code className="mono text-fg-strong">validUntil</code>, <code className="mono text-fg-strong">isRosterFresh()</code> is
+              false and <code className="mono text-fg-strong">verifyWithRoster</code> answers for nobody.
+            </p>
+            <p className="mt-1.5 text-fg-muted">
+              Marks materialised before the epoch keep <code className="mono text-fg-strong">origin = Direct</code>. The roster is the set at an
+              epoch, not a rewrite of how an individual mark arrived.
+            </p>
+          </>
+        ) : (
+          <>
+            <p>
+              No epoch has been published on chain, so every mark here is <code className="mono text-fg-strong">origin = Direct</code>: proof that
+              the mark was issued at a source block, and silent about a revocation nobody submitted cross-chain.
+            </p>
+            <p className="mt-1.5 text-fg-muted">
+              Mode B is implemented and tested — <code className="mono text-fg-strong">ComplianceSource.publishEpoch</code>,
+              {' '}<code className="mono text-fg-strong">ProofmarkRegistry.verifyWithRoster</code> and
+              {' '}<code className="mono text-fg-strong">proveNotInRoster</code> — and{' '}
+              <code className="mono text-fg-strong">Policy.requireRoster</code> exposes the difference between the two provenances instead of
+              hiding it. Nothing above is filled in until an epoch exists.
+            </p>
+          </>
+        )}
+      </Band>
+      </div>
+    </Section>
   );
 }
 
@@ -276,6 +346,9 @@ function OnChainView() {
           <DetailRow label="Registry"><Hash value={d.registry.address} href={cc3Address(d.registry.address)} full /></DetailRow>
         </DetailList>
       </Section>
+
+      {/* ── epoch roster ── */}
+      <EpochRoster e={d.epoch} />
     </>
   );
 }

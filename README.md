@@ -280,6 +280,8 @@ npm run worker                                  # start this before issuing
 
 Start the worker before issuing. Its cursor begins at the current head, so an event emitted first is never seen. Set `WORKER_START_BLOCK` if you need to catch up.
 
+`npx tsx script/publish-epoch.ts --dry-run` rebuilds the epoch roster (Mode B) from chain state and prints the root and the planned calls without reading a key or sending anything; the publication sequence is [docs/10-epoch-roster-runbook.md](docs/10-epoch-roster-runbook.md).
+
 ---
 
 ## 8. What runs and what does not
@@ -369,6 +371,7 @@ That last one exists because the first PII check reported clean and was wrong. T
 | `docs/06-worker-design.md` | Worker design |
 | `docs/07-kyc-vendors.md` | KYC vendors: what is real, what is demo, how to connect each |
 | `docs/09-ascbase-security-findings.md` | The two `ASCBase` findings, written up for the protocol team |
+| `docs/10-epoch-roster-runbook.md` | Epoch rosters (Mode B): publishing, verifying, roster drift, and the `validUntil` trade-off |
 | `web/DESIGN.md` | Design system |
 
 ## Originality

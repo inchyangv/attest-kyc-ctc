@@ -19,6 +19,10 @@ const ascAbi = parseAbi([
   'function sourceContract() view returns (address)',
   'function tombstone(address) view returns (bool)',
   'function getMark(address) view returns ((uint8,uint8,uint8,uint8,uint16,uint16,uint32,uint40,uint40,uint32,bytes32,bytes32,address))',
+  'function latestEpoch() view returns (uint32)',
+  'function epochValidUntil() view returns (uint40)',
+  'function isRosterFresh() view returns (bool)',
+  'function epochRoots(uint32) view returns (bytes32)',
 ]);
 const regAbi = parseAbi([
   'function isVerified(address,uint256) view returns (bool)',
@@ -29,7 +33,7 @@ export async function GET(req: Request) {
   const subject = (new URL(req.url).searchParams.get('subject') ??
     '0xb8FEBEaB3705793474fA05b91Bf5D205855dD3c1') as Address;
 
-  const [chainKey, source, tomb, mark, p1, p2, v1, v2, block] = await Promise.all([
+  const [chainKey, source, tomb, mark, p1, p2, v1, v2, block, latestEpoch, epochValidUntil, rosterFresh] = await Promise.all([
     client.readContract({ address: ASC, abi: ascAbi, functionName: 'expectedChainKey' }),
     client.readContract({ address: ASC, abi: ascAbi, functionName: 'sourceContract' }),
     client.readContract({ address: ASC, abi: ascAbi, functionName: 'tombstone', args: [subject] }),
@@ -39,7 +43,17 @@ export async function GET(req: Request) {
     client.readContract({ address: REG, abi: regAbi, functionName: 'isVerified', args: [subject, 1n] }),
     client.readContract({ address: REG, abi: regAbi, functionName: 'isVerified', args: [subject, 2n] }),
     client.getBlockNumber(),
+    client.readContract({ address: ASC, abi: ascAbi, functionName: 'latestEpoch' }),
+    client.readContract({ address: ASC, abi: ascAbi, functionName: 'epochValidUntil' }),
+    client.readContract({ address: ASC, abi: ascAbi, functionName: 'isRosterFresh' }),
   ]);
+
+  /* epochRoots needs latestEpoch first, so it cannot ride in the batch above. Epoch 0 is never a
+     published epoch — the source enforces `epoch > lastEpoch` from zero — so we report a null root
+     rather than reading `epochRoots(0)` and passing off bytes32(0) as data. */
+  const epochRoot = latestEpoch === 0
+    ? null
+    : await client.readContract({ address: ASC, abi: ascAbi, functionName: 'epochRoots', args: [latestEpoch] });
 
   const m = mark as readonly [number, number, number, number, number, number, number, number, number, number, `0x${string}`, `0x${string}`, Address];
 
@@ -71,5 +85,11 @@ export async function GET(req: Request) {
       { id: 1, name: 'KR VASP production', ...pol(p1 as never), verified: v1 },
       { id: 2, name: 'KR pilot',           ...pol(p2 as never), verified: v2 },
     ],
+    epoch: {
+      latestEpoch: Number(latestEpoch),
+      root: epochRoot,
+      validUntil: Number(epochValidUntil),
+      fresh: rosterFresh,
+    },
   });
 }
