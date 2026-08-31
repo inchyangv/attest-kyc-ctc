@@ -42,6 +42,15 @@ export async function GET(req: Request) {
   ]);
 
   const m = mark as readonly [number, number, number, number, number, number, number, number, number, number, `0x${string}`, `0x${string}`, Address];
+
+  /* The issuer field is carried data: `isVerified` never checks it against a tombstone. We read it
+     anyway because on this testnet one EOA is deployer, issuer and revoked demo subject, and the
+     page has to say so before anyone reads it as a compromised issuer key. */
+  const issuer = m[12];
+  const issuerTombstoned = issuer === '0x0000000000000000000000000000000000000000'
+    ? false
+    : await client.readContract({ address: ASC, abi: ascAbi, functionName: 'tombstone', args: [issuer] });
+
   const pol = (p: readonly [number, number, number, boolean, boolean]) => ({
     requireAll: p[0], requireAllHex: '0x' + p[0].toString(16),
     minAssurance: p[1], maxAge: Number(p[2]), requireRoster: p[3], exists: p[4],
@@ -56,7 +65,7 @@ export async function GET(req: Request) {
       status: m[0], origin: m[1], kind: m[2], assurance: m[3], regime: m[4], jurisdiction: m[5],
       methods: m[6], methodsHex: '0x' + m[6].toString(16),
       issuedAt: m[7], expiry: m[8], epoch: m[9],
-      claimsRoot: m[10], evidenceHash: m[11], issuer: m[12],
+      claimsRoot: m[10], evidenceHash: m[11], issuer, issuerTombstoned,
     },
     policies: [
       { id: 1, name: 'KR VASP production', ...pol(p1 as never), verified: v1 },

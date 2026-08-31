@@ -26,7 +26,7 @@ type Data = {
   mark: {
     status: number; origin: number; kind: number; assurance: number; regime: number; jurisdiction: number;
     methods: number; methodsHex: string; issuedAt: number; expiry: number; epoch: number;
-    claimsRoot: string; evidenceHash: string; issuer: string;
+    claimsRoot: string; evidenceHash: string; issuer: string; issuerTombstoned: boolean;
   };
   policies: Policy[];
 };
@@ -247,6 +247,22 @@ function OnChainView() {
         <Band tone="note" className="mt-3">
           Two 32-byte commitments. No name, date of birth or document number. On-chain PII is zero bytes.
         </Band>
+        {m.issuerTombstoned && (
+          /* Band takes no arbitrary props, so the marker attribute lives on the wrapper. */
+          <div data-note="issuer-reuse">
+            <Band tone="note" className="mt-3">
+              <p>
+                This mark&rsquo;s issuer is itself tombstoned as a subject on this chain. That is testnet address reuse &mdash; one EOA is the
+                contract deployer, the issuer, and the deliberately revoked demo subject &mdash; not a compromised issuer key.
+              </p>
+              <p className="mt-1.5 text-fg-muted">
+                Verification never consults the issuer&rsquo;s tombstone: <code className="mono text-fg-strong">ProofmarkRegistry.isVerified</code> checks
+                the subject only, and who may issue is decided by <code className="mono text-fg-strong">ComplianceSource</code>&rsquo;s
+                {' '}<code className="mono text-fg-strong">setIssuer</code> allow-list on the source chain.
+              </p>
+            </Band>
+          </div>
+        )}
       </Section>
 
       {/* ── verifier ── */}

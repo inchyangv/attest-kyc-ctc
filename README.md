@@ -75,6 +75,8 @@ The ASC and ComplianceSource share an address. Same deployer, same nonce, differ
 | `0xb8FEBEaB3705793474fA05b91Bf5D205855dD3c1` | Issued through the honest pipeline. Passes the pilot policy, fails production |
 | `0xFD1222e35a536A62f180aA44826656940e86bD5E` | Revoked. Its `methods` were hand-authored during pipeline testing and claimed checks we never ran |
 
+**One address, three roles.** The revoked subject `0xFD1222e35a536A62f180aA44826656940e86bD5E` is also the deployer of every contract above and the issuer EOA that signed the active mark — one testnet key reused for all three roles. So `getMark` on the honest subject returns an `issuer` that is itself tombstoned. That is address reuse, not a compromised or tombstoned issuer key: a tombstone attaches to an address as a *subject*, and `isVerified` consults only the subject's tombstone and mark (`src/ProofmarkRegistry.sol`, `isVerified`) — the mark's `issuer` field is carried data, never checked against tombstones. Who may issue is decided on the source chain by `ComplianceSource.setIssuer`'s allow-list. A production deployment would use separate keys for deployer, issuer and test subjects.
+
 ### Commands
 
 ```sh
