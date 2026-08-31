@@ -676,6 +676,7 @@ Same characters, different code point sequence. A PII detector that fails on Kor
 | R8 | Misreading the regulatory position, claiming to be a verification authority or asserting equivalence | high | State that assurance is our own grade and equivalence is the consumer's call | ongoing |
 | R9 | Public Sepolia RPC rate limits | medium | Keep an Alchemy or Infura key in reserve | D-11 |
 | R10 | Not enough people | medium | Everything outside P0 is designed to be droppable | D-6 |
+| R11 | The worker is single-instance with local JSON state and no leader election, a due-diligence question for a product sold with an operational SLA | medium | A down worker delays propagation, never loses or corrupts state. `execute()` is permissionless and idempotent through `processedQueries`, and `lastAppliedHeight` orders application per subject, so N redundant workers are already safe and duplicates cost only gas. Roadmap in `docs/06-worker-design.md` section 10 | post-submission |
 
 ---
 

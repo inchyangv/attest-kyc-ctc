@@ -228,3 +228,39 @@ cast call $ASC \
 - [ ] Dead-letter reprocessing CLI (`--retry-dead`)
 - [ ] Metrics for processing latency, p50 and p95, feeding the KPIs in the plan
 - [ ] Mode B is already wired on the source side as action 3, `RosterEpochPublished`. The ASC handler is P1.
+
+---
+
+## 10. Deployment topology and HA
+
+The worker runs as a single instance. Its state is one local JSON file (`state/worker.json`, overridable through `WORKER_STATE_PATH` in `worker/config.ts`), there is no leader election and no lock, and nothing coordinates a second copy if one is started by hand. While the instance is down, propagation stops; on restart it resumes from the persisted cursor and works through the backlog. That is a delay, never a loss and never a corruption: attestation is a property of the chain, the source transaction stays valid however long it waits, and the cursor never rewinds, so a restart can neither skip an event nor overwrite what was already applied.
+
+That is the state today. What follows is why closing it is a deployment change rather than a protocol change.
+
+### 10.1 Redundancy is already safe
+
+The contracts, not the worker, are what make duplicate submissions harmless.
+
+| Guarantee | Where | What it gives us |
+|---|---|---|
+| `execute()` is permissionless and idempotent | `src/ASCBaseX.sol` | "Permissionless by design: anyone may call it", and the replay guard `require(!processedQueries[queryId], "Query already processed")` lets exactly one submission land |
+| Ordering per subject | `src/ProofmarkASC.sol` | `lastAppliedHeight[subject]` skips any proof at or below the height already applied, emitting `StaleProofSkipped` instead of writing |
+| Pre-submission check | `worker/worker.ts`, step 3 | The worker reads `processedQueries(queryId)` before submitting and marks the job `skipped`, so a worker that loses the race usually spends no gas at all |
+
+`queryId` is `keccak256(chainKey, blockHeight, txIndex)`, derived from the source transaction and independent of who submits it. Two workers proving the same source transaction therefore compute the same `queryId` and collide on it: one `execute()` lands, the other reverts with `Query already processed`.
+
+Arrival order does not matter either. In `_onIssued` and `_onTombstone`, a proof whose `blockHeight <= lastAppliedHeight[subject]` is skipped with a `StaleProofSkipped` event, so the transaction succeeds with subject state untouched and a late or out-of-order submission cannot resurrect a revoked mark or overwrite a newer one. `_onEpoch` has the same property from `if (epoch <= latestEpoch) revert EpochNotMonotonic(...)`.
+
+The cost of full redundancy is bounded, and it is gas rather than correctness. The `processedQueries` read makes the common duplicate free; only inside the window between that read and the winner's inclusion does the loser pay for one reverted transaction.
+
+### 10.2 Roadmap
+
+| Step | What it is | Why it works |
+|---|---|---|
+| N stateless workers | The same worker running in more than one place, each with its own cursor | Section 7.1 already rebuilds state by setting `WORKER_START_BLOCK` and deleting `state/worker.json`. The chain is the source of truth and the state file is a rebuildable cursor cache, so shared state is optional rather than a prerequisite |
+| Leader election | One worker submits while the others stand by | A cost optimization. It removes duplicate gas and nothing else, and it is explicitly not a correctness requirement, because the guarantees in 10.1 hold without it |
+| Dead-letter alerting | A job reaching `dead` pages a human | `dead` means maxAttempts exhausted or a C1 violation (sections 4.5 and 4.6), which is the one class of failure that redundancy cannot fix |
+
+Fleet-wide ordering needs no coordination: every worker is ordered per subject by `lastAppliedHeight`, so an instance replaying old blocks cannot damage a subject another instance has already moved forward.
+
+> None of this topology is implemented today; every run in section 6 used one instance.
