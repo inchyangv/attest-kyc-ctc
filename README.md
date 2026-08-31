@@ -262,7 +262,7 @@ forge build && forge test                       # 45 tests
 
 npm install
 bash aml/fetch-lists.sh                         # source lists, not committed
-npx tsx --test "worker/*.test.ts" "pipeline/*.test.ts" "aml/*.test.ts"   # 93 tests
+npx tsx --test "worker/*.test.ts" "pipeline/*.test.ts" "aml/*.test.ts"   # 134 tests
 npx tsx aml/eval.ts                             # screening measurements
 
 cp .env.example .env                            # fill in the keys
@@ -333,7 +333,7 @@ That is the design. A check that did not run, or ran against a testbed, is a zer
 
 ```
 Solidity     45   ASC 14, Registry 14, GatedRwaNote 7, RosterProof 7, QueryId 2, AttrsVector 1
-TypeScript   93   worker 11, pipeline 65, AML 17
+TypeScript  134   worker 11, pipeline 106, AML 17
 ```
 
 The ones worth reading:
