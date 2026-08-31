@@ -31,6 +31,9 @@
       ],
       "@pipeline/*": [
         "../pipeline/*"
+      ],
+      "ethers": [
+        "./node_modules/ethers"
       ]
     }
   },
