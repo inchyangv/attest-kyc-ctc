@@ -366,6 +366,7 @@ That last one exists because the first PII check reported clean and was wrong. T
 | `docs/05-asc-integration-review.md` | `ASCBase` integration review |
 | `docs/06-worker-design.md` | Worker design |
 | `docs/07-kyc-vendors.md` | KYC vendors: what is real, what is demo, how to connect each |
+| `docs/09-ascbase-security-findings.md` | The two `ASCBase` findings, written up for the protocol team |
 | `web/DESIGN.md` | Design system |
 
 ## Originality
