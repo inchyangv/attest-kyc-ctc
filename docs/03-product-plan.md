@@ -646,17 +646,21 @@ Same characters, different code point sequence. A PII detector that fails on Kor
 
 ## 10. Demo script, three minutes
 
-| # | Scene | What it shows |
-|---|---|---|
-| 1 | Connect wallet, ID document, bank account | The Korean flow as it is. Open devtools and the payload leaving the browser is 32 bytes |
-| 2 | Reconciliation | Declared details, document and account holder agreeing. Only the agreement survives; the values do not |
-| 3 | AML screening | Three real lists. Type a sanctioned name and it blocks immediately |
-| 4 | Sepolia issuance | On Etherscan, with the `methods` bitmap visible in the mark |
-| 5 | Attestation, proof, verification on CC3 | The scene the competition is about. The eight-minute wait is a timelapse, labelled as edited |
-| 6 | A GatedRwaNote transfer succeeding | The policy passes |
-| 7 | Two dApps, two policies | One mark passing the pilot policy and failing production for want of the authenticity bit. This is where portability becomes visible |
-| 8 | Sanction hit, rescreening, revocation on Sepolia, propagation, the same transfer failing | The lifecycle running for real |
-| 9 | A full dump of the on-chain data | Zero bytes of personal data |
+The production kit lives in [docs/demo-video/](demo-video/): the shot list, per-scene narration, a
+preflight checklist, and `commands.sh`, whose read-only blocks are verified against the live
+testnets. Eight scenes, 178 of the 180 seconds available, and the proof arc — the Sepolia
+transaction, the attestation wait, the verdict on Creditcoin — takes 72 of them.
+
+| # | Scene | Seconds | What it shows |
+|---|---|---|---|
+| 1 | Cold open | 12 | A mark issued on Ethereum, verified on Creditcoin, gating a tokenised note |
+| 2 | Live sanctions screening | 20 | Three real lists. A listed name blocks at risk band 5, corroborated by date of birth; unlicensed checks stay unset |
+| 3 | Guided issuance at `/verify` | 28 | Wallet control, document, bank account, screening. The identity and bank vendors are labelled demo adapters and the mark discloses it in its regime field; the screening is real |
+| 4 | Sepolia issuance | 20 | On Etherscan, with the `methods` bitmap visible in the mark |
+| 5 | Attestation, as a labelled edit | 16 | The wait, cut under an on-screen caption naming the measured range. Never presented as real time |
+| 6 | Creditcoin verdicts | 36 | One address holding two contracts; one mark passing the pilot policy and failing production for want of the authenticity bit; then the mark that crossed during the cut |
+| 7 | `GatedRwaNote` refuses, then allows | 28 | The gate reverting on an unverified recipient, then the same transfer landing. Remove Attestcoin and the gate stops working |
+| 8 | Revocation, and a full dump of the on-chain data | 18 | A tombstone outranking every policy, and zero bytes of personal data |
 
 ---
 
