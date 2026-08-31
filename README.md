@@ -52,6 +52,8 @@ Reads are free on Attestcoin. The official wording is "reading other chains stay
 
 Batching is driven by Ethereum L1 instead. A hundred thousand users means a hundred thousand L1 issuance transactions, and the issuer pays that gas. An epoch roster root fixes L1 writes at one transaction per epoch regardless of how many subjects it covers.
 
+Writability is where ATC is spent, and it is still in development: when it ships, propagating to a spoke chain becomes a paid write under the protocol's own design, one per mark for direct-origin marks and one roster root per epoch in batch mode. That is roadmap, not current fact, and no epoch has been published on chain yet.
+
 ---
 
 ## 4. Reproduce it in five minutes
