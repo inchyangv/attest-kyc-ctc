@@ -48,8 +48,8 @@ test('recall: every listed individual is caught by their own details', { skip: !
 });
 
 test('specificity: no false positives across 600 ordinary Korean names', { skip: !HAVE_LISTS }, async () => {
-  const SUR = ['김','이','박','최','정','강','조','윤','장','임','한','오','서','신','권','황','안','송','전','홍','유','고','문','양','손','배','백','허','심','노'];
-  const GIV = ['철수','영희','민준','서연','우진','지훈','현우','서준','하은','도윤','지민','세훈','지우','예은','나은','민서','준호','재현','다인','승우'];
+  const SUR = ['\uAE40','\uC774','\uBC15','\uCD5C','\uC815','\uAC15','\uC870','\uC724','\uC7A5','\uC784','\uD55C','\uC624','\uC11C','\uC2E0','\uAD8C','\uD669','\uC548','\uC1A1','\uC804','\uD64D','\uC720','\uACE0','\uBB38','\uC591','\uC190','\uBC30','\uBC31','\uD5C8','\uC2EC','\uB178'];
+  const GIV = ['\uCCA0\uC218','\uC601\uD76C','\uBBFC\uC900','\uC11C\uC5F0','\uC6B0\uC9C4','\uC9C0\uD6C8','\uD604\uC6B0','\uC11C\uC900','\uD558\uC740','\uB3C4\uC724','\uC9C0\uBBFC','\uC138\uD6C8','\uC9C0\uC6B0','\uC608\uC740','\uB098\uC740','\uBBFC\uC11C','\uC900\uD638','\uC7AC\uD604','\uB2E4\uC778','\uC2B9\uC6B0'];
   const fps: string[] = [];
   for (const s of SUR) for (const g of GIV) {
     const r = await engine.screen({ fullName: s + g, ...clean });
@@ -59,13 +59,13 @@ test('specificity: no false positives across 600 ordinary Korean names', { skip:
 });
 
 test('a corroborated Hangul name is caught through romanised expansion', { skip: !HAVE_LISTS }, async () => {
-  const r = await engine.screen({ fullName: '김정은', dateOfBirth: '1984-01-08', nationality: 'KP', residence: 'KP', walletAddress: '0x' + '3'.repeat(40) });
+  const r = await engine.screen({ fullName: '\uAE40\uC815\uC740', dateOfBirth: '1984-01-08', nationality: 'KP', residence: 'KP', walletAddress: '0x' + '3'.repeat(40) });
   assert.equal(r.decision, 'BLOCK');
   assert.equal(r.riskBand, 5);
 });
 
 test('an uncorroborated expansion hit does not hold anyone, but it is recorded', { skip: !HAVE_LISTS }, async () => {
-  const r = await engine.screen({ fullName: '최영호', ...clean });
+  const r = await engine.screen({ fullName: '\uCD5C\uC601\uD638', ...clean });
   assert.equal(r.decision, 'ALLOW', 'our own inference must not block a person on its own');
   assert.ok(r.hits.length > 0, 'the hit itself must be recorded for the audit trail');
   assert.equal(r.hits[0].corroborated, false);
@@ -104,7 +104,7 @@ test('screening that did not run leaves its bit unset', { skip: !HAVE_LISTS }, a
 });
 
 test('evidence is deterministic: same input, same digest', { skip: !HAVE_LISTS }, async () => {
-  const s = { fullName: '홍길동', ...clean };
+  const s = { fullName: '\uD64D\uAE38\uB3D9', ...clean };
   const a = await engine.screen(s), b = await engine.screen(s);
   assert.equal(evidenceDigest(a.evidence), evidenceDigest(b.evidence));
   assert.ok(a.evidence.engineVersion.startsWith('aml-'));

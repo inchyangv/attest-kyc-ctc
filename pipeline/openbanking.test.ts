@@ -36,7 +36,7 @@ function vendor(fetchImpl: typeof fetch, env: 'test' | 'prod' = 'test') {
 describe('OpenBankingAccountVendor', () => {
   test('the 2-legged token: client_credentials with scope oob, then Bearer on every call, cached', async () => {
     const { calls, fetch } = fakeFetch((c) => (isToken(c) ? TOKEN
-      : { body: { rsp_code: 'A0000', rsp_message: '', api_tran_id: 'api-1', account_holder_name: '홍길동' } }));
+      : { body: { rsp_code: 'A0000', rsp_message: '', api_tran_id: 'api-1', account_holder_name: '\uD64D\uAE38\uB3D9' } }));
     const v = vendor(fetch);
     await v.holderName({ bankCode: '097', accountNumber: '1101230000678', birthDate: '880101' });
     await v.holderName({ bankCode: '097', accountNumber: '1101230000678', birthDate: '880101' });
@@ -51,9 +51,9 @@ describe('OpenBankingAccountVendor', () => {
     assert.equal(header(calls[1], 'Authorization'), 'Bearer ob-tok');
   });
 
-  test('계좌실명조회 sends the real-name number and returns the holder', async () => {
+  test('real-name inquiry sends the real-name number and returns the holder', async () => {
     const { calls, fetch } = fakeFetch((c) => (isToken(c) ? TOKEN
-      : { body: { rsp_code: 'A0000', rsp_message: '', api_tran_id: 'api-rn', bank_code_std: '097', account_holder_name: '홍길동', account_type: '1' } }));
+      : { body: { rsp_code: 'A0000', rsp_message: '', api_tran_id: 'api-rn', bank_code_std: '097', account_holder_name: '\uD64D\uAE38\uB3D9', account_type: '1' } }));
     const v = vendor(fetch);
     const r = await v.holderName({ bankCode: '097', accountNumber: '1101230000678', birthDate: '880101' });
     const c = calls[1];
@@ -68,22 +68,22 @@ describe('OpenBankingAccountVendor', () => {
       tran_dtime: '20260831120000',
     });
     assert.equal(String(c.body!.bank_tran_id).length, 20);
-    assert.deepEqual(r, { holderName: '홍길동', ref: 'api-rn' });
+    assert.deepEqual(r, { holderName: '\uD64D\uAE38\uB3D9', ref: 'api-rn' });
   });
 
   test('a non-A0000 answer is a VendorError with the rsp_code', async () => {
     const { fetch } = fakeFetch((c) => (isToken(c) ? TOKEN
-      : { body: { rsp_code: 'A0021', rsp_message: '계좌번호 오류', api_tran_id: 'api-x' } }));
+      : { body: { rsp_code: 'A0021', rsp_message: '\uACC4\uC88C\uBC88\uD638 \uC624\uB958', api_tran_id: 'api-x' } }));
     await assert.rejects(vendor(fetch).holderName({ bankCode: '097', accountNumber: '1', birthDate: '880101' }),
       (e: unknown) => e instanceof VendorError && e.code === 'A0021' && e.ref === 'api-x');
   });
 
-  test('입금이체 of one won with our code in the memo', async () => {
+  test('deposit transfer of one won with our code in the memo', async () => {
     const { calls, fetch } = fakeFetch((c) => (isToken(c) ? TOKEN
       : { body: { rsp_code: 'A0000', rsp_message: '', api_tran_id: 'api-dep', res_cnt: '1',
                   res_list: [{ tran_no: '1', bank_rsp_code: '000', bank_rsp_message: '', print_content: 'PM4821', tran_amt: '1' }] } }));
     const v = vendor(fetch);
-    const r = await v.oneWonTransfer({ bankCode: '097', accountNumber: '1101230000678', holderName: '홍길동' });
+    const r = await v.oneWonTransfer({ bankCode: '097', accountNumber: '1101230000678', holderName: '\uD64D\uAE38\uB3D9' });
     const c = calls[1];
     assert.equal(c.url, 'https://testapi.openbanking.or.kr/v2.0/transfer/deposit/acnt_num');
     const b = c.body!;
@@ -99,10 +99,10 @@ describe('OpenBankingAccountVendor', () => {
     assert.equal(item.bank_tran_id, 'M202300440UXXXXXXXXX');
     assert.equal(item.bank_code_std, '097');
     assert.equal(item.account_num, '1101230000678');
-    assert.equal(item.account_holder_name, '홍길동');
+    assert.equal(item.account_holder_name, '\uD64D\uAE38\uB3D9');
     assert.equal(item.print_content, 'PM4821');
     assert.equal(item.tran_amt, '1');
-    assert.equal(item.req_client_name, '홍길동');
+    assert.equal(item.req_client_name, '\uD64D\uAE38\uB3D9');
     assert.equal(item.transfer_purpose, 'TR');
     assert.match(String(item.req_client_num), /^PM[0-9a-f]{18}$/);
     assert.deepEqual(r, { authCode: '4821', ref: 'api-dep' });
@@ -111,9 +111,9 @@ describe('OpenBankingAccountVendor', () => {
   test('the bank declining the deposit is a failure even when the API says A0000', async () => {
     const { fetch } = fakeFetch((c) => (isToken(c) ? TOKEN
       : { body: { rsp_code: 'A0000', rsp_message: '', api_tran_id: 'api-dep',
-                  res_list: [{ tran_no: '1', bank_rsp_code: '301', bank_rsp_message: '수취계좌 오류' }] } }));
-    await assert.rejects(vendor(fetch).oneWonTransfer({ bankCode: '097', accountNumber: '1', holderName: '홍길동' }),
-      (e: unknown) => e instanceof VendorError && e.code === '301' && /수취계좌/.test(e.message));
+                  res_list: [{ tran_no: '1', bank_rsp_code: '301', bank_rsp_message: '\uC218\uCDE8\uACC4\uC88C \uC624\uB958' }] } }));
+    await assert.rejects(vendor(fetch).oneWonTransfer({ bankCode: '097', accountNumber: '1', holderName: '\uD64D\uAE38\uB3D9' }),
+      (e: unknown) => e instanceof VendorError && e.code === '301' && /\uC218\uCDE8\uACC4\uC88C/.test(e.message));
   });
 
   test('the testbed is not live; production is', () => {

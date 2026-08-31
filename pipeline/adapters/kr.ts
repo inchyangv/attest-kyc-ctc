@@ -7,7 +7,8 @@ import { normalizeName } from '../reconcile.js';
  *
  * FSC non-face-to-face identification asks for two independent checks. We use
  *   method 1  ID document: the image is captured, and the document is checked for authenticity
- *             with the issuing authority (정부24 for a resident registration card, 교통민원24 for a
+ *             with the issuing authority (Government24 for a resident registration card, the Korean National
+ *             Police Agency's Traffic Civil Service 24 for a
  *             driver licence).
  *   method 4  an existing bank account: the holder's name is confirmed against the customer's
  *             real-name number, then one won is deposited with a code in the memo and the customer
@@ -27,35 +28,35 @@ export const Regime = {
   KR_FSC_NONFACE_SANDBOX: 2,
 } as const;
 
-/** 주민등록증 (resident registration card) or 운전면허증 (driver licence). */
+/** Resident registration card or driver licence. */
 export type IdDocType = 'RRC' | 'DL';
 
 /** Bank codes are the KFTC standard three-digit codes (`bank_code_std`). */
 export const KR_BANKS: { code: string; name: string }[] = [
-  { code: '004', name: 'KB국민은행' },
-  { code: '088', name: '신한은행' },
-  { code: '020', name: '우리은행' },
-  { code: '081', name: '하나은행' },
-  { code: '011', name: 'NH농협은행' },
-  { code: '003', name: 'IBK기업은행' },
-  { code: '023', name: 'SC제일은행' },
-  { code: '027', name: '한국씨티은행' },
-  { code: '090', name: '카카오뱅크' },
-  { code: '089', name: '케이뱅크' },
-  { code: '092', name: '토스뱅크' },
-  { code: '002', name: 'KDB산업은행' },
-  { code: '007', name: 'Sh수협은행' },
-  { code: '031', name: 'iM뱅크' },
-  { code: '032', name: '부산은행' },
-  { code: '034', name: '광주은행' },
-  { code: '035', name: '제주은행' },
-  { code: '037', name: '전북은행' },
-  { code: '039', name: '경남은행' },
-  { code: '045', name: '새마을금고' },
-  { code: '048', name: '신협' },
-  { code: '050', name: '저축은행' },
-  { code: '064', name: '산림조합' },
-  { code: '071', name: '우체국' },
+  { code: '004', name: 'KB Kookmin Bank' },
+  { code: '088', name: 'Shinhan Bank' },
+  { code: '020', name: 'Woori Bank' },
+  { code: '081', name: 'Hana Bank' },
+  { code: '011', name: 'NH NongHyup Bank' },
+  { code: '003', name: 'IBK Industrial Bank of Korea' },
+  { code: '023', name: 'SC First Bank Korea' },
+  { code: '027', name: 'Citibank Korea' },
+  { code: '090', name: 'KakaoBank' },
+  { code: '089', name: 'K Bank' },
+  { code: '092', name: 'Toss Bank' },
+  { code: '002', name: 'Korea Development Bank' },
+  { code: '007', name: 'Suhyup Bank' },
+  { code: '031', name: 'iM Bank' },
+  { code: '032', name: 'Busan Bank' },
+  { code: '034', name: 'Kwangju Bank' },
+  { code: '035', name: 'Jeju Bank' },
+  { code: '037', name: 'Jeonbuk Bank' },
+  { code: '039', name: 'Kyongnam Bank' },
+  { code: '045', name: 'Korean Federation of Community Credit Cooperatives' },
+  { code: '048', name: 'National Credit Union Federation of Korea' },
+  { code: '050', name: 'Korea Federation of Savings Banks' },
+  { code: '064', name: 'National Forestry Cooperative Federation' },
+  { code: '071', name: 'Korea Post' },
 ];
 
 export const isKrBankCode = (code: string) => KR_BANKS.some((b) => b.code === code);

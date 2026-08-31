@@ -42,7 +42,7 @@ describe('real AML engine with the issuance pipeline', { skip: HAVE_LISTS ? fals
   const NOW = 1_700_000_000_000;
   const cleanReq: IssueRequest = {
     wallet: '0x' + 'ab'.repeat(20),
-    declared: { fullName: '박서준', dateOfBirth: '1988-03-14', nationality: 'KR', residence: 'KR' },
+    declared: { fullName: '\uBC15\uC11C\uC900', dateOfBirth: '1988-03-14', nationality: 'KR', residence: 'KR' },
     idDocument: null,
     bankAccount: null,
     walletControlProven: true,
@@ -118,7 +118,7 @@ describe('real AML engine with the issuance pipeline', { skip: HAVE_LISTS ? fals
     const out = await runIssuance(cleanReq, new KrAdapter(null, null), aml, NOW);
     if (out.status !== 'ISSUED') return;
     // romanised forms derive from the name, so check those too
-    assert.ok(!containsPii(out.evidence, '박서준'), 'a cleartext name is present in the evidence');
+    assert.ok(!containsPii(out.evidence, '\uBC15\uC11C\uC900'), 'a cleartext name is present in the evidence');
     assert.ok(!containsPii(out.evidence, 'park seojun'), 'a romanised form is present in cleartext');
   });
 
@@ -129,22 +129,22 @@ describe('real AML engine with the issuance pipeline', { skip: HAVE_LISTS ? fals
       name: 'fake',
       live: true,
       async verify() {
-        return { kind: 'verified', docType: 'RRC', fullName: '박서준', dateOfBirth: '1988-03-14', docHash: '0xdoc',
+        return { kind: 'verified', docType: 'RRC', fullName: '\uBC15\uC11C\uC900', dateOfBirth: '1988-03-14', docHash: '0xdoc',
                  authenticityChecked: true, authentic: true, faceMatched: false, livenessPassed: false, vendor: 'fake', live: true };
       },
     };
     const bankVendor: BankAccountVendor = {
       name: 'fake',
       live: true,
-      async holderName() { return { holderName: '박서준' }; },
+      async holderName() { return { holderName: '\uBC15\uC11C\uC900' }; },
       async oneWonTransfer() { return { authCode: '1234' }; },
     };
 
     const out = await runIssuance(
       { ...cleanReq,
-        idDocument: { docType: 'RRC', fullName: '박서준', dateOfBirth: '1988-03-14', docHash: '0xdoc',
+        idDocument: { docType: 'RRC', fullName: '\uBC15\uC11C\uC900', dateOfBirth: '1988-03-14', docHash: '0xdoc',
                       authenticityChecked: true, authentic: true, faceMatched: false, livenessPassed: false, vendor: 'fake', live: true },
-        bankAccount: { bankCode: '004', holderName: '박서준', holderVerified: true, oneWonVerified: true, vendor: 'fake', live: true } },
+        bankAccount: { bankCode: '004', holderName: '\uBC15\uC11C\uC900', holderVerified: true, oneWonVerified: true, vendor: 'fake', live: true } },
       new KrAdapter(idVendor, bankVendor), aml, NOW);
     assert.equal(out.status, 'ISSUED');
     if (out.status !== 'ISSUED') return;

@@ -37,13 +37,13 @@ function fakeFetch(script: (call: Call, n: number) => Scripted) {
 
 const TOKEN: Scripted = { raw: true, body: JSON.stringify({ access_token: 'tok-1', token_type: 'bearer', expires_in: 604799, scope: 'read' }) };
 const ok = (data: unknown, transactionId = 'tx-1'): Scripted =>
-  ({ body: { result: { code: 'CF-00000', message: '성공', extraMessage: '', transactionId }, data } });
+  ({ body: { result: { code: 'CF-00000', message: '\uC131\uACF5', extraMessage: '', transactionId }, data } });
 const header = (c: Call, name: string) => (c.init.headers as Record<string, string>)[name];
 const bodyOf = (c: Call) => JSON.parse(decodeURIComponent(String(c.init.body)));
 const isToken = (c: Call) => c.url.startsWith('https://oauth.codef.io/');
 
 const LOGIN: CodefCertLogin = {
-  certType: 'pfx', certFile: 'PFX_BASE64', certPassword: 'cert-pw', loginUserName: '스테이블드', loginIdentity: '1234567890',
+  certType: 'pfx', certFile: 'PFX_BASE64', certPassword: 'cert-pw', loginUserName: '\uC2A4\uD14C\uC774\uBE14\uB4DC', loginIdentity: '1234567890',
 };
 const IMAGE = new Uint8Array([0xff, 0xd8, 0xff, 0x01, 0x02, 0x03]);
 
@@ -66,16 +66,16 @@ describe('CodefClient wire format', () => {
 
   test('requests carry the Bearer token and URL-encoded JSON; URL-encoded replies are decoded', async () => {
     const { calls, fetch } = fakeFetch((c) => (isToken(c) ? TOKEN
-      : { body: { result: { code: 'CF-00000', message: '정상 처리', extraMessage: '', transactionId: 't' }, data: { name: '홍 길동' } } }));
-    const r = await client(fetch).request<{ name: string }>('/v1/kr/x', { organization: '0004', text: '가 나+다&라' });
+      : { body: { result: { code: 'CF-00000', message: '\uC815\uC0C1 \uCC98\uB9AC', extraMessage: '', transactionId: 't' }, data: { name: '\uD64D \uAE38\uB3D9' } } }));
+    const r = await client(fetch).request<{ name: string }>('/v1/kr/x', { organization: '0004', text: '\uAC00 \uB098+\uB2E4&\uB77C' });
     const call = calls[1];
     assert.equal(call.url, 'https://development.codef.io/v1/kr/x');
     assert.equal(header(call, 'Authorization'), 'Bearer tok-1');
     assert.equal(header(call, 'Content-Type'), 'application/json');
     assert.ok(!String(call.init.body).startsWith('{'), 'the body must be URL-encoded, not raw JSON');
-    assert.deepEqual(bodyOf(call), { organization: '0004', text: '가 나+다&라' });
-    assert.equal(r.result.message, '정상 처리');
-    assert.equal(r.data.name, '홍 길동');
+    assert.deepEqual(bodyOf(call), { organization: '0004', text: '\uAC00 \uB098+\uB2E4&\uB77C' });
+    assert.equal(r.result.message, '\uC815\uC0C1 \uCC98\uB9AC');
+    assert.equal(r.data.name, '\uD64D \uAE38\uB3D9');
   });
 
   test('a 401 refreshes the token and retries once', async () => {
@@ -94,7 +94,7 @@ describe('CodefClient wire format', () => {
 
   test('parseCodefBody accepts plain and URL-encoded JSON', () => {
     assert.deepEqual(parseCodefBody('{"a":1}'), { a: 1 });
-    assert.deepEqual(parseCodefBody(encodeURIComponent('{"a":"가 나"}')), { a: '가 나' });
+    assert.deepEqual(parseCodefBody(encodeURIComponent('{"a":"\uAC00 \uB098"}')), { a: '\uAC00 \uB098' });
     assert.deepEqual(parseCodefBody('%7B%22a%22%3A%22x+y%22%7D'), { a: 'x y' });
   });
 
@@ -112,11 +112,11 @@ describe('CodefClient wire format', () => {
 });
 
 describe('CodefIdDocumentVendor', () => {
-  test('resident registration card: 정부24 with the issuer certificate, RSA on the password and the RRN tail', async () => {
+  test('resident registration card: Government24 with the issuer certificate, RSA on the password and the RRN tail', async () => {
     const { calls, fetch } = fakeFetch((c) => (isToken(c) ? TOKEN
-      : ok({ resUserNm: '홍길동', resUserIdentiyNo: '900101-*******', resAuthenticity: '1', resAuthenticityDesc: '진위확인 성공' }, 'tx-rrc')));
+      : ok({ resUserNm: '\uD64D\uAE38\uB3D9', resUserIdentiyNo: '900101-*******', resAuthenticity: '1', resAuthenticityDesc: '\uC9C4\uC704\uD655\uC778 \uC131\uACF5' }, 'tx-rrc')));
     const v = new CodefIdDocumentVendor(client(fetch), LOGIN);
-    const out = await v.verify({ docType: 'RRC', image: IMAGE, fullName: ' 홍길동 ', birthDate: '19900101', rrn: '9001011234567', issueDate: '20200101' });
+    const out = await v.verify({ docType: 'RRC', image: IMAGE, fullName: ' \uD64D\uAE38\uB3D9 ', birthDate: '19900101', rrn: '9001011234567', issueDate: '20200101' });
 
     const call = calls[1];
     assert.equal(call.url, 'https://development.codef.io/v1/kr/public/mw/identity-card/check-status');
@@ -127,7 +127,7 @@ describe('CodefIdDocumentVendor', () => {
     assert.equal(b.certFile, 'PFX_BASE64');
     assert.equal(b.keyFile, undefined, 'a pfx login sends no key file');
     assert.equal(decrypt(b.certPassword), 'cert-pw');
-    assert.equal(b.userName, '홍길동');
+    assert.equal(b.userName, '\uD64D\uAE38\uB3D9');
     assert.equal(b.identityEncYn, 'Y');
     assert.equal(b.birthDate, '900101');
     assert.equal(decrypt(b.identity), '1234567', 'only the last seven digits travel, encrypted');
@@ -141,7 +141,7 @@ describe('CodefIdDocumentVendor', () => {
     assert.equal(out.live, true, 'demo queries the real authority');
     assert.equal(out.docHash, ethers.keccak256(IMAGE));
     assert.equal(out.dateOfBirth, '1990-01-01');
-    assert.equal(out.fullName, '홍길동');
+    assert.equal(out.fullName, '\uD64D\uAE38\uB3D9');
     assert.equal(out.faceMatched, false);
     assert.equal(out.livenessPassed, false);
     assert.equal(out.ref, 'tx-rrc');
@@ -149,11 +149,11 @@ describe('CodefIdDocumentVendor', () => {
     assert.equal(out.vendor, 'codef:demo');
   });
 
-  test('driver licence: 교통민원24, licence number split four ways, "2" is not authentic', async () => {
+  test('driver licence: Traffic Civil Service 24, licence number split four ways, "2" is not authentic', async () => {
     const { calls, fetch } = fakeFetch((c) => (isToken(c) ? TOKEN
-      : ok({ resUserNm: '홍길동', commBirthDate: '19900101', resAuthenticity: '2', resLicenseNumber: '11-22-334455-66', resAuthenticityDesc1: '전산정보만 일치' })));
+      : ok({ resUserNm: '\uD64D\uAE38\uB3D9', commBirthDate: '19900101', resAuthenticity: '2', resLicenseNumber: '11-22-334455-66', resAuthenticityDesc1: '\uC804\uC0B0\uC815\uBCF4\uB9CC \uC77C\uCE58' })));
     const v = new CodefIdDocumentVendor(client(fetch), { ...LOGIN, certType: '1', certFile: 'DER', keyFile: 'KEY' });
-    const out = await v.verify({ docType: 'DL', image: IMAGE, fullName: '홍길동', birthDate: '19900101', licenseNumber: '112233445566', serialNo: 'AB12CD' });
+    const out = await v.verify({ docType: 'DL', image: IMAGE, fullName: '\uD64D\uAE38\uB3D9', birthDate: '19900101', licenseNumber: '112233445566', serialNo: 'AB12CD' });
 
     const b = bodyOf(calls[1]);
     assert.equal(calls[1].url, 'https://development.codef.io/v1/kr/public/ef/driver-license/status');
@@ -162,9 +162,9 @@ describe('CodefIdDocumentVendor', () => {
     assert.equal(b.certType, '1');
     assert.equal(b.certFile, 'DER');
     assert.equal(b.keyFile, 'KEY');
-    assert.equal(b.loginUserName, '스테이블드');
+    assert.equal(b.loginUserName, '\uC2A4\uD14C\uC774\uBE14\uB4DC');
     assert.equal(b.identity, '1234567890', 'the login identity is the certificate holder, not the customer');
-    assert.equal(b.userName, '홍길동');
+    assert.equal(b.userName, '\uD64D\uAE38\uB3D9');
     assert.equal(b.birthDate, '19900101');
     assert.deepEqual([b.licenseNo01, b.licenseNo02, b.licenseNo03, b.licenseNo04], ['11', '22', '334455', '66']);
     assert.equal(b.serialNo, 'AB12CD');
@@ -179,13 +179,13 @@ describe('CodefIdDocumentVendor', () => {
   test('a two-way request is surfaced, and the second leg repeats the body with is2Way', async () => {
     const { calls, fetch } = fakeFetch((c, n) => {
       if (isToken(c)) return TOKEN;
-      if (n === 2) return { body: { result: { code: 'CF-03002', message: '추가 인증이 필요합니다', extraMessage: '', transactionId: 'tx-2w' },
+      if (n === 2) return { body: { result: { code: 'CF-03002', message: '\uCD94\uAC00 \uC778\uC99D\uC774 \uD544\uC694\uD569\uB2C8\uB2E4', extraMessage: '', transactionId: 'tx-2w' },
         data: { continue2Way: true, method: 'secureNo', jobIndex: 0, threadIndex: 1, jti: 'jti-1', twoWayTimestamp: 1700000000000,
                 extraInfo: { reqSecureNo: 'BASE64PNG', reqSecureNoRefresh: '' } } } };
       return ok({ resAuthenticity: '1' });
     });
     const v = new CodefIdDocumentVendor(client(fetch), LOGIN);
-    const input = { docType: 'RRC' as const, image: IMAGE, fullName: '홍길동', birthDate: '19900101', rrn: '9001011234567', issueDate: '20200101' };
+    const input = { docType: 'RRC' as const, image: IMAGE, fullName: '\uD64D\uAE38\uB3D9', birthDate: '19900101', rrn: '9001011234567', issueDate: '20200101' };
 
     const first = await v.verify(input);
     assert.equal(first.kind, 'two_way');
@@ -208,32 +208,32 @@ describe('CodefIdDocumentVendor', () => {
 
   test('an error from the institution is a VendorError carrying its code', async () => {
     const { fetch } = fakeFetch((c) => (isToken(c) ? TOKEN
-      : { body: { result: { code: 'CF-12100', message: '통합 로그인 미등록', extraMessage: '상세', transactionId: 'tx-e' }, data: {} } }));
+      : { body: { result: { code: 'CF-12100', message: '\uD1B5\uD569 \uB85C\uADF8\uC778 \uBBF8\uB4F1\uB85D', extraMessage: '\uC0C1\uC138', transactionId: 'tx-e' }, data: {} } }));
     const v = new CodefIdDocumentVendor(client(fetch), LOGIN);
     await assert.rejects(
-      v.verify({ docType: 'RRC', image: IMAGE, fullName: '홍길동', birthDate: '19900101', rrn: '9001011234567', issueDate: '20200101' }),
-      (e: unknown) => e instanceof VendorError && e.code === 'CF-12100' && e.ref === 'tx-e' && /미등록/.test(e.message));
+      v.verify({ docType: 'RRC', image: IMAGE, fullName: '\uD64D\uAE38\uB3D9', birthDate: '19900101', rrn: '9001011234567', issueDate: '20200101' }),
+      (e: unknown) => e instanceof VendorError && e.code === 'CF-12100' && e.ref === 'tx-e' && /\uBBF8\uB4F1\uB85D/.test(e.message));
   });
 
   test('the sandbox is never live', async () => {
     const { fetch } = fakeFetch((c) => (isToken(c) ? TOKEN : ok({ resAuthenticity: '1' })));
     const v = new CodefIdDocumentVendor(client(fetch, 'sandbox'), LOGIN);
     assert.equal(v.live, false);
-    const out = await v.verify({ docType: 'RRC', image: IMAGE, fullName: '홍길동', birthDate: '19900101', rrn: '9001011234567', issueDate: '20200101' });
+    const out = await v.verify({ docType: 'RRC', image: IMAGE, fullName: '\uD64D\uAE38\uB3D9', birthDate: '19900101', rrn: '9001011234567', issueDate: '20200101' });
     assert.equal(out.kind, 'verified');
     if (out.kind === 'verified') assert.equal(out.live, false, 'a sandbox "1" must not become an authenticity bit');
   });
 
   test('OCR uploads multipart and maps the fields', async () => {
     const { calls, fetch } = fakeFetch((c) => (isToken(c) ? TOKEN
-      : ok({ resType: '운전면허증', resUserName: '홍길동', resUserIdentity: '900101-1234567', resLicenseNo: '11-22-334455-66',
+      : ok({ resType: '\uC6B4\uC804\uBA74\uD5C8\uC99D', resUserName: '\uD64D\uAE38\uB3D9', resUserIdentity: '900101-1234567', resLicenseNo: '11-22-334455-66',
              resIssueDate: '2020.01.01', resSerialNum: 'AB12CD', commBirthDate: '900101' })));
     const v = new CodefIdDocumentVendor(client(fetch), LOGIN);
     const f = await v.ocr(IMAGE, 'DL');
     assert.equal(calls[1].url, 'https://development.codef.io/v1/kr/etc/a/kyc/drivers-license');
     assert.ok(calls[1].init.body instanceof FormData, 'OCR is multipart/form-data');
     assert.equal(header(calls[1], 'Authorization'), 'Bearer tok-1');
-    assert.deepEqual(f, { docType: 'DL', fullName: '홍길동', birthDate: '19900101', rrn: undefined, issueDate: '20200101',
+    assert.deepEqual(f, { docType: 'DL', fullName: '\uD64D\uAE38\uB3D9', birthDate: '19900101', rrn: undefined, issueDate: '20200101',
                           licenseNumber: '112233445566', serialNo: 'AB12CD' });
 
     const g = await v.ocr(IMAGE, 'RRC');
@@ -242,28 +242,28 @@ describe('CodefIdDocumentVendor', () => {
     assert.equal(g.licenseNumber, undefined);
   });
 
-  test('간편인증 login: no certificate, the approver\'s identity, and the simpleAuth second leg', async () => {
+  test('app-based login: no certificate, the approver\'s identity, and the simpleAuth second leg', async () => {
     const { calls, fetch } = fakeFetch((c, n) => {
       if (isToken(c)) return TOKEN;
-      if (n === 2) return { body: { result: { code: 'CF-03002', message: '간편인증을 진행해 주세요', transactionId: 'tx-s' },
+      if (n === 2) return { body: { result: { code: 'CF-03002', message: '\uAC04\uD3B8\uC778\uC99D\uC744 \uC9C4\uD589\uD574 \uC8FC\uC138\uC694', transactionId: 'tx-s' },
         data: { continue2Way: true, method: 'simpleAuth', jobIndex: 0, threadIndex: 0, jti: 'jti-s', twoWayTimestamp: 1700000000001, extraInfo: { commSimpleAuth: '' } } } };
       return ok({ resAuthenticity: '1' });
     });
     const v = new CodefIdDocumentVendor(client(fetch), {
-      kind: 'simple', level: '1', phoneNo: '010-1234-5678', loginUserName: '운영자', loginIdentity: '8505151234567',
+      kind: 'simple', level: '1', phoneNo: '010-1234-5678', loginUserName: '\uC6B4\uC601\uC790', loginIdentity: '8505151234567',
     });
     assert.equal(v.loginKind, 'simple');
-    const input = { docType: 'RRC' as const, image: IMAGE, fullName: '홍길동', birthDate: '19900101', rrn: '9001011234567', issueDate: '20200101' };
+    const input = { docType: 'RRC' as const, image: IMAGE, fullName: '\uD64D\uAE38\uB3D9', birthDate: '19900101', rrn: '9001011234567', issueDate: '20200101' };
     const first = await v.verify(input);
     assert.equal(first.kind, 'two_way');
     if (first.kind !== 'two_way') return;
     assert.equal(first.challenge.method, 'simpleAuth');
 
     const b1 = bodyOf(calls[1]);
-    assert.equal(b1.loginType, '6', '정부24 간편인증');
-    assert.equal(b1.loginTypeLevel, '1', '카카오톡');
+    assert.equal(b1.loginType, '6', 'Government24 app-based authentication');
+    assert.equal(b1.loginTypeLevel, '1', 'KakaoTalk');
     assert.equal(b1.phoneNo, '01012345678');
-    assert.equal(b1.loginUserName, '운영자');
+    assert.equal(b1.loginUserName, '\uC6B4\uC601\uC790');
     assert.equal(b1.loginBirthDate, '850515');
     assert.equal(decrypt(b1.loginIdentity), '1234567', 'the approver\'s tail is encrypted like the customer\'s');
     assert.equal(b1.certFile, undefined);
@@ -278,8 +278,8 @@ describe('CodefIdDocumentVendor', () => {
 
     // the driver-licence product uses different login codes and the identity in clear
     const { calls: c2, fetch: f2 } = fakeFetch((c) => (isToken(c) ? TOKEN : ok({ resAuthenticity: '1' })));
-    const v2 = new CodefIdDocumentVendor(client(f2), { kind: 'simple', level: '5', telecom: '1', phoneNo: '01012345678', loginUserName: '운영자', loginIdentity: '8505151234567' });
-    await v2.verify({ docType: 'DL', image: IMAGE, fullName: '홍길동', birthDate: '19900101', licenseNumber: '112233445566', serialNo: 'AB12CD' });
+    const v2 = new CodefIdDocumentVendor(client(f2), { kind: 'simple', level: '5', telecom: '1', phoneNo: '01012345678', loginUserName: '\uC6B4\uC601\uC790', loginIdentity: '8505151234567' });
+    await v2.verify({ docType: 'DL', image: IMAGE, fullName: '\uD64D\uAE38\uB3D9', birthDate: '19900101', licenseNumber: '112233445566', serialNo: 'AB12CD' });
     const b3 = bodyOf(c2[1]);
     assert.equal(b3.loginType, '5');
     assert.equal(b3.loginTypeLevel, '5');
@@ -305,16 +305,16 @@ describe('CodefBankAccountVendor', () => {
   });
 
   test('holder authentication and the one-won transfer, on production', async () => {
-    const { calls, fetch } = fakeFetch((c, n) => (isToken(c) ? TOKEN : n === 2 ? ok({ name: '홍길동' }, 'tx-h') : ok({ authCode: '4821' }, 'tx-1w')));
+    const { calls, fetch } = fakeFetch((c, n) => (isToken(c) ? TOKEN : n === 2 ? ok({ name: '\uD64D\uAE38\uB3D9' }, 'tx-h') : ok({ authCode: '4821' }, 'tx-1w')));
     const v = new CodefBankAccountVendor(client(fetch, 'api'));
     assert.equal(v.live, true);
 
     const h = await v.holderName({ bankCode: '004', accountNumber: '110123456789', birthDate: '900101' });
     assert.equal(calls[1].url, 'https://api.codef.io/v1/kr/bank/a/account/holder-authentication');
     assert.deepEqual(bodyOf(calls[1]), { organization: '0004', account: '110123456789', identity: '900101' });
-    assert.deepEqual(h, { holderName: '홍길동', ref: 'tx-h' });
+    assert.deepEqual(h, { holderName: '\uD64D\uAE38\uB3D9', ref: 'tx-h' });
 
-    const w = await v.oneWonTransfer({ bankCode: '004', accountNumber: '110123456789', holderName: '홍길동' });
+    const w = await v.oneWonTransfer({ bankCode: '004', accountNumber: '110123456789', holderName: '\uD64D\uAE38\uB3D9' });
     assert.equal(calls[2].url, 'https://api.codef.io/v1/kr/bank/a/account/transfer-authentication');
     assert.deepEqual(bodyOf(calls[2]), { organization: '0004', account: '110123456789', inPrintType: '0' });
     assert.deepEqual(w, { authCode: '4821', ref: 'tx-1w' });
@@ -322,7 +322,7 @@ describe('CodefBankAccountVendor', () => {
 
   test('a bank error is a VendorError', async () => {
     const { fetch } = fakeFetch((c) => (isToken(c) ? TOKEN
-      : { body: { result: { code: 'CF-13001', message: '실명번호 불일치', transactionId: 'tx-x' }, data: {} } }));
+      : { body: { result: { code: 'CF-13001', message: '\uC2E4\uBA85\uBC88\uD638 \uBD88\uC77C\uCE58', transactionId: 'tx-x' }, data: {} } }));
     const v = new CodefBankAccountVendor(client(fetch, 'api'));
     await assert.rejects(v.holderName({ bankCode: '004', accountNumber: '1', birthDate: '900101' }),
       (e: unknown) => e instanceof VendorError && e.code === 'CF-13001');

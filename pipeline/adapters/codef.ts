@@ -9,12 +9,12 @@ import {
  * CODEF (codef.io) connector.
  *
  * Products used, with the menu codes from the developer guide:
- *   KR_PB_MW_035  주민등록 진위확인, 정부24            /v1/kr/public/mw/identity-card/check-status
- *   KR_PB_EF_001  운전면허 진위확인, 경찰청 교통민원24  /v1/kr/public/ef/driver-license/status
- *   KR_ETC_KYC_001 OCR 주민등록증                       /v1/kr/etc/a/kyc/registration-card
- *   KR_ETC_KYC_002 OCR 운전면허증                       /v1/kr/etc/a/kyc/drivers-license
- *   KR_BK_KSN_002 예금주명 인증(계좌 실명 인증)          /v1/kr/bank/a/account/holder-authentication
- *   KR_BK_KSN_003 계좌 인증(1원 이체)                    /v1/kr/bank/a/account/transfer-authentication
+ *   KR_PB_MW_035  Resident registration authenticity, Government24 /v1/kr/public/mw/identity-card/check-status
+ *   KR_PB_EF_001  Driver-licence authenticity, Traffic Civil Service 24 /v1/kr/public/ef/driver-license/status
+ *   KR_ETC_KYC_001 Resident registration card OCR /v1/kr/etc/a/kyc/registration-card
+ *   KR_ETC_KYC_002 Driver-licence OCR /v1/kr/etc/a/kyc/drivers-license
+ *   KR_BK_KSN_002 Account-holder authentication /v1/kr/bank/a/account/holder-authentication
+ *   KR_BK_KSN_003 Account authentication (one-won transfer) /v1/kr/bank/a/account/transfer-authentication
  *
  * Protocol, from the REST guide:
  *   token     POST https://oauth.codef.io/oauth/token, Basic clientId:clientSecret,
@@ -24,7 +24,7 @@ import {
  *   CF-00000  success. CF-03002 with data.continue2Way = true means the institution wants a second
  *             leg (captcha, app approval). The second request repeats the first body plus
  *             is2Way: true, twoWayInfo: { jobIndex, threadIndex, jti, twoWayTimestamp } and the answer.
- *   RSA       fields marked "RSA 암호화" are encrypted with the account's publicKey, PKCS#1 v1.5, base64.
+ *   RSA       fields marked "RSA encryption" are encrypted with the account's publicKey, PKCS#1 v1.5, base64.
  *
  * Environments: sandbox answers from fixed sample data (not live); demo (development.codef.io)
  * queries the real institutions with a daily allowance; api is production. Bank products on demo
@@ -42,7 +42,7 @@ const OAUTH_URL = 'https://oauth.codef.io/oauth/token';
 export interface CodefClientOptions {
   clientId: string;
   clientSecret: string;
-  /** From 키 관리 on codef.io. Needed for any RSA field. */
+  /** From Key Management on codef.io. Needed for any RSA field. */
   publicKey?: string;
   env: CodefEnv;
   fetch?: typeof fetch;
@@ -83,7 +83,7 @@ export class CodefClient {
     return this.token.value;
   }
 
-  /** RSA/PKCS#1 v1.5 with the account public key, base64. What the guide calls "RSA 암호화". */
+  /** RSA/PKCS#1 v1.5 with the account public key, base64. What the guide calls "RSA encryption". */
   rsa(plain: string): string {
     if (!this.opts.publicKey) throw new VendorError('CODEF publicKey is required to encrypt this field', 'NO_PUBLIC_KEY');
     const pem = this.opts.publicKey.includes('BEGIN')
@@ -163,13 +163,15 @@ export function rrnToBirthDate(rrn: string): string | undefined {
 // ─── ID documents ──────────────────────────────────────────────────────────
 
 /**
- * The issuer logs in to 정부24 / 교통민원24 and checks the customer's document. That is "3자인증" in
+ * The issuer logs in to Government24 or Traffic Civil Service 24 and checks the customer's document.
+ * The guide calls this "third-party authentication":
  * the guide: the login belongs to the issuer (its certificate, or an operator approving in an app),
  * the document belongs to the customer.
  *
  * Two ways to log in:
- *   cert    the issuer's 공동인증서 as files. One-shot; a corporate certificate gets a captcha leg.
- *   simple  간편인증: 카카오톡, PASS, 네이버 … on the operator's phone. Every check comes back once as
+ *   cert    the issuer's joint certificate as files. One-shot; a corporate certificate gets a captcha leg.
+ *   simple  app-based authentication: KakaoTalk, PASS, Naver, and others on the operator's phone.
+ *           Every check comes back once as
  *           CF-03002 / simpleAuth; the operator approves and the second leg completes it. Needs no
  *           certificate file, which is what makes it the quickest way to a live lookup.
  */
@@ -189,7 +191,7 @@ export interface CodefCertLogin {
 
 export interface CodefSimpleLogin {
   kind: 'simple';
-  /** 1 카카오톡 · 3 삼성패스 · 4 KB모바일 · 5 통신사(PASS) · 6 네이버 · 7 신한 · 8 toss · 9 하나 · 10 NH */
+  /** 1 KakaoTalk · 3 Samsung Pass · 4 KB Mobile · 5 carrier PASS · 6 Naver · 7 Shinhan · 8 Toss · 9 Hana · 10 NH */
   level: string;
   /** Phone number of the person approving, digits only */
   phoneNo: string;
@@ -236,7 +238,7 @@ export class CodefIdDocumentVendor implements IdDocumentVendor {
     return c;
   }
 
-  /** Login parameters for 정부24 (mw) and 교통민원24 (ef), whose codes differ. */
+  /** Login parameters for Government24 (mw) and Traffic Civil Service 24 (ef), whose codes differ. */
   private loginParams(product: 'mw' | 'ef'): Record<string, string> {
     const l = this.login;
     if (l.kind === 'simple') {
@@ -363,7 +365,7 @@ export class CodefBankAccountVendor implements BankAccountVendor {
     if (client.env !== 'api') {
       throw new Error('CodefBankAccountVendor: the demo and sandbox servers return random test data for the 1-won and '
         + 'holder products, so a result from them would set a bit for a transfer that never happened. '
-        + 'Use CODEF_ENV=api (needs the 제휴 contract) or BANK_VENDOR=openbanking.');
+        + 'Use CODEF_ENV=api (requires the partnership contract) or BANK_VENDOR=openbanking.');
     }
     this.name = 'codef:api';
   }

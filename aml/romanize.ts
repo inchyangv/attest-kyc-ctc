@@ -15,28 +15,28 @@ const JONG = ['','k','k','k','n','n','n','t','l','l','l','l','l','l','l','l','m'
 
 /** Surnames as people actually spell them. These differ from the RR rules. */
 const SURNAME_VARIANTS: Record<string, string[]> = {
-  '김': ['kim','gim'],           '이': ['lee','yi','rhee','ri','i'],
-  '박': ['park','pak','bak'],    '최': ['choi','choe','chwe'],
-  '정': ['jung','jeong','chung','jong'], '강': ['kang','gang'],
-  '조': ['cho','jo'],            '윤': ['yoon','yun'],
-  '장': ['jang','chang'],        '임': ['lim','im','rim'],
-  '한': ['han'],                 '오': ['oh','o'],
-  '서': ['seo','suh','so'],      '신': ['shin','sin'],
-  '권': ['kwon','gwon'],         '황': ['hwang'],
-  '안': ['ahn','an'],            '송': ['song'],
-  '전': ['jeon','jun','chun'],   '홍': ['hong'],
-  '유': ['yoo','yu','ryu'],      '고': ['ko','go'],
-  '문': ['moon','mun'],          '양': ['yang'],
-  '손': ['son','sohn'],          '배': ['bae','pae'],
-  '백': ['baek','paek','back'],  '노': ['noh','no','roh'],
-  '허': ['heo','hur','huh'],     '심': ['shim','sim'],
+  '\uAE40': ['kim','gim'],           '\uC774': ['lee','yi','rhee','ri','i'],
+  '\uBC15': ['park','pak','bak'],    '\uCD5C': ['choi','choe','chwe'],
+  '\uC815': ['jung','jeong','chung','jong'], '\uAC15': ['kang','gang'],
+  '\uC870': ['cho','jo'],            '\uC724': ['yoon','yun'],
+  '\uC7A5': ['jang','chang'],        '\uC784': ['lim','im','rim'],
+  '\uD55C': ['han'],                 '\uC624': ['oh','o'],
+  '\uC11C': ['seo','suh','so'],      '\uC2E0': ['shin','sin'],
+  '\uAD8C': ['kwon','gwon'],         '\uD669': ['hwang'],
+  '\uC548': ['ahn','an'],            '\uC1A1': ['song'],
+  '\uC804': ['jeon','jun','chun'],   '\uD64D': ['hong'],
+  '\uC720': ['yoo','yu','ryu'],      '\uACE0': ['ko','go'],
+  '\uBB38': ['moon','mun'],          '\uC591': ['yang'],
+  '\uC190': ['son','sohn'],          '\uBC30': ['bae','pae'],
+  '\uBC31': ['baek','paek','back'],  '\uB178': ['noh','no','roh'],
+  '\uD5C8': ['heo','hur','huh'],     '\uC2EC': ['shim','sim'],
 };
 
 /** DPRK official spellings. International lists carry these forms. */
 const DPRK_VARIANTS: Record<string, string[]> = {
-  '김': ['kim'], '리': ['ri','li','lee'], '박': ['pak'], '최': ['choe'],
-  '정': ['jong','jung'], '주': ['ju','chu'], '은': ['un','eun'], '일': ['il'],
-  '성': ['song','sung'], '철': ['chol','cheol'], '영': ['yong','young'], '남': ['nam'],
+  '\uAE40': ['kim'], '\uB9AC': ['ri','li','lee'], '\uBC15': ['pak'], '\uCD5C': ['choe'],
+  '\uC815': ['jong','jung'], '\uC8FC': ['ju','chu'], '\uC740': ['un','eun'], '\uC77C': ['il'],
+  '\uC131': ['song','sung'], '\uCCA0': ['chol','cheol'], '\uC601': ['yong','young'], '\uB0A8': ['nam'],
 };
 
 function isHangulSyllable(ch: string): boolean {

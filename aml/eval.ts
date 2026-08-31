@@ -26,8 +26,8 @@ console.log(`  caught (BLOCK+REVIEW) ${(((blocked + reviewed) / sample.length) *
 if (missed.length) console.log('  missed, for example:', missed.slice(0, 3));
 
 // Specificity: ordinary names that are not on any list
-const SUR = ['김','이','박','최','정','강','조','윤','장','임','한','오','서','신','권','황','안','송','전','홍','유','고','문','양','손','배','백','허','심','노'];
-const GIV = ['철수','영희','민준','서연','우진','지훈','현우','서준','하은','도윤','지민','세훈','지우','예은','나은','민서','준호','재현','다인','승우'];
+const SUR = ['\uAE40','\uC774','\uBC15','\uCD5C','\uC815','\uAC15','\uC870','\uC724','\uC7A5','\uC784','\uD55C','\uC624','\uC11C','\uC2E0','\uAD8C','\uD669','\uC548','\uC1A1','\uC804','\uD64D','\uC720','\uACE0','\uBB38','\uC591','\uC190','\uBC30','\uBC31','\uD5C8','\uC2EC','\uB178'];
+const GIV = ['\uCCA0\uC218','\uC601\uD76C','\uBBFC\uC900','\uC11C\uC5F0','\uC6B0\uC9C4','\uC9C0\uD6C8','\uD604\uC6B0','\uC11C\uC900','\uD558\uC740','\uB3C4\uC724','\uC9C0\uBBFC','\uC138\uD6C8','\uC9C0\uC6B0','\uC608\uC740','\uB098\uC740','\uBBFC\uC11C','\uC900\uD638','\uC7AC\uD604','\uB2E4\uC778','\uC2B9\uC6B0'];
 const KO: string[] = [];
 for (const s2 of SUR) for (const g of GIV) KO.push(s2 + g);   // 600 people
 const EN = ['James Anderson','Mary Thompson','Robert Wilson','Patricia Moore','Michael Clark','Linda Hall','David Young','Barbara King','Richard Wright','Susan Scott'];
@@ -40,7 +40,7 @@ console.log(`\nspecificity (n=${KO.length + EN.length}): ${fp} false positive(s)
 
 // The Hangul path
 console.log('\nHangul romanisation path:');
-for (const [name, dob, nat] of [['김정은','1984-01-08','KP'],['최영호','1985-03-14','KR']] as const) {
+for (const [name, dob, nat] of [['\uAE40\uC815\uC740','1984-01-08','KP'],['\uCD5C\uC601\uD638','1985-03-14','KR']] as const) {
   const r = await engine.screen({ fullName: name, dateOfBirth: dob, nationality: nat, residence: nat, walletAddress: '0x'+'3'.repeat(40) });
   const top = r.hits[0];
   console.log(`  ${name} (${nat}) → ${r.decision}${r.reviewReason ? '/'+r.reviewReason : ''} band ${r.riskBand}, ${r.hits.length} hit(s)${top ? ` , top "${top.matchedName}" ${top.score} ${top.corroborated?'corroborated':'uncorroborated'}` : ''}`);

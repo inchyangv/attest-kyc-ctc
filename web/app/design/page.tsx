@@ -175,7 +175,7 @@ export default function Design() {
 
       <Section title="Inputs" lede="36px, sunk fill, hairline border, mint on focus. Label 12/500 muted; hint right-aligned in mono.">
         <div className="panel grid max-w-2xl gap-3.5 p-4 sm:grid-cols-2">
-          <Field label="Full name"><Input defaultValue="박서준" /></Field>
+          <Field label="Full name"><Input defaultValue="Park Seo-jun" /></Field>
           <Field label="Date of birth" hint="YYYY-MM-DD"><Input placeholder="1990-05-05" /></Field>
           <Field label="Wallet address" hint="optional"><Input placeholder="0x…" className="mono" /></Field>
           <Field label="Disabled"><Input disabled value="—" readOnly /></Field>

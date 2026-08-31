@@ -38,15 +38,15 @@ const LIST: Record<string, { label: string; source: string }> = {
 };
 
 const PRESETS = [
-  { label: '김정은 · KP', hint: 'Hangul → romanized, corroborated by DOB + country',
-    v: { fullName: '김정은', dateOfBirth: '1984-01-08', nationality: 'KP', residence: 'KP', walletAddress: '' } },
-  { label: '최영호 · KR', hint: 'Romanized expansion collides with a listed name, but nothing corroborates it',
-    v: { fullName: '최영호', dateOfBirth: '1985-03-14', nationality: 'KR', residence: 'KR', walletAddress: '' } },
+  { label: 'Kim Jong Un · KP', hint: 'Name match corroborated by DOB + country',
+    v: { fullName: 'Kim Jong Un', dateOfBirth: '1984-01-08', nationality: 'KP', residence: 'KP', walletAddress: '' } },
+  { label: 'Choi Yeong-ho · KR', hint: 'Name expansion collides with a listed name, but nothing corroborates it',
+    v: { fullName: 'Choi Yeong-ho', dateOfBirth: '1985-03-14', nationality: 'KR', residence: 'KR', walletAddress: '' } },
   { label: 'Sanctioned wallet', hint: 'The name does not matter. The address itself is on the OFAC list',
     v: { fullName: 'Totally Unrelated Person', dateOfBirth: '1990-01-01', nationality: 'US', residence: 'US',
          walletAddress: '0x252a8bd2319d8a555b872990601221b3a2053bce' } },
-  { label: '박서준 · KR', hint: 'An ordinary Korean name. Must pass cleanly',
-    v: { fullName: '박서준', dateOfBirth: '1990-05-05', nationality: 'KR', residence: 'KR', walletAddress: '' } },
+  { label: 'Park Seo-jun · KR', hint: 'An ordinary Korean name. Must pass cleanly',
+    v: { fullName: 'Park Seo-jun', dateOfBirth: '1990-05-05', nationality: 'KR', residence: 'KR', walletAddress: '' } },
 ];
 
 const DECISION: Record<Decision, { tone: Tone; edge: string; text: string }> = {

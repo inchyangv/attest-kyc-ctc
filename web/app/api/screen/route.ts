@@ -30,7 +30,7 @@ const GROUPS: { group: string; note: string; items: [keyof typeof Methods, strin
   },
   {
     group: 'Identity checks — issuance pipeline',
-    note: 'Set by the issuance flow at /verify (CODEF against 정부24 / 교통민원24, KFTC Open Banking), not by screening.',
+    note: 'Set by the issuance flow at /verify (CODEF against Government24 / Traffic Civil Service 24, KFTC Open Banking), not by screening.',
     items: [
       ['WALLET_CONTROL', 'Wallet control'],
       ['ID_DOC_IMAGE', 'ID document image'],

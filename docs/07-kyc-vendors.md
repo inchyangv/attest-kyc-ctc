@@ -21,9 +21,9 @@ There is no silent mock. An axis is either a real vendor, the labelled demo vend
 
 | Axis | Self-service today | Path | Result on the mark |
 |---|---|---|---|
-| **ID document**: 주민등록증 (정부24), 운전면허증 (경찰청 교통민원24), plus OCR | **Yes.** CODEF demo tier with 간편인증 login | Section 3 | `live`, bit set, regime production |
+| **ID document**: resident registration card (Government24), driver licence (Korean National Police Agency Traffic Civil Service 24), plus OCR | **Yes.** CODEF demo tier with app-based authentication | Section 3 | `live`, bit set, regime production |
 | **Bank account**: holder name + one won | Testbed only: KFTC Open Banking | Section 4 | not live: the real API, canned answers, no money moves |
-| Bank account, real rails | No. KFTC 이용기관 registration (weeks) or the CODEF 제휴 contract | Section 4.3 | `live`, bit set |
+| Bank account, real rails | No. KFTC participating-institution registration (weeks) or the CODEF partnership contract | Section 4.3 | `live`, bit set |
 
 Real and demo mix per axis. With CODEF configured and nothing for the bank, the document is checked for real and the account is demo.
 
@@ -33,26 +33,26 @@ Real and demo mix per axis. With CODEF configured and nothing for the bank, the 
 
 ### 3.1 Sign-up
 
-1. Register at codef.io and apply for the **데모 서비스**.
-2. 마이페이지 → **키 관리**: copy `clientId`, `clientSecret`, `publicKey`.
-3. Set `CODEF_ENV=demo`. The demo tier queries the real 정부24 and 교통민원24 within a daily allowance. `sandbox` answers from fixed sample data and is never live; `api` is production.
+1. Register at codef.io and apply for the **demo service**.
+2. Go to My Page → **Key Management** and copy `clientId`, `clientSecret`, and `publicKey`.
+3. Set `CODEF_ENV=demo`. The demo tier queries the real Government24 and Traffic Civil Service 24 within a daily allowance. `sandbox` answers from fixed sample data and is never live; `api` is production.
 
-### 3.2 Login: 간편인증, no certificate file
+### 3.2 Login: app-based authentication, no certificate file
 
-The authorities require the *requesting party* to log in; the document being checked belongs to the customer (the guide's "3자인증"). Two ways are implemented:
+The authorities require the *requesting party* to log in; the document being checked belongs to the customer (the guide calls this "third-party authentication"). Two ways are implemented:
 
 | `CODEF_LOGIN_TYPE` | What it needs | Behaviour |
 |---|---|---|
-| `simple` | The operator's name, phone and 13-digit resident number, and an app: `CODEF_SIMPLE_LEVEL` 1 카카오톡 · 3 삼성패스 · 4 KB모바일 · 5 통신사 PASS (`CODEF_LOGIN_TELECOM` 0 SKT · 1 KT · 2 LG U+) · 6 네이버 · 7 신한 · 8 toss · 9 하나 · 10 NH | Every check comes back once as `CF-03002 / simpleAuth`; the operator approves on the phone; the page sends the second leg and the authority answers. This is the quickest route to a live lookup: nothing but a demo key and a phone |
-| `cert` | The issuer's 공동인증서 as files: `CODEF_CERT_TYPE=pfx` + `CODEF_CERT_FILE` (base64), or `1` + `CODEF_CERT_FILE` (der) + `CODEF_KEY_FILE`; `CODEF_CERT_PASSWORD` (plain, RSA-encrypted per request with the account `publicKey`); `CODEF_LOGIN_USER_NAME` (법인명 or 성명) and `CODEF_LOGIN_IDENTITY` (사업자등록번호 or 주민등록번호) | One shot. A corporate certificate on 교통민원24 gets a captcha leg (`secureNo`), which the page shows as an image and answers |
+| `simple` | The operator's name, phone, 13-digit resident number, and an app: `CODEF_SIMPLE_LEVEL` 1 KakaoTalk · 3 Samsung Pass · 4 KB Mobile · 5 carrier PASS (`CODEF_LOGIN_TELECOM` 0 SKT · 1 KT · 2 LG U+) · 6 Naver · 7 Shinhan · 8 Toss · 9 Hana · 10 NH | Every check comes back once as `CF-03002 / simpleAuth`; the operator approves on the phone; the page sends the second leg and the authority answers. This is the quickest route to a live lookup: nothing but a demo key and a phone |
+| `cert` | The issuer's joint certificate as files: `CODEF_CERT_TYPE=pfx` + `CODEF_CERT_FILE` (base64), or `1` + `CODEF_CERT_FILE` (der) + `CODEF_KEY_FILE`; `CODEF_CERT_PASSWORD` (plain, RSA-encrypted per request with the account `publicKey`); `CODEF_LOGIN_USER_NAME` (corporate or personal name) and `CODEF_LOGIN_IDENTITY` (business registration number or resident registration number) | One shot. A corporate certificate on Traffic Civil Service 24 gets a captcha leg (`secureNo`), which the page shows as an image and answers |
 
 ### 3.3 Products and wire format
 
 | Product | Endpoint | Notes |
 |---|---|---|
-| 주민등록 진위확인 (KR_PB_MW_035) | `POST /v1/kr/public/mw/identity-card/check-status` | `organization 0002`; `identityEncYn Y`, `birthDate yymmdd`, `identity` = RSA of the last seven digits; `issueDate YYYYMMDD`. `resAuthenticity "1"` is genuine |
-| 운전면허 진위확인 (KR_PB_EF_001) | `POST /v1/kr/public/ef/driver-license/status` | `organization 0001`; licence number split `licenseNo01..04` (2-2-6-2); `serialNo` (암호일련번호) is required. `"1"` genuine; `"2"` = number exists, serial did not verify, treated as a rejection |
-| OCR 주민등록증 / 운전면허증 (KR_ETC_KYC_001/002) | `POST /v1/kr/etc/a/kyc/registration-card`, `/drivers-license` | multipart `file`, ≤ 5 MB. Fields prefill the form; the customer confirms them against the card |
+| Resident registration authenticity (KR_PB_MW_035) | `POST /v1/kr/public/mw/identity-card/check-status` | `organization 0002`; `identityEncYn Y`, `birthDate yymmdd`, `identity` = RSA of the last seven digits; `issueDate YYYYMMDD`. `resAuthenticity "1"` is genuine |
+| Driver-licence authenticity (KR_PB_EF_001) | `POST /v1/kr/public/ef/driver-license/status` | `organization 0001`; licence number split `licenseNo01..04` (2-2-6-2); `serialNo` (anti-forgery serial number) is required. `"1"` genuine; `"2"` = number exists, serial did not verify, treated as a rejection |
+| Resident registration card / driver-licence OCR (KR_ETC_KYC_001/002) | `POST /v1/kr/etc/a/kyc/registration-card`, `/drivers-license` | multipart `file`, ≤ 5 MB. Fields prefill the form; the customer confirms them against the card |
 
 Protocol, from the REST guide: token `POST https://oauth.codef.io/oauth/token` with Basic `clientId:clientSecret` and `grant_type=client_credentials&scope=read`, valid a week and cached; requests are URL-encoded JSON with a Bearer header; responses are URL-encoded JSON `{ result: { code, message, transactionId }, data }`; `CF-00000` is success; `CF-03002` with `data.continue2Way = true` asks for a second leg, sent to the same endpoint with the first body plus `is2Way: true`, `twoWayInfo: { jobIndex, threadIndex, jti, twoWayTimestamp }` and the answer (`secureNo` or `simpleAuth: "1"`). The authority holds the session about three minutes.
 
@@ -68,8 +68,8 @@ Face match and liveness. CODEF has no face product; those bits stay unset until 
 
 ### 4.1 KFTC Open Banking (`BANK_VENDOR=openbanking`, default)
 
-1. Register at developers.kftc.or.kr (개인 개발자 needs 본인인증) and create a test app: `client_id`, `client_secret`, and the ten-character 이용기관코드.
-2. Set `OPENBANKING_CLIENT_ID`, `OPENBANKING_CLIENT_SECRET`, `OPENBANKING_CLIENT_USE_CODE`, the institution's contracted account `OPENBANKING_CNTR_ACCOUNT_NUM` (type `N`, or `C` for a fintech use number), `OPENBANKING_WD_PASS_PHRASE` (the 출금이체 비밀번호 registered with KFTC), `OPENBANKING_ENV=test`.
+1. Register at developers.kftc.or.kr (an individual developer must complete identity verification) and create a test app: `client_id`, `client_secret`, and the ten-character institution use code.
+2. Set `OPENBANKING_CLIENT_ID`, `OPENBANKING_CLIENT_SECRET`, `OPENBANKING_CLIENT_USE_CODE`, the institution's contracted account `OPENBANKING_CNTR_ACCOUNT_NUM` (type `N`, or `C` for a fintech use number), `OPENBANKING_WD_PASS_PHRASE` (the withdrawal-transfer passphrase registered with KFTC), and `OPENBANKING_ENV=test`.
 
 | Step | Endpoint | Notes |
 |---|---|---|
@@ -77,17 +77,17 @@ Face match and liveness. CODEF has no face product; those bits stay unset until 
 | Holder name | `POST /v2.0/inquiry/real_name` | `bank_code_std` (3 digits), `account_num`, `account_holder_info_type " "`, `account_holder_info` = first six digits of the resident number; `rsp_code A0000` |
 | One won | `POST /v2.0/transfer/deposit/acnt_num` | `tran_amt "1"`, `print_content "PM" + 4 digits` as the sender, `name_check_option on`; success is `A0000` **and** `res_list[0].bank_rsp_code "000"` |
 
-`bank_tran_id` is 이용기관코드 + `U` + nine characters, unique per call; `tran_dtime` is KST. Hosts: `testapi.openbanking.or.kr` (test), `openapi.openbanking.or.kr` (prod).
+`bank_tran_id` is the institution use code + `U` + nine characters, unique per call; `tran_dtime` is KST. Hosts: `testapi.openbanking.or.kr` (test), `openapi.openbanking.or.kr` (prod).
 
 The testbed runs the real API against canned data and moves nothing, so the vendor reports `live = false`. The flow completes (under demo the code is shown, since no statement exists), the bit is not set unless demo bits are on.
 
 ### 4.2 CODEF bank products (`BANK_VENDOR=codef`)
 
-`예금주명 인증` (`/v1/kr/bank/a/account/holder-authentication`: `organization` = `0` + bank code, `account`, `identity` = YYMMDD) and `계좌 인증(1원 이체)` (`/v1/kr/bank/a/account/transfer-authentication`, `inPrintType 0` = four random digits as the depositor, returns `authCode`). These are 제휴 products: the demo server returns random test data, so the class refuses to construct on anything but `CODEF_ENV=api`.
+Account-holder authentication (`/v1/kr/bank/a/account/holder-authentication`: `organization` = `0` + bank code, `account`, `identity` = YYMMDD) and account authentication by one-won transfer (`/v1/kr/bank/a/account/transfer-authentication`, `inPrintType 0` = four random digits as the depositor, returns `authCode`). These are partnership products: the demo server returns random test data, so the class refuses to construct on anything but `CODEF_ENV=api`.
 
 ### 4.3 Real rails
 
-Either KFTC 이용기관 registration (review, weeks) with `OPENBANKING_ENV=prod`, or the CODEF 제휴 contract with `CODEF_ENV=api`. Nothing in the code changes.
+Either KFTC participating-institution registration (review, weeks) with `OPENBANKING_ENV=prod`, or the CODEF partnership contract with `CODEF_ENV=api`. Nothing in the code changes.
 
 ---
 
@@ -100,7 +100,7 @@ Either KFTC 이용기관 registration (review, weeks) with `OPENBANKING_ENV=prod
 | Interface and inputs | Identical to CODEF and Open Banking. Tokens, reconciliation, screening, commitment and evidence run unchanged |
 | Institutions asked | None. `live = false`, vendor `demo:id` / `demo:bank`, references `demo-…` |
 | OCR | Reads nothing; the customer types and the page says so |
-| Rejection paths, for a demo | A name containing `위조` or `FAKE`, or a document number of one repeated digit → not authentic → issuance stops. An account ending in `99` belongs to `다른사람` → holder mismatch |
+| Rejection paths, for a demo | A name containing `FAKE` (or the Korean equivalent), or a document number of one repeated digit → not authentic → issuance stops. An account ending in `99` belongs to `Different Person` → holder mismatch |
 | One-won code | Derived from the account (stable on retry) and **shown on the page** in place of the bank app. A live rail never reveals it |
 | Bits | `KYC_DEMO_BITS=1` (default): the adapter's `sandboxBits` switch counts non-live results, so the mark ends with `0x190027` and assurance 3. `KYC_DEMO_BITS=0` leaves the two bits unset |
 | Regime | Always `KR_FSC_NONFACE_SANDBOX` (2) when either axis is not live. The evidence carries `sandboxBits`, `live` and the vendor name per axis |
@@ -153,8 +153,8 @@ Sealed tokens are AES-256-GCM under `sha256(EVIDENCE_HMAC_KEY | proofmark-seal-v
 
 - `npm run test:ts`: 117 tests. New: CODEF wire format (token, URL-encoded JSON, RSA fields, both login modes, captcha and simpleAuth second legs, OCR multipart, error codes), Open Banking (2-legged token, `bank_tran_id`, real_name, deposit with `bank_rsp_code`), demo vendors and `sandboxBits`, adapter honesty (no vendor, non-live answer, authority says no, code never read back).
 - `tsc` at root and in `web/`; `next build --webpack`; `config.resolve.modules` points root-level `pipeline/` at `web/node_modules`, and `ethers` is a `web/` dependency, so the Vercel build resolves.
-- Against the built server with `KYC_DEMO=1`: status reports demo on both axes → wallet round trip → demo OCR → document verified / `위조` rejected → account ending `99` mismatch → one won with the code revealed → wrong code counted → right code → issue: `ISSUED`, methods `0x190027`, regime 2, assurance 3, policy #1 passes, evidence names `demo:id` and `demo:bank`, no PII; a different declared name → `REJECTED` on reconciliation. With no issuer key the transaction is skipped and says so.
-- Without `KYC_DEMO`: each vendor step is a 503 listing the missing variables; a forged signature is 422, a forged proof 400, 김정은 · KP → `DENIED`.
+- Against the built server with `KYC_DEMO=1`: status reports demo on both axes → wallet round trip → demo OCR → document verified / `FAKE` rejected → account ending `99` mismatch → one won with the code revealed → wrong code counted → right code → issue: `ISSUED`, methods `0x190027`, regime 2, assurance 3, policy #1 passes, evidence names `demo:id` and `demo:bank`, no PII; a different declared name → `REJECTED` on reconciliation. With no issuer key the transaction is skipped and says so.
+- Without `KYC_DEMO`: each vendor step is a 503 listing the missing variables; a forged signature is 422, a forged proof 400, Kim Jong Un · KP → `DENIED`.
 
 ---
 
@@ -164,6 +164,6 @@ Sealed tokens are AES-256-GCM under `sha256(EVIDENCE_HMAC_KEY | proofmark-seal-v
 |---|---|
 | `regime` in `Policy` (P1) | Until the contract reads it, a sandbox mark and a production mark pass the same policy |
 | Face match and liveness vendor | `FACE_MATCH`, `LIVENESS` stay unset |
-| Bank rails | KFTC 이용기관 registration or the CODEF 제휴 contract |
+| Bank rails | KFTC participating-institution registration or the CODEF partnership contract |
 | Evidence retention | The issuer must keep the evidence to recompute `evidenceHash`; today it is returned to the customer and not stored server-side |
-| Corporate certificate on 교통민원24 | Manual captcha every time; 간편인증 avoids it |
+| Corporate certificate on Traffic Civil Service 24 | Manual captcha every time; app-based authentication avoids it |

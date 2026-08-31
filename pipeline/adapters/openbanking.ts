@@ -2,20 +2,21 @@ import { createHash, randomBytes } from 'node:crypto';
 import { VendorError, type BankAccountVendor } from './kr.js';
 
 /**
- * 금융결제원 오픈뱅킹 (KFTC Open Banking) connector, for the bank-account axis.
+ * Korea Financial Telecommunications and Clearings Institute (KFTC) Open Banking connector,
+ * for the bank-account axis.
  *
  *   token         POST /oauth/2.0/token  client_id, client_secret, scope=oob, grant_type=client_credentials
- *                 The 2-legged token an 이용기관 uses when no customer is logged in.
- *   holder name   POST /v2.0/inquiry/real_name     계좌실명조회: the bank checks the account against the
+ *                 The two-legged token a participating institution uses when no customer is logged in.
+ *   holder name   POST /v2.0/inquiry/real_name     real-name inquiry: the bank checks the account against the
  *                 customer's real-name number (first six digits) and returns the holder's name.
- *   one won       POST /v2.0/transfer/deposit/acnt_num  입금이체 from the institution's contracted account
+ *   one won       POST /v2.0/transfer/deposit/acnt_num  deposit transfer from the institution's contracted account
  *                 to the customer's account, one won, with our code in print_content.
  *
- * bank_tran_id is 이용기관코드 (10) + 'U' + 9 characters, unique per call. tran_dtime is KST.
+ * bank_tran_id is the institution use code (10) + 'U' + 9 characters, unique per call. tran_dtime is KST.
  * rsp_code A0000 is success; for a deposit the bank's own bank_rsp_code must also be 000.
  *
  * The testbed (testapi.openbanking.or.kr) answers with canned data and moves no money, so results
- * from it carry live = false and set no bit. Production needs 이용기관 registration with KFTC.
+ * from it carry live = false and set no bit. Production requires registration as a participating institution with KFTC.
  */
 export type OpenBankingEnv = 'test' | 'prod';
 
@@ -27,12 +28,12 @@ const HOSTS: Record<OpenBankingEnv, string> = {
 export interface OpenBankingOptions {
   clientId: string;
   clientSecret: string;
-  /** 이용기관코드, ten characters, e.g. M202300440 */
+  /** Institution use code, ten characters, e.g. M202300440. */
   clientUseCode: string;
   /** The institution's contracted account the one won leaves from. 'N' account number, 'C' fintech number. */
   cntrAccountType?: 'N' | 'C';
   cntrAccountNum: string;
-  /** 출금이체 비밀번호 as registered with KFTC (already hashed the way the console asks). */
+  /** Withdrawal-transfer passphrase registered with KFTC (already hashed as required by the console). */
   wdPassPhrase: string;
   /** Shown as the depositor on the customer's statement, up to 20 bytes */
   printName?: string;

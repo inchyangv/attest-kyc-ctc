@@ -19,7 +19,7 @@ const digits = (s: string) => s.replace(/\D/g, '');
 /**
  * Step 1. multipart/form-data.
  *   action=ocr     read the fields off the image (CODEF OCR)
- *   action=verify  ask the issuing authority (정부24 / 교통민원24) through CODEF. The image is hashed
+ *   action=verify  ask the issuing authority (Government24 / Traffic Civil Service 24) through CODEF. The image is hashed
  *                  into the result; the resident number is used for the query and never stored.
  *                  When the authority wants a captcha, the answer comes back with twoWayToken.
  */

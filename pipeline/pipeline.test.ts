@@ -121,7 +121,7 @@ describe('EvidenceChain', () => {
 
 describe('claim commitments', () => {
   const claims: Claim[] = [
-    { key: 'fullName',    value: '홍길동',      salt: '0x' + '11'.repeat(32) },
+    { key: 'fullName',    value: '\uD64D\uAE38\uB3D9',      salt: '0x' + '11'.repeat(32) },
     { key: 'dateOfBirth', value: '1990-01-01', salt: '0x' + '22'.repeat(32) },
     { key: 'nationality', value: 'KR',         salt: '0x' + '33'.repeat(32) },
   ];
@@ -153,9 +153,9 @@ describe('claim commitments', () => {
 
 describe('reconciliation across three axes', () => {
   const base = {
-    declared: { fullName: '홍길동', dateOfBirth: '1990-01-01' },
-    idDocument: { fullName: '홍길동', dateOfBirth: '1990-01-01' },
-    bankAccount: { holderName: '홍 길동' },   // 공백 차이는 정규화로 흡수
+    declared: { fullName: '\uD64D\uAE38\uB3D9', dateOfBirth: '1990-01-01' },
+    idDocument: { fullName: '\uD64D\uAE38\uB3D9', dateOfBirth: '1990-01-01' },
+    bankAccount: { holderName: '\uD64D \uAE38\uB3D9' },   // Normalization absorbs spacing differences.
   };
 
   test('all three axes agree, so it passes', () => {
@@ -166,20 +166,20 @@ describe('reconciliation across three axes', () => {
   });
 
   test('a different account holder fails', () => {
-    const r = reconcile({ ...base, bankAccount: { holderName: '김철수' } });
+    const r = reconcile({ ...base, bankAccount: { holderName: '\uAE40\uCCA0\uC218' } });
     assert.ok(!r.passed);
     assert.equal(r.axes.declaredVsBank, 'mismatch');
   });
 
   test('a different date of birth fails', () => {
-    const r = reconcile({ ...base, idDocument: { fullName: '홍길동', dateOfBirth: '1991-01-01' } });
+    const r = reconcile({ ...base, idDocument: { fullName: '\uD64D\uAE38\uB3D9', dateOfBirth: '1991-01-01' } });
     assert.ok(!r.passed);
   });
 
   test('no cleartext is returned, only hashes', () => {
     const r = reconcile(base);
     // Check across normal forms. A plain includes misses NFD Hangul.
-    assert.ok(!containsPii(r, '홍길동'), 'the reconciliation result must not carry cleartext PII');
+    assert.ok(!containsPii(r, '\uD64D\uAE38\uB3D9'), 'the reconciliation result must not carry cleartext PII');
   });
 
   test('normalisation', () => {
@@ -190,17 +190,17 @@ describe('reconciliation across three axes', () => {
 // 5. Honesty: an unconnected vendor leaves its bit unset
 
 const ID_OK: IdDocumentResult = {
-  docType: 'RRC', fullName: '홍길동', dateOfBirth: '1990-01-01', docHash: '0xdoc',
+  docType: 'RRC', fullName: '\uD64D\uAE38\uB3D9', dateOfBirth: '1990-01-01', docHash: '0xdoc',
   authenticityChecked: true, authentic: true, faceMatched: false, livenessPassed: false, vendor: 'fake', live: true,
 };
 const BANK_OK: BankAccountResult = {
-  bankCode: '004', holderName: '홍길동', holderVerified: true, oneWonVerified: true, vendor: 'fake', live: true,
+  bankCode: '004', holderName: '\uD64D\uAE38\uB3D9', holderVerified: true, oneWonVerified: true, vendor: 'fake', live: true,
 };
 const fakeId: IdDocumentVendor = { name: 'fake', live: true, async verify() { return { kind: 'verified', ...ID_OK }; } };
 const fakeBank: BankAccountVendor = {
   name: 'fake',
   live: true,
-  async holderName() { return { holderName: '홍길동', ref: 'tx-1' }; },
+  async holderName() { return { holderName: '\uD64D\uAE38\uB3D9', ref: 'tx-1' }; },
   async oneWonTransfer() { return { authCode: '4821', ref: 'tx-2' }; },
 };
 
@@ -258,28 +258,28 @@ describe('KR adapter honesty', () => {
 
   test('the holder lookup compares normalised names', async () => {
     const a = new KrAdapter(fakeId, fakeBank);
-    const same = await a.lookupHolder({ bankCode: '004', accountNumber: '110-123-456789', birthDate: '900101', declaredName: ' 홍 길동' });
+    const same = await a.lookupHolder({ bankCode: '004', accountNumber: '110-123-456789', birthDate: '900101', declaredName: ' \uD64D \uAE38\uB3D9' });
     assert.equal(same.matches, true);
-    const other = await a.lookupHolder({ bankCode: '004', accountNumber: '110123456789', birthDate: '900101', declaredName: '김철수' });
+    const other = await a.lookupHolder({ bankCode: '004', accountNumber: '110123456789', birthDate: '900101', declaredName: '\uAE40\uCCA0\uC218' });
     assert.equal(other.matches, false);
-    await assert.rejects(a.lookupHolder({ bankCode: '999', accountNumber: '110123456789', birthDate: '900101', declaredName: '홍길동' }), VendorError);
-    await assert.rejects(a.lookupHolder({ bankCode: '004', accountNumber: '110123456789', birthDate: '1990', declaredName: '홍길동' }), VendorError);
+    await assert.rejects(a.lookupHolder({ bankCode: '999', accountNumber: '110123456789', birthDate: '900101', declaredName: '\uD64D\uAE38\uB3D9' }), VendorError);
+    await assert.rejects(a.lookupHolder({ bankCode: '004', accountNumber: '110123456789', birthDate: '1990', declaredName: '\uD64D\uAE38\uB3D9' }), VendorError);
   });
 
   test('document input is validated before a vendor is called', async () => {
     const a = new KrAdapter(fakeId, fakeBank);
     const image = new Uint8Array([1, 2, 3]);
-    await assert.rejects(a.verifyIdDocument({ docType: 'RRC', image, fullName: '홍길동', birthDate: '19900101', rrn: '123', issueDate: '20200101' }), /rrn/);
-    await assert.rejects(a.verifyIdDocument({ docType: 'RRC', image, fullName: '홍길동', birthDate: '19900101', rrn: '8801011234567', issueDate: '20200101' }), /disagree/);
-    await assert.rejects(a.verifyIdDocument({ docType: 'DL', image, fullName: '홍길동', birthDate: '19900101', licenseNumber: '12', serialNo: 'ABC123' }), /licenseNumber/);
-    await assert.rejects(new KrAdapter(null, fakeBank).verifyIdDocument({ docType: 'DL', image, fullName: '홍길동', birthDate: '19900101', licenseNumber: '112233445566', serialNo: 'ABC123' }), /no ID document vendor/);
+    await assert.rejects(a.verifyIdDocument({ docType: 'RRC', image, fullName: '\uD64D\uAE38\uB3D9', birthDate: '19900101', rrn: '123', issueDate: '20200101' }), /rrn/);
+    await assert.rejects(a.verifyIdDocument({ docType: 'RRC', image, fullName: '\uD64D\uAE38\uB3D9', birthDate: '19900101', rrn: '8801011234567', issueDate: '20200101' }), /disagree/);
+    await assert.rejects(a.verifyIdDocument({ docType: 'DL', image, fullName: '\uD64D\uAE38\uB3D9', birthDate: '19900101', licenseNumber: '12', serialNo: 'ABC123' }), /licenseNumber/);
+    await assert.rejects(new KrAdapter(null, fakeBank).verifyIdDocument({ docType: 'DL', image, fullName: '\uD64D\uAE38\uB3D9', birthDate: '19900101', licenseNumber: '112233445566', serialNo: 'ABC123' }), /no ID document vendor/);
   });
 });
 
 describe('mock AML honesty', () => {
   test('it never reads a real list, so SANCTIONS_SCREENED stays unset', async () => {
     const r = await new MockAmlEngine({ evidenceKey: TEST_EVIDENCE_KEY }).screen({
-      fullName: '홍길동', dateOfBirth: '1990-01-01', nationality: 'KR', residence: 'KR',
+      fullName: '\uD64D\uAE38\uB3D9', dateOfBirth: '1990-01-01', nationality: 'KR', residence: 'KR',
       walletAddress: '0x' + '11'.repeat(20),
     });
     assert.equal(r.methodsApplied & Methods.SANCTIONS_SCREENED, 0);
@@ -303,7 +303,7 @@ describe('runIssuance', () => {
   const NOW = 1_700_000_000_000;
   const req: IssueRequest = {
     wallet: '0x' + 'ab'.repeat(20),
-    declared: { fullName: '홍길동', dateOfBirth: '1990-01-01', nationality: 'KR', residence: 'KR' },
+    declared: { fullName: '\uD64D\uAE38\uB3D9', dateOfBirth: '1990-01-01', nationality: 'KR', residence: 'KR' },
     idDocument: ID_OK,
     bankAccount: BANK_OK,
     walletControlProven: true,
@@ -368,7 +368,7 @@ describe('runIssuance', () => {
   test('the evidence carries no cleartext PII', async () => {
     const out = await runIssuance(req, new KrAdapter(liveId, liveBank), new MockAmlEngine({ evidenceKey: TEST_EVIDENCE_KEY }), NOW);
     if (out.status !== 'ISSUED') return;
-    const leaked = findPii(out.evidence, ['홍길동', '110-123', '1990-01-01']);
+    const leaked = findPii(out.evidence, ['\uD64D\uAE38\uB3D9', '110-123', '1990-01-01']);
     assert.equal(leaked, null, `PII found in the evidence: ${leaked}`);
   });
 
@@ -380,7 +380,7 @@ describe('runIssuance', () => {
   });
 
   test('a holder name that disagrees with the document is not issued', async () => {
-    const out = await runIssuance({ ...req, bankAccount: { ...BANK_OK, holderName: '김철수' } },
+    const out = await runIssuance({ ...req, bankAccount: { ...BANK_OK, holderName: '\uAE40\uCCA0\uC218' } },
                                   new KrAdapter(liveId, liveBank), new MockAmlEngine({ evidenceKey: TEST_EVIDENCE_KEY }), NOW);
     assert.equal(out.status, 'REJECTED');
     if (out.status === 'REJECTED') assert.match(out.reason, /reconciliation/);
@@ -406,13 +406,13 @@ describe('evidence pseudonymisation key', () => {
   });
 
   test('a different key gives a different digest, which is the dictionary-attack defence', () => {
-    const a = hmacDigest('key-a'.repeat(10), '박서준');
-    const b = hmacDigest('key-b'.repeat(10), '박서준');
+    const a = hmacDigest('key-a'.repeat(10), '\uBC15\uC11C\uC900');
+    const b = hmacDigest('key-b'.repeat(10), '\uBC15\uC11C\uC900');
     assert.notEqual(a, b);
   });
 
   test('normal form does not change the digest, so NFC and NFD agree', () => {
     const k = 'k'.repeat(40);
-    assert.equal(hmacDigest(k, '박서준'.normalize('NFC')), hmacDigest(k, '박서준'.normalize('NFD')));
+    assert.equal(hmacDigest(k, '\uBC15\uC11C\uC900'.normalize('NFC')), hmacDigest(k, '\uBC15\uC11C\uC900'.normalize('NFD')));
   });
 });

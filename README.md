@@ -225,7 +225,7 @@ This section stays. What we did not do is part of what the product is.
 | `SANCTIONS_SCREENED` | yes | 26,566 entries from three real lists |
 | `JURISDICTION_CHECK` | yes | FATF table, marked unverified against the source and recorded that way in evidence |
 | `ONCHAIN_EXPOSURE` | yes | 124 sanctioned wallets from OFAC |
-| `ID_DOC_AUTHENTICITY` | yes, with the vendor configured | CODEF against 정부24 (주민등록증) or 경찰청 교통민원24 (운전면허증), logged in with the issuer's certificate. `pipeline/adapters/codef.ts` |
+| `ID_DOC_AUTHENTICITY` | yes, with the vendor configured | CODEF against Government24 (resident registration card) or the Korean National Police Agency's Traffic Civil Service 24 (driver licence), logged in with the issuer's certificate. `pipeline/adapters/codef.ts` |
 | `BANK_ACCOUNT` | yes, on production rails | Holder name from the bank against the real-name number, then one won with a code the customer reads back. KFTC Open Banking (`pipeline/adapters/openbanking.ts`) or CODEF. The KFTC testbed runs the same API without moving money and is recorded as not live, so it sets nothing |
 | `FACE_MATCH`, `LIVENESS` | no | No face vendor connected |
 | `PEP_SCREENED`, `ADVERSE_MEDIA` | no | Commercial datasets we have not licensed |
@@ -236,11 +236,11 @@ The flow is at `/verify`: wallet signature, document photo and OCR, authenticity
 
 | Axis | Self-service today | How | Result |
 |---|---|---|---|
-| ID document | **yes**: CODEF demo tier + 간편인증 | Sign up at codef.io, apply for the demo service, copy `clientId` / `clientSecret` / `publicKey` from 키 관리. Set `CODEF_ENV=demo`, `CODEF_LOGIN_TYPE=simple`, `CODEF_SIMPLE_LEVEL=1` (카카오톡) and the operator's name, phone and resident number. Each check pops an approval in the operator's app, then 정부24 / 교통민원24 answer for real | live, bit set, regime production |
+| ID document | **yes**: CODEF demo tier + app-based authentication | Sign up at codef.io, apply for the demo service, and copy `clientId` / `clientSecret` / `publicKey` from Key Management. Set `CODEF_ENV=demo`, `CODEF_LOGIN_TYPE=simple`, `CODEF_SIMPLE_LEVEL=1` (KakaoTalk), and the operator's name, phone, and resident number. Each check prompts for approval in the operator's app, then Government24 or Traffic Civil Service 24 answers for real | live, bit set, regime production |
 | Bank account | testbed only: KFTC Open Banking | Register at developers.kftc.or.kr, create a test app, set `OPENBANKING_*` with `OPENBANKING_ENV=test`. The real API answers with canned data and moves no money | not live |
-| Bank account, real | no: KFTC 이용기관 registration or the CODEF 제휴 contract | weeks, and a contract | live, bit set |
+| Bank account, real | no: KFTC participating-institution registration or the CODEF partnership contract | weeks, and a contract | live, bit set |
 
-`KYC_DEMO=1` fills any axis that has no real vendor with the built-in demo vendor (`pipeline/adapters/demo.ts`): same inputs, same procedure, no institution asked. The page says so, the one-won code is shown on the page in place of the bank app, the evidence names `demo:*`, and the mark carries `regime = KR_FSC_NONFACE_SANDBOX`. Under demo the bits are set anyway (`KYC_DEMO_BITS=1`), so the flow ends with a mark that passes policy #1; set `KYC_DEMO_BITS=0` to keep them unset. A name containing `위조` is rejected by the demo authority and an account ending in `99` belongs to someone else, so both outcomes can be shown. Real and demo mix per axis: with CODEF configured and no bank vendor, the document is checked for real and the account is demo.
+`KYC_DEMO=1` fills any axis that has no real vendor with the built-in demo vendor (`pipeline/adapters/demo.ts`): same inputs, same procedure, no institution asked. The page says so, the one-won code is shown on the page in place of the bank app, the evidence names `demo:*`, and the mark carries `regime = KR_FSC_NONFACE_SANDBOX`. Under demo the bits are set anyway (`KYC_DEMO_BITS=1`), so the flow ends with a mark that passes policy #1; set `KYC_DEMO_BITS=0` to keep them unset. A name containing `FAKE` is rejected by the demo authority and an account ending in `99` belongs to someone else, so both outcomes can be shown. Real and demo mix per axis: with CODEF configured and no bank vendor, the document is checked for real and the account is demo.
 
 ### The two deployed policies
 

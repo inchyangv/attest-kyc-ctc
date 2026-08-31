@@ -13,7 +13,7 @@ const leaks = (h: unknown, n: string) => containsPii(h, n);
 test('evidence carries no cleartext name, checked across NFC and NFD', { skip: !HAVE }, async () => {
   const { entries, listVersions } = await loadLists();
   const e = new ListBackedAmlEngine({ entries, listVersions, evidenceKey: 'k', keyId: 't' });
-  const name = '박서준';
+  const name = '\uBC15\uC11C\uC900';
   const r = await e.screen({ fullName: name, dateOfBirth: '1990-05-05', nationality: 'KR', residence: 'KR', walletAddress: '0x'+'9'.repeat(40) });
   const ev = JSON.stringify(r.evidence);
   assert.equal(leaks(ev, name), false, 'a cleartext name survived in the evidence');
@@ -23,14 +23,14 @@ test('evidence carries no cleartext name, checked across NFC and NFD', { skip: !
 });
 
 test('the detector itself works: a naive includes misses NFD', () => {
-  const nfd = '박서준'.normalize('NFD');
-  assert.equal(nfd.includes('박서준'), false, 'premise: the naive comparison fails');
-  assert.equal(leaks(nfd, '박서준'), true, 'the detector must catch it');
+  const nfd = '\uBC15\uC11C\uC900'.normalize('NFD');
+  assert.equal(nfd.includes('\uBC15\uC11C\uC900'), false, 'premise: the naive comparison fails');
+  assert.equal(leaks(nfd, '\uBC15\uC11C\uC900'), true, 'the detector must catch it');
 });
 
 test('a different evidence key gives a different digest, so these are not unsalted hashes', { skip: !HAVE }, async () => {
   const { entries, listVersions } = await loadLists();
-  const s = { fullName: '홍길동', dateOfBirth: '1990-01-01', nationality: 'KR', residence: 'KR', walletAddress: '0x'+'8'.repeat(40) };
+  const s = { fullName: '\uD64D\uAE38\uB3D9', dateOfBirth: '1990-01-01', nationality: 'KR', residence: 'KR', walletAddress: '0x'+'8'.repeat(40) };
   const a = await new ListBackedAmlEngine({ entries, listVersions, evidenceKey: 'key-A' }).screen(s);
   const b = await new ListBackedAmlEngine({ entries, listVersions, evidenceKey: 'key-B' }).screen(s);
   assert.notEqual(a.evidence.nameDigest, b.evidence.nameDigest);

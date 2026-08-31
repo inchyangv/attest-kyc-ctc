@@ -15,7 +15,7 @@ import {
  * who reads the evidence or the mark.
  *
  * Rules, so a demo can show both outcomes:
- *   - a name containing "위조" or "FAKE", or a document number of one repeated digit, is not authentic
+ *   - a name containing the Korean word for "forged" or "FAKE", or a document number of one repeated digit, is not authentic
  *   - an account number ending in "99" belongs to someone else (holder mismatch)
  *   - the one-won code is derived from the account number, so it is stable across a demo run
  */
@@ -41,7 +41,7 @@ export class DemoIdDocumentVendor implements IdDocumentVendor {
     const docHash = docHashOf(input.image);
     const name = input.fullName.trim();
     const number = input.docType === 'RRC' ? input.rrn! : input.licenseNumber!;
-    const forged = /위조|FAKE/i.test(name) || /^(\d)\1+$/.test(number);
+    const forged = /\uC704\uC870|FAKE/i.test(name) || /^(\d)\1+$/.test(number);
     return {
       kind: 'verified',
       docType: input.docType,
@@ -69,7 +69,7 @@ export class DemoBankAccountVendor implements BankAccountVendor {
   async holderName(input: { bankCode: string; accountNumber: string; birthDate: string; declaredName?: string }) {
     await pause(this.latencyMs);
     if (!input.declaredName) throw new VendorError('the demo bank needs the declared name to echo', 'DEMO_NO_NAME');
-    const holder = input.accountNumber.endsWith('99') ? '다른사람' : input.declaredName.trim();
+    const holder = input.accountNumber.endsWith('99') ? 'Different Person' : input.declaredName.trim();
     return { holderName: holder, ref: ref('holder', input.bankCode, input.accountNumber) };
   }
 

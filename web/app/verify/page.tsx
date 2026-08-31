@@ -18,7 +18,8 @@ import { METHOD_BITS } from '@/lib/methods';
 /**
  * The KR issuance flow, end to end, against the connected vendors.
  *   0 wallet control        EIP-4361 signature, checked server side
- *   1 ID document           CODEF OCR, then 정부24 (주민등록증) or 교통민원24 (운전면허증) authenticity
+ *   1 ID document           CODEF OCR, then Government24 (resident registration card) or
+ *                           Traffic Civil Service 24 (driver licence) authenticity
  *   2 bank account          holder name against the real-name number, one won with a code, code read back
  *   3 screen and issue      reconciliation, sanctions lists, claims commitment, ComplianceSource.issue on Sepolia
  * Every step hands the next an opaque sealed token. The browser never holds a holder name or a code.
@@ -220,7 +221,7 @@ export default function Verify() {
             {cfg.sandboxBits
               ? <> and the bits are set anyway (<span className="mono">KYC_DEMO_BITS=1</span>). The one-won code appears on this page in place of the bank app.</>
               : <> and the bits stay unset (<span className="mono">KYC_DEMO_BITS=0</span>).</>}
-            {' '}Try a name containing <span className="mono">위조</span> for a rejected document, or an account ending in <span className="mono">99</span> for a holder mismatch.
+            {' '}Try a name containing <span className="mono">FAKE</span> for a rejected document, or an account ending in <span className="mono">99</span> for a holder mismatch.
           </div>
         </Band>
       )}
@@ -245,7 +246,7 @@ export default function Verify() {
         <Stat label="0 · Wallet control" value={walletDone ? <Status tone="ok">Signed</Status> : <Status tone="gray">Pending</Status>}
           sub={wallet ? <span className="mono">{wallet.address.slice(0, 6)}…{wallet.address.slice(-4)}</span> : 'EIP-4361'} />
         <Stat label="1 · ID document" value={id ? (id.summary.authentic ? <Status tone="ok">Authentic</Status> : <Status tone="bad">Rejected</Status>) : twoWay ? <Status tone="warn">Captcha</Status> : <Status tone="gray">Pending</Status>}
-          sub={id ? <span className="mono">{id.summary.vendor}{id.summary.live ? '' : ' · not live'}</span> : cfg?.id.demo ? 'demo vendor' : docType === 'RRC' ? '정부24' : '교통민원24'} />
+          sub={id ? <span className="mono">{id.summary.vendor}{id.summary.live ? '' : ' · not live'}</span> : cfg?.id.demo ? 'demo vendor' : docType === 'RRC' ? 'Government24' : 'Traffic Civil Service 24'} />
         <Stat label="2 · Bank account" value={bankDone ? <Status tone="ok">Verified</Status> : challenge ? <Status tone="warn">₩1 sent</Status> : <Status tone="gray">Pending</Status>}
           sub={bankRes ? <span className="mono">{bankRes.summary.vendor}{bankRes.summary.live ? '' : ' · not live'}</span> : cfg?.bank.demo ? 'demo vendor' : 'holder name + one won'} />
         <Stat label="3 · Mark" value={issued ? <Status tone={issued.status === 'ISSUED' ? 'ok' : issued.status === 'REVIEW' ? 'warn' : 'bad'}>{issued.status}</Status> : <Status tone="gray">Pending</Status>}
@@ -273,7 +274,7 @@ export default function Verify() {
               <div>
                 <Eyebrow className="mb-1.5">Document</Eyebrow>
                 <div className="inline-flex h-9 w-full items-center gap-0.5 rounded-sm border border-line bg-sunk p-0.5" role="tablist">
-                  {([['RRC', '주민등록증'], ['DL', '운전면허증']] as const).map(([k, label]) => (
+                  {([['RRC', 'Resident registration card'], ['DL', 'Driver licence']] as const).map(([k, label]) => (
                     <button key={k} type="button" role="tab" aria-selected={docType === k} disabled={!!id || !walletDone}
                       onClick={() => { setDocType(k); setTwoWay(null); }}
                       className={`h-full flex-1 rounded-[3px] text-[13px] font-medium transition-colors ${docType === k ? 'bg-surface-2 text-fg-strong' : 'text-fg-muted hover:text-fg-strong'}`}>
@@ -306,12 +307,12 @@ export default function Verify() {
               ) : (
                 <>
                   <Field label="Licence number" hint="12 digits"><Input className="mono" inputMode="numeric" value={doc.licenseNumber} disabled={!!id} onChange={(e) => setDoc({ ...doc, licenseNumber: digits(e.target.value).slice(0, 12) })} /></Field>
-                  <Field label="Serial (암호일련번호)" hint="under the small photo"><Input className="mono" value={doc.serialNo} disabled={!!id} onChange={(e) => setDoc({ ...doc, serialNo: e.target.value.toUpperCase().replace(/[^0-9A-Z]/g, '').slice(0, 6) })} /></Field>
+                  <Field label="Anti-forgery serial" hint="under the small photo"><Input className="mono" value={doc.serialNo} disabled={!!id} onChange={(e) => setDoc({ ...doc, serialNo: e.target.value.toUpperCase().replace(/[^0-9A-Z]/g, '').slice(0, 6) })} /></Field>
                 </>
               )}
               <div className="sm:col-span-2">
                 <Button onClick={verifyDocument} disabled={!walletDone || !image || busy !== null || !!id || !!twoWay}>
-                  <Icon name="shield" size={16} />{busy === 'id' && !twoWay ? 'Asking the authority…' : `Verify with ${docType === 'RRC' ? '정부24' : '교통민원24'}`}
+                  <Icon name="shield" size={16} />{busy === 'id' && !twoWay ? 'Asking the authority…' : `Verify with ${docType === 'RRC' ? 'Government24' : 'Traffic Civil Service 24'}`}
                 </Button>
               </div>
             </div>
