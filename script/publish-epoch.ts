@@ -541,6 +541,53 @@ function freshnessNote(p: EpochParams): string[] {
 
 interface Verdict { label: string; expected: boolean; actual: boolean }
 
+/** `verifyWithRoster(address,uint256,(bytes32,bytes32,bytes32,address),(uint256,bytes32[]))` */
+const SEL_VERIFY_WITH_ROSTER = '82a45d56';
+/** `proveNotInRoster(address,((uint256,bytes32[]),bytes32,bytes32,(uint256,bytes32[]),bytes32,bytes32))` */
+const SEL_PROVE_NOT_IN_ROSTER = 'b755ed28';
+
+/**
+ * Does the deployed registry actually carry the proof-mode entry points.
+ *
+ * Asked before calling them, because a contract without a function answers a call to it by
+ * reverting with no data, and "execution reverted" is indistinguishable from a proof that failed.
+ * Reporting a missing deployment as a failed verdict would be the worst possible answer here.
+ * The selector is searched for in the runtime code, which is where solc's dispatch table puts it.
+ */
+async function registryHasProofMode(hub: ethers.JsonRpcProvider): Promise<boolean> {
+  const code = (await retry('registry getCode', () => hub.getCode(REGISTRY_ADDRESS))).toLowerCase();
+  return code.includes(SEL_VERIFY_WITH_ROSTER) && code.includes(SEL_PROVE_NOT_IN_ROSTER);
+}
+
+/**
+ * The same three proofs, verified against the root read from chain, by `pipeline/roster.ts`.
+ *
+ * This is NOT a contract verdict and is never recorded as one. It is what can still be shown when
+ * the deployed registry has no proof-mode path: the published root is the tree we built, and the
+ * membership and adjacency proofs check out against it. `test/RosterProof.t.sol` pins
+ * `src/lib/RosterProof.sol` to this implementation with vectors the TypeScript side produced, so
+ * the two agree — but agreeing in tests is not the same as a deployed contract answering.
+ */
+function offChainVerdicts(tree: RosterTree, onChainRoot: string): Verdict[] {
+  const i = tree.entries.findIndex((e) => e.subject.toLowerCase() === DEMO_SUBJECT.toLowerCase());
+  const out: Verdict[] = [];
+  if (i >= 0) {
+    out.push({
+      label: `inclusion of ${short(DEMO_SUBJECT)} under the on-chain root`,
+      expected: true,
+      actual: verifyInclusion(onChainRoot, rosterLeaf(tree.entries[i]), inclusionProof(tree, leafIndexOf(i))),
+    });
+  }
+  for (const [target, what] of [[NEVER_ISSUED, 'never issued'], [REVOKED_SUBJECT, 'revoked']] as const) {
+    let actual = false;
+    try {
+      actual = verifyNonInclusion(onChainRoot, target, nonInclusionProof(tree, target));
+    } catch { actual = false; }
+    out.push({ label: `non-inclusion of ${short(target)} (${what}) under the on-chain root`, expected: true, actual });
+  }
+  return out;
+}
+
 async function rosterVerdicts(hub: ethers.JsonRpcProvider, tree: RosterTree): Promise<Verdict[]> {
   const reg = new ethers.Contract(REGISTRY_ADDRESS, REGISTRY_ABI, hub);
   const out: Verdict[] = [];
@@ -611,6 +658,9 @@ interface Record {
   propagationSeconds?: number;
   propagationMethod?: string;
   checks?: { label: string; expected: boolean; actual: boolean }[];
+  /** Proofs verified by pipeline/roster.ts against the on-chain root. Never a contract verdict. */
+  offChainChecks?: { label: string; expected: boolean; actual: boolean }[];
+  registryProofMode?: boolean;
   checkedAt?: string;
 }
 
@@ -652,6 +702,15 @@ function writeSnippet(rec: Record): string {
   if (rec.checks?.length) {
     const v = (i: number) => String(rec.checks![i].actual);
     b.push(`Against that root the registry answers \`verifyWithRoster\` ${v(0)} under policy 2 and ${v(1)} under policy 1 for the same mark, and \`proveNotInRoster\` ${v(2)} for an address never issued to and ${v(3)} for the revoked subject — revocation as positive evidence of absence, not a missing record. `);
+  } else if (rec.registryProofMode === false) {
+    // Say what did not run. A missing deployment is not a passing check with a caveat.
+    const off = rec.offChainChecks ?? [];
+    const allOff = off.length > 0 && off.every((c) => c.expected === c.actual);
+    b.push(`What is **not** exercised on chain: the registry's proof-mode entry points. The deployed \`ProofmarkRegistry\` at \`${REGISTRY_ADDRESS}\` is an earlier build whose runtime code contains neither \`verifyWithRoster\` nor \`proveNotInRoster\`, so those verdicts did not run and are not claimed here. `);
+    if (allOff) {
+      b.push(`The published root was verified against \`pipeline/roster.ts\` — inclusion for the mark, non-membership for an address never issued to and for the revoked subject, all against the root read back from CC3 — and \`test/RosterProof.t.sol\` pins \`src/lib/RosterProof.sol\` to that implementation, but agreeing in tests is not a deployed contract answering. `);
+    }
+    b.push('Cache mode is unaffected: `isVerified` on the deployed registry answers exactly as before. ');
   }
   b.push(`The roster carries \`validUntil ${rec.validUntil}\` (${rec.validUntilIso ? `${rec.validUntilIso}, ` : ''}a demo parameter; production cadence would be daily), after which \`ASC.isRosterFresh()\` is false and \`verifyWithRoster\` fails closed for every subject. `);
   b.push('Marks issued before the epoch keep `origin = Direct`; the roster is the set, not a rewrite of their provenance.');
@@ -932,8 +991,30 @@ async function check(carried?: Record): Promise<void> {
     bad(`the roster is past its validUntil, so verifyWithRoster fails closed for every subject`);
   }
 
-  const verdicts = await rosterVerdicts(hub, r.tree);
-  const allMatch = printVerdicts(verdicts);
+  const proofMode = await registryHasProofMode(hub);
+  const verdicts = proofMode ? await rosterVerdicts(hub, r.tree) : [];
+  const offChain = proofMode ? [] : offChainVerdicts(r.tree, onChainRoot);
+  const allMatch = proofMode ? printVerdicts(verdicts) : false;
+
+  if (!proofMode) {
+    step('the deployed ProofmarkRegistry has no proof-mode entry points');
+    bad(`ProofmarkRegistry ${REGISTRY_ADDRESS} on CC3 carries neither 0x${SEL_VERIFY_WITH_ROSTER}`);
+    bad(`(verifyWithRoster) nor 0x${SEL_PROVE_NOT_IN_ROSTER} (proveNotInRoster) in its runtime code:`);
+    bad('the deployed build predates those functions, while src/ProofmarkRegistry.sol has them.');
+    bad('So the contract-side roster verdicts DID NOT RUN. They are not recorded, and no README');
+    bad('snippet below claims them. Calling the functions anyway would return "execution reverted",');
+    bad('which reads exactly like a proof that failed, and that is the one answer worth refusing.');
+    bad('Remedy, outside this script: deploy the current ProofmarkRegistry build against the same');
+    bad('ASC and re-register the two policies. The ASC itself is the current build — it accepted');
+    bad('this epoch — and cache mode (isVerified) on the deployed registry is unaffected.');
+
+    step('Off-chain verification against the on-chain root (pipeline/roster.ts, not a contract verdict)');
+    for (const v of offChain) {
+      say(`  ${v.expected === v.actual ? 'ok ' : 'x  '}${v.label}\n       expected ${v.expected}  actual ${v.actual}`);
+    }
+    say('  src/lib/RosterProof.sol is pinned to this implementation by test/RosterProof.t.sol, so the');
+    say('  two agree in tests. Agreeing in tests is not a deployed contract answering.');
+  }
 
   // `carried` holds what --publish measured; the epoch state just read from chain wins where the
   // two overlap, and writeRecord merges both over whatever an earlier run left on disk.
@@ -947,7 +1028,9 @@ async function check(carried?: Record): Promise<void> {
     entryCount: r.tree.entries.length,
     entries: r.tree.entries,
     excluded: r.excluded,
-    checks: verdicts,
+    registryProofMode: proofMode,
+    checks: proofMode ? verdicts : undefined,
+    offChainChecks: proofMode ? undefined : offChain,
     checkedAt: new Date().toISOString().replace('.000Z', 'Z'),
   };
 
@@ -958,6 +1041,11 @@ async function check(carried?: Record): Promise<void> {
   say(`  ${jsonPath}`);
   say(`  ${mdPath}   paste into README sections 8 and 6`);
 
+  if (!proofMode) {
+    bad('exiting non-zero: the epoch is published and verified against the rebuilt tree, but the');
+    bad('contract-side roster verdicts could not be produced. A check that did not run stays unset.');
+    process.exit(1);
+  }
   if (!allMatch || !fresh) {
     bad('at least one verdict did not match expectation');
     process.exit(1);

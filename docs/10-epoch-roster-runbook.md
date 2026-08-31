@@ -102,6 +102,24 @@ never issued to and for the revoked subject.
 Before any epoch exists it exits 1 with `no epoch published yet (latestEpoch=0)`. That is the
 honest answer, not a failure.
 
+**The deployed registry, as of epoch 1.** `ProofmarkRegistry` at
+`0x874e0Fd030a8Fe6c7a06835354531b68A31f5FCc` on CC3 is an earlier build: its runtime code is 4,372
+bytes against 7,021 for the current one, every Mode A function is present, and `NAMESPACE()`,
+`verifyWithRoster` and `proveNotInRoster` are all absent. So the contract-side roster verdicts
+cannot be produced against it. `--check` asks the runtime code for those two selectors before
+calling them and says so, rather than calling into a contract that does not have the function and
+reporting the resulting `execution reverted` as a proof that failed — the two are
+indistinguishable from the caller's side, and a missing deployment reported as a failed verdict is
+the worst available answer. It then verifies the same three proofs against the root read back from
+CC3 using `pipeline/roster.ts`, labels that as off-chain, records it under `offChainChecks` rather
+than `checks`, and exits non-zero. A check that did not run stays unset.
+
+`ProofmarkASC` is the current build — it has all four epoch views and it accepted epoch 1 — and
+cache mode on the deployed registry is untouched: `isVerified` answers exactly as before. What is
+missing is the read path against a roster root. Restoring it means deploying the current
+`ProofmarkRegistry` against the same ASC and re-registering the two policies, which is a deployment
+decision and not something this script does.
+
 **Roster drift.** If the rebuilt root differs from the on-chain root, the script prints both and
 exits without printing any verdict. The active set changed after the epoch was published — a mark
 was issued, revoked or expired since — so proofs built from the new tree cannot verify against the

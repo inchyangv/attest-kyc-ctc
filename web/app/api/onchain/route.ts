@@ -14,6 +14,14 @@ const client = createPublicClient({ chain: cc3, transport: http() });
 const ASC = process.env.NEXT_PUBLIC_ASC as Address;
 const REG = process.env.NEXT_PUBLIC_REGISTRY as Address;
 
+/* Proof-mode selectors, searched for in the registry's runtime code where solc's dispatch table
+   puts them. Asked rather than called: a contract without a function answers a call to it by
+   reverting with no data, and "execution reverted" is indistinguishable from a proof that failed.
+   The page must not describe an entry point the deployed build does not have.
+     verifyWithRoster(address,uint256,(bytes32,bytes32,bytes32,address),(uint256,bytes32[]))
+     proveNotInRoster(address,((uint256,bytes32[]),bytes32,bytes32,(uint256,bytes32[]),bytes32,bytes32)) */
+const PROOF_MODE_SELECTORS = ['82a45d56', 'b755ed28'];
+
 const ascAbi = parseAbi([
   'function expectedChainKey() view returns (uint64)',
   'function sourceContract() view returns (address)',
@@ -33,7 +41,7 @@ export async function GET(req: Request) {
   const subject = (new URL(req.url).searchParams.get('subject') ??
     '0xb8FEBEaB3705793474fA05b91Bf5D205855dD3c1') as Address;
 
-  const [chainKey, source, tomb, mark, p1, p2, v1, v2, block, latestEpoch, epochValidUntil, rosterFresh] = await Promise.all([
+  const [chainKey, source, tomb, mark, p1, p2, v1, v2, block, latestEpoch, epochValidUntil, rosterFresh, regCode] = await Promise.all([
     client.readContract({ address: ASC, abi: ascAbi, functionName: 'expectedChainKey' }),
     client.readContract({ address: ASC, abi: ascAbi, functionName: 'sourceContract' }),
     client.readContract({ address: ASC, abi: ascAbi, functionName: 'tombstone', args: [subject] }),
@@ -46,6 +54,7 @@ export async function GET(req: Request) {
     client.readContract({ address: ASC, abi: ascAbi, functionName: 'latestEpoch' }),
     client.readContract({ address: ASC, abi: ascAbi, functionName: 'epochValidUntil' }),
     client.readContract({ address: ASC, abi: ascAbi, functionName: 'isRosterFresh' }),
+    client.getCode({ address: REG }),
   ]);
 
   /* epochRoots needs latestEpoch first, so it cannot ride in the batch above. Epoch 0 is never a
@@ -73,7 +82,11 @@ export async function GET(req: Request) {
   return NextResponse.json({
     subject, blockNumber: Number(block),
     asc: { address: ASC, expectedChainKey: Number(chainKey), sourceContract: source },
-    registry: { address: REG },
+    registry: {
+      address: REG,
+      /* Whether this deployment can answer against a roster root at all. */
+      proofMode: PROOF_MODE_SELECTORS.every(sel => (regCode ?? '').toLowerCase().includes(sel)),
+    },
     tombstone: tomb,
     mark: {
       status: m[0], origin: m[1], kind: m[2], assurance: m[3], regime: m[4], jurisdiction: m[5],

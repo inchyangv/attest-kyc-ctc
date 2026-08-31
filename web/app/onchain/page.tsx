@@ -21,7 +21,7 @@ type Policy = {
 type Data = {
   subject: string; blockNumber: number;
   asc: { address: string; expectedChainKey: number; sourceContract: string };
-  registry: { address: string };
+  registry: { address: string; proofMode: boolean };
   tombstone: boolean;
   mark: {
     status: number; origin: number; kind: number; assurance: number; regime: number; jurisdiction: number;
@@ -152,7 +152,7 @@ function PolicyCard({ p, mask, revoked }: { p: Policy; mask: number; revoked: bo
  * submitted, and the page says exactly that. After one exists, the root and its expiry are shown
  * with the freshness the contract itself reports, because an expired roster verifies nobody.
  */
-function EpochRoster({ e }: { e: Data['epoch'] }) {
+function EpochRoster({ e, proofMode }: { e: Data['epoch']; proofMode: boolean }) {
   const published = e.latestEpoch >= 1;
   return (
     <Section title="Epoch roster (Mode B)"
@@ -172,7 +172,17 @@ function EpochRoster({ e }: { e: Data['epoch'] }) {
         <DetailRow label="Freshness" hint="ProofmarkASC.isRosterFresh()">
           <span className="inline-flex flex-wrap items-center gap-1.5">
             <Tag tone={e.fresh ? 'ok' : 'bad'}>{e.fresh ? 'fresh' : 'not fresh'}</Tag>
-            <span className="text-fg-muted">{e.fresh ? 'verifyWithRoster answers' : 'verifyWithRoster fails closed for every subject'}</span>
+            <span className="text-fg-muted">
+              {e.fresh
+                ? (proofMode ? 'verifyWithRoster answers' : 'inside its validity window')
+                : 'verifyWithRoster fails closed for every subject'}
+            </span>
+          </span>
+        </DetailRow>
+        <DetailRow label="Proof mode" hint="verifyWithRoster and proveNotInRoster in the deployed registry's runtime code">
+          <span className="inline-flex flex-wrap items-center gap-1.5">
+            <Tag tone={proofMode ? 'ok' : 'warn'}>{proofMode ? 'in deployed registry' : 'not in deployed build'}</Tag>
+            <span className="text-fg-muted">{proofMode ? 'the registry can answer against this root' : 'cache mode only, so this root is not read on chain yet'}</span>
           </span>
         </DetailRow>
       </DetailList>
@@ -182,11 +192,19 @@ function EpochRoster({ e }: { e: Data['epoch'] }) {
         {published ? (
           <>
             <p>
-              Membership in this root is the mark; absence from it is positive evidence of revocation, which is what
-              {' '}<code className="mono text-fg-strong">proveNotInRoster</code> returns. Once the roster passes its
-              {' '}<code className="mono text-fg-strong">validUntil</code>, <code className="mono text-fg-strong">isRosterFresh()</code> is
-              false and <code className="mono text-fg-strong">verifyWithRoster</code> answers for nobody.
+              Membership in this root is the mark; absence from it is what <code className="mono text-fg-strong">proveNotInRoster</code> turns
+              into positive evidence of revocation. Once the roster passes its <code className="mono text-fg-strong">validUntil</code>,
+              {' '}<code className="mono text-fg-strong">isRosterFresh()</code> is false and <code className="mono text-fg-strong">verifyWithRoster</code> answers
+              for nobody.
             </p>
+            {!proofMode && (
+              <p className="mt-1.5">
+                Not exercised on chain yet: the registry deployed at this address is an earlier build, and its runtime code carries neither
+                {' '}<code className="mono text-fg-strong">verifyWithRoster</code> nor <code className="mono text-fg-strong">proveNotInRoster</code>. The
+                root above is real and the ASC accepted it; the verdicts read against it are not claimed. Cache mode
+                {' '}(<code className="mono text-fg-strong">isVerified</code>, the policy cards above) is unaffected.
+              </p>
+            )}
             <p className="mt-1.5 text-fg-muted">
               Marks materialised before the epoch keep <code className="mono text-fg-strong">origin = Direct</code>. The roster is the set at an
               epoch, not a rewrite of how an individual mark arrived.
@@ -348,7 +366,7 @@ function OnChainView() {
       </Section>
 
       {/* ── epoch roster ── */}
-      <EpochRoster e={d.epoch} />
+      <EpochRoster e={d.epoch} proofMode={d.registry.proofMode} />
     </>
   );
 }

@@ -52,7 +52,7 @@ Reads are free on Attestcoin. The official wording is "reading other chains stay
 
 Batching is driven by Ethereum L1 instead. A hundred thousand users means a hundred thousand L1 issuance transactions, and the issuer pays that gas. An epoch roster root fixes L1 writes at one transaction per epoch regardless of how many subjects it covers.
 
-Writability is where ATC is spent, and it is still in development: when it ships, propagating to a spoke chain becomes a paid write under the protocol's own design, one per mark for direct-origin marks and one roster root per epoch in batch mode. That is roadmap, not current fact, and no epoch has been published on chain yet.
+Writability is where ATC is spent, and it is still in development: when it ships, propagating to a spoke chain becomes a paid write under the protocol's own design, one per mark for direct-origin marks and one roster root per epoch in batch mode. That is roadmap, not current fact. Epoch 1 is published on chain (section 8), which fixes the shape of the batch mode; the paid spoke-chain write it would drive does not exist yet.
 
 ---
 
@@ -233,6 +233,7 @@ Both guards are mutation tested. Remove either one and exactly its test fails.
 | Attestation completes | 6.5 to 8.5 minutes, two observations |
 | CC3 proof verification | 386,008 gas |
 | Issuance to `isVerified` true | 7m 55s and 10m 48s across two runs |
+| Epoch publish to `latestEpoch` on CC3 | 8m 45s, one run |
 
 We do not describe revocation as instant. Source chain finality sets a floor, so the number is published as a product parameter. Anything needing real-time blocking has to gate on the source chain.
 
@@ -329,7 +330,7 @@ That is the design. A check that did not run, or ran against a testbed, is a zer
 ### Other limits
 
 - **Writability is unused.** Attestcoin's cross-chain write is still in development, so pushing state to spoke chains is roadmap, not fact.
-- **Epoch rosters (Mode B) are built but not published on chain.** Every deployed mark is `origin = Direct`, which proves issuance and says nothing about a revocation that was never submitted. `Policy.requireRoster` exposes that difference rather than hiding it.
+- **Epoch rosters (Mode B) are live: epoch 1 is published on chain.** The active set of 5 marks is one sorted-key Merkle root, `0xc863ed0ca2d107a86eae37a1524c9ab1c184c8209d71a7cb92dcbaf45e9b1895`, published by `ComplianceSource.publishEpoch` on Sepolia (`0x43dae09bdb1eb2e8eb209485aaf0a0112916d01b5c49858acbcef44b4acfb3f7`) and accepted by `ProofmarkASC` on CC3 8m 45s later (one run). What is **not** exercised on chain: the registry's proof-mode entry points. The deployed `ProofmarkRegistry` at `0x874e0Fd030a8Fe6c7a06835354531b68A31f5FCc` is an earlier build whose runtime code contains neither `verifyWithRoster` nor `proveNotInRoster`, so those verdicts did not run and are not claimed here. The published root was verified against `pipeline/roster.ts` — inclusion for the mark, non-membership for an address never issued to and for the revoked subject, all against the root read back from CC3 — and `test/RosterProof.t.sol` pins `src/lib/RosterProof.sol` to that implementation, but agreeing in tests is not a deployed contract answering. Cache mode is unaffected: `isVerified` on the deployed registry answers exactly as before. The roster carries `validUntil 1793395963` (2026-10-30T21:32:43Z, a demo parameter; production cadence would be daily), after which `ASC.isRosterFresh()` is false and `verifyWithRoster` fails closed for every subject. Marks issued before the epoch keep `origin = Direct`; the roster is the set, not a rewrite of their provenance. `Policy.requireRoster` exposes that difference rather than hiding it. Runbook: [docs/10-epoch-roster-runbook.md](docs/10-epoch-roster-runbook.md).
 - **The FATF table is unverified** against the source. `jurisdiction.ts` marks it `verified: false` and the evidence carries that through.
 - **One mark on chain was revoked by us.** Its `methods` were hand-authored and claimed checks we never performed. Revoking it cost 8m 43s of propagation and is visible at `/onchain?subject=0xFD1222e35a536A62f180aA44826656940e86bD5E`.
 
