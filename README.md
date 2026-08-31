@@ -109,6 +109,65 @@ Two notes for anyone reproducing this.
 
 **`missing field mixHash` from forge and cast on CC3 is harmless.** Creditcoin runs on Substrate and its block format differs. Every operation still succeeds.
 
+### The gate in action
+
+`GatedRwaNote` refuses every mint and transfer unless both sides pass deployed policy #1, and until this run no address on CC3 passed it, so only the deny half of the gate had ever fired. Two fresh subjects were issued marks through the local pipeline to close that gap. Both went through the real reconciliation and the real screening against the same 26,566 loaded entries, but the two regulatory checks were answered by the built-in demo vendors: the evidence names `demo:id` and `demo:bank` with `live: false`, no institution was queried, and the mark says so itself — `regime = KR_FSC_NONFACE_SANDBOX`, the same disclosure `/verify` writes under `KYC_DEMO=1`. Both marks carry `methods 0x190027` and `assurance 3`. Policy #1 was not modified to let them through: it still reads `requireAll = 0x10024`, `minAssurance = 2`, `maxAge = 0`, `requireRoster = false`, and the last command below re-reads that from chain. This run demonstrates the gate, not a production onboarding.
+
+| Subject | Role | Address |
+|---|---|---|
+| A | holder. Passes policy #1, signs the transfers | `0x4816B6e3Acb775f65Da888f185f708E2C8D7a3e2` |
+| B | recipient. Passes policy #1 | `0x77858131d1E0eAaAe2c38c2cce508c358C9b58ee` |
+| C | control. Never issued to, never funded, passes nothing | `0x680Cc6e52d80F8f3759C7d7209f576CedCE7F2C5` |
+
+| Chain | Block | Action | Transaction | Result |
+|---|---|---|---|---|
+| Sepolia | 11607741 | `ComplianceSource.issueBatch`, both marks in one transaction | `0x02cdf784fb7808b3d44b37a6e43b9145d7666519aca51d5497d4264bf3857c55` | status 1 |
+| CC3 | 5407725 | 0.2 tCTC to A, so A can pay its own gas | `0xdfb2b58105bafc298475d600077376d11a6ad2e4b0b0837227e8d601efbea9e9` | status 1 |
+| CC3 | 5407761 | worker `execute`, applying both `MarkIssued` logs | `0x2d97cd34a44cb08cbafa82dcb159c01f4a3add85014a0793697ecf3cfa1d7af9` | status 1. `isVerified` turns true for A and B |
+| CC3 | 5407782 | `mint(A, 100 KRCN)`, owner only, gate checks the recipient | `0x9a58b27face8bedeb49eab2d1cd21cc541d96c8880c49b4ee865639652b6db0e` | status 1 |
+| CC3 | 5407786 | A sends 1 KRCN to C, gas limit forced past estimation so the revert lands on chain | `0x121b0d4f4213ba533e0284ec5e78db9d0d8054a970dee8947ab027f39528f18e` | **status 0, reverted.** The gate blocked it |
+| CC3 | 5407787 | A sends 40 KRCN to B | `0x6ec9dbedd37daa607a0df4e50026e61a049c620ce81981afa5f4ebdb39e431ce` | status 1 |
+
+Propagation measured on this run: the Sepolia block carrying `issueBatch` is stamped `2026-08-31T19:30:12Z` and the CC3 block that materialised both marks is stamped `2026-08-31T19:39:30Z`, so **9m 18s** from issuance to `isVerified`. Both marks rode one attestation — the worker recorded two `MarkIssued` logs under that one source transaction — so the figure is the same for A and B. The worker's own job record puts the same round trip at 561s, three seconds longer, because it stamps the moment it wrote the CC3 receipt rather than the block. One run, one number, on the testnets named above — section 6 keeps the earlier observations separately.
+
+```sh
+CC3=https://rpc.cc3-testnet.creditcoin.network
+REG=0x874e0Fd030a8Fe6c7a06835354531b68A31f5FCc
+ASC=0x93C62D3016123Da0aBdB4AC1857564c30CbE5629
+NOTE=0xA8Dfe6f5063a8159524DedbBAc75f034C3BF0625
+A=0x4816B6e3Acb775f65Da888f185f708E2C8D7a3e2
+B=0x77858131d1E0eAaAe2c38c2cce508c358C9b58ee
+C=0x680Cc6e52d80F8f3759C7d7209f576CedCE7F2C5
+
+# both sides of the successful transfer pass the production policy, the control does not
+cast call $REG "isVerified(address,uint256)(bool)" $A 1 --rpc-url $CC3     # true
+cast call $REG "isVerified(address,uint256)(bool)" $B 1 --rpc-url $CC3     # true
+cast call $REG "isVerified(address,uint256)(bool)" $C 1 --rpc-url $CC3     # false
+
+# the token's own preflight view, before anyone spends gas
+cast call $NOTE "canTransfer(address,address)(bool)" $A $C --rpc-url $CC3  # false
+cast call $NOTE "canTransfer(address,address)(bool)" $A $B --rpc-url $CC3  # true
+
+# the revert, reproduced as a call. --from is what exercises the sender-side check
+cast call $NOTE "transfer(address,uint256)" $C 1000000000000000000 --from $A --rpc-url $CC3
+#   revert 0x17887111  RecipientNotVerified(0x680Cc6e5…, 1)   the gate
+# drop --from and msg.sender is zero, which the gate exempts as the mint path:
+cast call $NOTE "mint(address,uint256)" $A 1000000000000000000 --rpc-url $CC3
+#   revert 0x118cdaa7  OwnableUnauthorizedAccount(0x0)        not the gate, just onlyOwner
+
+# what the successful transfer moved, and the mark that allowed it
+cast call $NOTE "balanceOf(address)(uint256)" $B --rpc-url $CC3            # 40000000000000000000
+cast call $ASC "getMark(address)((uint8,uint8,uint8,uint8,uint16,uint16,uint32,uint40,uint40,uint32,bytes32,bytes32,address))" $A --rpc-url $CC3
+#   status 1 ACTIVE, origin 1 Direct, kind 1, assurance 3, regime 2 sandbox,
+#   jurisdiction 410 KR, methods 0x190027
+
+# the policy the two marks were measured against, unchanged
+cast call $REG "policies(uint256)(uint32,uint8,uint40,bool,bool)" 1 --rpc-url $CC3
+#   65572 (0x10024), 2, 0, false, true
+```
+
+The deny half needs no new transaction. Of the 101 KRCN outstanding, 1 was minted before any of this and sits in `0xFD1222e35a536A62f180aA44826656940e86bD5E`, the wallet whose mark we revoked — the "One mark on chain was revoked by us" bullet under "Other limits" in section 8 records that revocation and what its propagation cost. `canTransfer` from that wallet is false today, so the balance cannot move: same gate, same policy that just let A pay B.
+
 ### Web demo
 
 ```sh
