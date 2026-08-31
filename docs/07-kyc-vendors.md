@@ -23,7 +23,7 @@ There is no silent mock. An axis is either a real vendor, the labelled demo vend
 |---|---|---|---|
 | **ID document**: resident registration card (Government24), driver licence (Korean National Police Agency Traffic Civil Service 24), plus OCR | **Yes.** CODEF demo tier with app-based authentication | Section 3 | `live`, bit set, regime production |
 | **Bank account**: holder name + one won | Testbed only: KFTC Open Banking | Section 4 | not live: the real API, canned answers, no money moves |
-| Bank account, real rails | No. KFTC participating-institution registration (weeks) or the CODEF partnership contract | Section 4.3 | `live`, bit set |
+| Bank account, real rails | Not yet: one of two commercial rails, the KFTC registration or the CODEF contract, planned step by step in section 4.3 | Section 4.3 | `live`, bit set |
 
 Real and demo mix per axis. With CODEF configured and nothing for the bank, the document is checked for real and the account is demo.
 
@@ -85,9 +85,32 @@ The testbed runs the real API against canned data and moves nothing, so the vend
 
 Account-holder authentication (`/v1/kr/bank/a/account/holder-authentication`: `organization` = `0` + bank code, `account`, `identity` = YYMMDD) and account authentication by one-won transfer (`/v1/kr/bank/a/account/transfer-authentication`, `inPrintType 0` = four random digits as the depositor, returns `authCode`). These are partnership products: the demo server returns random test data, so the class refuses to construct on anything but `CODEF_ENV=api`.
 
-### 4.3 Real rails
+### 4.3 Production rails: the milestone plan
 
-Either KFTC participating-institution registration (review, weeks) with `OPENBANKING_ENV=prod`, or the CODEF partnership contract with `CODEF_ENV=api`. Nothing in the code changes.
+Signing either rail — KFTC participating-institution registration or the CODEF partnership contract — turns the bank axis live. Combined with the document axis, which is self-service onboardable today through the CODEF demo tier (section 3), a mark issued through `/verify` then carries `ID_DOC_AUTHENTICITY` (0x4), `BANK_ACCOUNT` (0x20) and `SANCTIONS_SCREENED` (0x10000) from live rails and passes deployed policy #1 on `ProofmarkRegistry` (CC3 testnet, `0x874e0Fd030a8Fe6c7a06835354531b68A31f5FCc`; `requireAll 0x10024`, `minAssurance 2`) with no change to the policy. Nothing in the code changes: `OPENBANKING_ENV=prod` or `CODEF_ENV=api` is the whole switch.
+
+**Rail A — KFTC Open Banking production**
+
+| Step | Owner (role) | Estimated duration (estimate, not a commitment) | Status | Unblocks |
+|---|---|---|---|---|
+| a. Adapter and wire-format tests: the 2-legged token, the `real_name` inquiry, the one-won deposit judged on `bank_rsp_code` — `pipeline/adapters/openbanking.ts`, `pipeline/openbanking.test.ts` | engineering | — (already in the repo) | Done | Nothing further on the code side; steps b to e are registration work |
+| b. Developer-site registration and a test app at developers.kftc.or.kr (the individual developer completes identity verification) | engineering | days (assumption) | Not started | Testbed credentials for step c |
+| c. Testbed validation with `OPENBANKING_ENV=test`. Testbed answers are canned, no money moves, the vendor records `live = false`, and the bank bit stays unset | engineering | days (assumption) | Not started | Wire-format proof against the real API ahead of review |
+| d. Participating-institution registration application and KFTC review | compliance lead, with BD | weeks (KFTC review) | Not started | Permission to call the production host |
+| e. Production credentials configured: `OPENBANKING_CLIENT_ID`, `OPENBANKING_CLIENT_SECRET`, `OPENBANKING_CLIENT_USE_CODE`, `OPENBANKING_CNTR_ACCOUNT_NUM`, `OPENBANKING_WD_PASS_PHRASE`, `OPENBANKING_ENV=prod` | engineering | hours (assumption) | Not started | `BANK_ACCOUNT` (0x20) off a live rail: `live = true`, bit set |
+
+**Rail B — CODEF partnership contract (bank products)**
+
+| Step | Owner (role) | Estimated duration (estimate, not a commitment) | Status | Unblocks |
+|---|---|---|---|---|
+| a. Adapter for the two bank products, holder authentication and one-won transfer authentication — `pipeline/adapters/codef.ts`, `pipeline/codef.test.ts`. The safeguard is already in place: the bank-product class refuses to construct on anything but `CODEF_ENV=api`, because the demo and sandbox servers answer these two products with random test data | engineering | — (already in the repo) | Done | Nothing further on the code side; steps b to d are commercial work |
+| b. CODEF demo-tier account at codef.io (self-service; the same account also unlocks the live document axis through app-based authentication, section 3) | engineering | days (assumption) | Not started | The document axis, live. Not the bank axis: the bank products need `api` |
+| c. Partnership contract negotiation with CODEF | BD, with compliance lead | weeks (vendor-side review and contracting) | Not started | Access to the bank products on the production host |
+| d. Production keys with `CODEF_ENV=api` and `BANK_VENDOR=codef` | engineering | hours (assumption) | Not started | `BANK_ACCOUNT` (0x20) off a live rail: `live = true`, bit set |
+
+Status reflects what this repository can prove as of the last edit; it is updated as applications are filed.
+
+Either bank rail live, together with the document axis live on CODEF, is the whole unblock: a mark issued through `/verify` carries `methods` including `0x10024`, policy #1 passes on chain, and the mark's `regime` is production `KR_FSC_NONFACE` instead of `KR_FSC_NONFACE_SANDBOX`.
 
 ---
 
