@@ -37,6 +37,8 @@ Real and demo mix per axis. With CODEF configured and nothing for the bank, the 
 2. Go to My Page → **Key Management** and copy `clientId`, `clientSecret`, and `publicKey`.
 3. Set `CODEF_ENV=demo`. The demo tier queries the real Government24 and Traffic Civil Service 24 within a daily allowance. `sandbox` answers from fixed sample data and is never live; `api` is production.
 
+The operational path — every variable, the Vercel production commands, the post-deploy check and the failure modes — is [`runbooks/codef-demo-onboarding.md`](runbooks/codef-demo-onboarding.md), and `npx tsx script/check_codef.ts web/.env.local` validates the three keys against the CODEF token endpoint before a deploy without printing any of them.
+
 ### 3.2 Login: app-based authentication, no certificate file
 
 The authorities require the *requesting party* to log in; the document being checked belongs to the customer (the guide calls this "third-party authentication"). Two ways are implemented:
