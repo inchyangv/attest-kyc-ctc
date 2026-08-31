@@ -170,9 +170,15 @@ The deny half needs no new transaction. Of the 101 KRCN outstanding, 1 was minte
 
 ### Web demo
 
+Hosted, nothing to install: **https://attest-kyc.stabled.ai**. The same production build is also served at https://proofmark-swart.vercel.app, so one dead domain cannot take the demo down.
+
+Or run it locally:
+
 ```sh
 cd web && npm install && npm run dev
 ```
+
+`scripts/check-demo-urls.sh` checks both hosted URLs — the three pages and the three API routes behind them — and exits non-zero if any of them is down.
 
 `/` runs live sanctions screening against the real lists. `/onchain` reads Creditcoin and shows the same mark passing one policy and failing the other.
 
