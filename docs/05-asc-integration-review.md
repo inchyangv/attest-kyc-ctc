@@ -111,13 +111,17 @@ Keep a monotonic cursor per subject, which is why the handler needs `blockHeight
 
 ```solidity
 mapping(address => uint64) public lastAppliedHeight;
+mapping(address => uint64) public lastAppliedTxIndex;
 // inside the handler
-if (blockHeight <= lastAppliedHeight[subject]) continue;   // ignore stale proofs
+if (blockHeight < lastAppliedHeight[subject] ||
+    (blockHeight == lastAppliedHeight[subject] && txIndex <= lastAppliedTxIndex[subject])) continue;
 lastAppliedHeight[subject] = blockHeight;
+lastAppliedTxIndex[subject] = txIndex;
 ```
 
-> Ordering inside a single block is still open. With an issuance and a revocation in the same block, `<=` cannot tell them apart.
-> Mitigation: serialise off chain so `ComplianceSource` never emits opposing events for one subject in the same block. Combined with the C1 rule of one event kind per transaction, that is enough in practice.
+`txIndex` is derived from the same proof verified by BlockProver, so opposing transactions inside
+one source block are ordered without trusting the relayer. C1 still requires one event kind per
+source transaction because an Attestcoin query is transaction-scoped, not log-scoped.
 
 ---
 
@@ -263,7 +267,7 @@ Ecosystem rather than token economics. CEIP funds products that strengthen and g
 | # | Where | What |
 |---|---|---|
 | 1 | 5 | State that `ProofmarkASC` forks `ASCBase` to expose `chainKey` and `blockHeight` |
-| 2 | 6.4 | Add `blockHeight > lastAppliedHeight[subject]` to the decision rules |
+| 2 | 6.4 | Order by `(blockHeight, txIndex)` per subject |
 | 3 | 5.2 | Replace `verifyBatch` with walking multiple logs in one transaction, and drop `verifyBatch` to P1 |
 | 4 | 9.2, D-9 | Add deploying and linking `EvmV1Decoder` as a prerequisite |
 | 5 | 7-7 | Correct the replay key to `(chainKey, blockHeight, txIndex)` |
@@ -278,14 +282,16 @@ Ecosystem rather than token economics. CEIP funds products that strengthen and g
 // before
 function _processAndEmitEvent(uint8 action, bytes32 queryId, bytes memory encodedTransaction) internal virtual;
 
-// after, exposing chainKey and blockHeight
+// after, exposing the source identity and total transaction order
 function _processAndEmitEvent(
     uint8   action,
     uint64  chainKey,        // pins the source chain, section 1
     uint64  blockHeight,     // enforces ordering, section 2
-    bytes32 queryId,
+    uint64  txIndex,         // orders two transactions in the same source block
     bytes memory encodedTransaction
 ) internal virtual;
 ```
 
-Only the call site inside `execute()` changes, at `ASCBase.sol:43`. Everything else stays. Proof verification, `queryId` computation and replay protection are left untouched.
+The fork derives `txIndex` through the verifier from the same Merkle proof used for inclusion.
+Proof verification and the Attestcoin `queryId = keccak256(chainKey, blockHeight, txIndex)` replay
+key remain byte-compatible with the upstream behavior.

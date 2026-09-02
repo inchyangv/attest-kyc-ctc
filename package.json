@@ -11,7 +11,9 @@
     "typecheck": "tsc --noEmit",
     "test:pipeline": "tsx --test pipeline/*.test.ts",
     "test:ts": "tsx --test worker/*.test.ts pipeline/*.test.ts",
-    "test:all": "forge test && tsx --test worker/*.test.ts pipeline/*.test.ts"
+    "test:all": "forge test && tsx --test worker/*.test.ts pipeline/*.test.ts",
+    "rescreen": "tsx script/rescreen.ts",
+    "vault:admin": "tsx script/vault-admin.ts"
   },
   "dependencies": {
     "@gluwa/usc-contracts": "0.1.2",

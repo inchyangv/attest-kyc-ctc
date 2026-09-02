@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { Store } from './store.js';
+import { Store, jobsReadyForDispatch } from './store.js';
 import { Backoff } from './retry.js';
 import { computeQueryId, txIndexFromProof } from './proof.js';
 
@@ -107,6 +107,24 @@ describe('Store persistence', () => {
       const reopened = new Store(path);
       assert.equal(reopened.get('0xbb')?.state, 'submitted');
       assert.equal(reopened.get('0xbb')?.ascTxHash, '0xcc');
+    } finally { cleanup(); }
+  });
+});
+
+describe('worker retry scheduling', () => {
+  test('a failed pending job is selected again while in-flight work is excluded', () => {
+    const { path, cleanup } = tmpStore();
+    try {
+      const s = new Store(path);
+      s.add({ txHash: '0xretry', blockNumber: 5, action: 0, eventName: 'MarkIssued',
+              logCount: 1, state: 'attested', attempts: 1, lastError: 'temporary RPC failure' });
+      s.add({ txHash: '0xbusy', blockNumber: 6, action: 1, eventName: 'MarkRevoked',
+              logCount: 1, state: 'discovered', attempts: 0 });
+
+      assert.deepEqual(
+        jobsReadyForDispatch(s, new Set(['0xbusy'])).map((j) => j.txHash),
+        ['0xretry'],
+      );
     } finally { cleanup(); }
   });
 });

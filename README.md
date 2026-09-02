@@ -1,380 +1,219 @@
 # Proofmark
 
-**Verify once. Carry the result to every chain.**
+**A compliance gateway for Creditcoin. External KYC/AML credentials go in; frozen, application-specific policy decisions come out.**
 
-A KYC and AML attestation layer. Screening results are issued on Ethereum, verified on Creditcoin through the Attestcoin Protocol with no oracle operator in between, and read by any chain that wants them. No personal data goes on chain.
+Proofmark records which checks an issuer actually performed, proves the Ethereum source transaction through the Attestcoin Protocol, and materializes the result on Creditcoin CC3. A lending market, stablecoin, or tokenized asset can then enforce its own policy without rerunning KYC or trusting a bridge operator.
 
-Built for BUIDL CTC 2026 Fall. Track: RWA.
+The privacy claim is deliberately narrow: names, dates of birth, document numbers, and account numbers are never written on chain. Wallet addresses, issuer addresses, method metadata, and commitments are pseudonymous and linkable; they are not anonymous.
 
----
+## Try it
 
-## 1. The problem
+- Product: [attest-kyc.stabled.ai](https://attest-kyc.stabled.ai)
+- Creditcoin state: [attest-kyc.stabled.ai/onchain](https://attest-kyc.stabled.ai/onchain)
+- Full verification journey: [attest-kyc.stabled.ai/verify](https://attest-kyc.stabled.ai/verify)
+- Pitch deck: [docs/deck/proofmark-deck.pdf](docs/deck/proofmark-deck.pdf)
+- Investment and pilot memo: [docs/11-investment-memo.md](docs/11-investment-memo.md)
 
-Once on-chain finance sits inside a regulatory perimeter, every service opens with the same question: **may I transact with this wallet?**
+The public journey is a sandbox. Demo identity and bank adapters do not contact an institution and can only produce `regime = 2`. Frozen production policy #1 requires `regime = 1`, so a demo mark cannot pass it.
 
-There are three ways to answer it today and none of them are good. Build KYC again on each chain, and the vendor contracts, the integration work and the data-controller obligations multiply by the number of chains. Trust a signing server, and one key becomes the whole security model. Trust a relayer, and you have moved the trust rather than removed it.
+## Why this belongs in the Creditcoin ecosystem
 
-Crossing a border adds a second problem. "KYC complete" names different work in different places. Korea's non-face-to-face identification requires two independent checks from a fixed list. eIDAS grades assurance on its own scale. US CIP asks for a specific set of identifiers. A single boolean cannot carry any of that.
+Creditcoin applications need a reusable compliance state, not another KYC form. Proofmark separates three concerns:
 
-## 2. What Proofmark does
+1. **Verify:** a configured credential rail performs document, account, sanctions, and jurisdiction checks. A missing or sandbox check leaves an honest bit or regime behind.
+2. **Prove:** `ComplianceSource` emits on Ethereum Sepolia. Attestcoin BlockProver verifies that source transaction; no Proofmark-operated oracle signs the cross-chain message.
+3. **Enforce:** `ProofmarkRegistry` applies a frozen policy over method bits, assurance, age, regime, jurisdiction, issuer, and optional roster membership. `GatedRwaNote` refuses mint and transfer when the policy fails.
 
-**A mark carries the checks that were performed, not a verdict.** Sixteen bits record what actually happened: document authenticity, liveness, bank account verification, sanctions screening, jurisdiction, on-chain exposure. Each consumer applies its own policy to those bits and reaches its own conclusion. We publish evidence; we do not assert that Korean KYC equals EU KYC.
+This makes Proofmark useful as a Creditcoin-native normalization and policy layer above existing credential providers. The reference issuer is implemented today; adapters for credentials such as CCID, zkKYC providers, and regulated institutional rails are the commercial expansion path, not a claim that those integrations already exist.
 
-**Attestcoin makes the mark portable without a trusted party.** The mark is issued on Ethereum. Creditcoin verifies its inclusion proof inside a single block through the BlockProver precompile. Nobody has to believe us.
+## What is live now
 
-**On-chain personal data is zero bytes.** What travels is two 32-byte commitments and a bitmap.
+As of 2026-09-02:
 
----
-
-## 3. Attestcoin Protocol integration
-
-The scoring criteria ask how deeply a submission uses the protocol. The test we hold ourselves to: remove Attestcoin and see what survives.
-
-| Remove Attestcoin | What is left |
+| Component | Status |
 |---|---|
-| Creditcoin has no way to learn what Ethereum issued | A relayer we operate, which is the trust the product exists to remove |
-| Epoch roster roots cannot be checked | Issuer signatures, back to trusting one key |
-| A spoke chain's mirror cannot be disproven | Trusting the mirror operator |
+| Contracts | Current source is deployed on CC3 Testnet and Sepolia |
+| Policies | Production #1 and sandbox #2 are registered and permanently frozen |
+| Cross-chain ordering | Per-subject `(source block, transaction index)` cursor prevents stale or same-block resurrection |
+| Replay protection | API flow is consent-bound; `ComplianceSource.issueOnce` permanently consumes its request ID |
+| Revocation | Ordinary revocation can be superseded by a later full issuance; sanctions denial remains permanent |
+| Rosters | Inclusion and non-inclusion proofs bind both keys and marks; adversarial relabelling regression is tested |
+| AML data | 26,566 OFAC/UN/EU entries, 78,365 names; source timestamps are checked and stale data fails closed |
+| FATF | June 2026 monitored-jurisdiction tables are source-verified and versioned in evidence |
+| Evidence | AES-256-GCM pilot vault, retention purge, erasure log, rescreening, and manual-review CLI are implemented |
+| Public sandbox | No persistent server-side evidence is retained; production issuance fails closed without a persistent vault |
 
-### Where the protocol is used
+The encrypted file vault is suitable for a single-instance pilot on persistent encrypted storage. It is intentionally disabled on Vercel's ephemeral filesystem. A production hosted service still needs a managed database/KMS adapter, distributed rate limiting, vendor contracts, operational key separation, and security review.
 
-| Where | What |
-|---|---|
-| `worker/` | Polls attested height, fetches the inclusion proof, submits to the ASC |
-| `src/ASCBaseX.sol` | Fork of `ASCBase` that passes `chainKey` and `blockHeight` to the handler. Section 5 explains why |
-| `src/ProofmarkASC.sol` | Verifies through the BlockProver precompile inside one Creditcoin block |
-| `src/ComplianceSource.sol` | `issueBatch` and `revokeBatch` put N events in one transaction, so one `execute()` applies all of them |
-| `script/check_chains.ts` | Reads chainKey from the ChainInfo precompile at deploy time rather than hardcoding it |
+## Current testnet deployment
 
-### Why the design batches
+Source of record: [deployments/cc3-testnet.json](deployments/cc3-testnet.json).
 
-Reads are free on Attestcoin. The official wording is "reading other chains stays free," and our measurement agrees: the `execute()` call deducted exactly its gas cost and no protocol fee. So we do not claim to generate ATC demand. We do not have that story and will not invent one.
-
-Batching is driven by Ethereum L1 instead. A hundred thousand users means a hundred thousand L1 issuance transactions, and the issuer pays that gas. An epoch roster root fixes L1 writes at one transaction per epoch regardless of how many subjects it covers.
-
-Writability is where ATC is spent, and it is still in development: when it ships, propagating to a spoke chain becomes a paid write under the protocol's own design, one per mark for direct-origin marks and one roster root per epoch in batch mode. That is roadmap, not current fact. Epoch 1 is published on chain (section 8), which fixes the shape of the batch mode; the paid spoke-chain write it would drive does not exist yet.
-
----
-
-## 4. Reproduce it in five minutes
-
-### Deployed contracts
-
-| Contract | Chain | Address |
+| Contract | Network | Address |
 |---|---|---|
-| `EvmV1Decoder` | CC3 Testnet (102031) | `0xff3558704c75ed69e1D657474210365b24d31938` |
-| `ProofmarkASC` | CC3 Testnet | `0x93C62D3016123Da0aBdB4AC1857564c30CbE5629` |
-| `ProofmarkRegistry` | CC3 Testnet | `0x874e0Fd030a8Fe6c7a06835354531b68A31f5FCc` |
-| `ComplianceSource` | **Sepolia** (11155111) | `0x93C62D3016123Da0aBdB4AC1857564c30CbE5629` |
-| `GatedRwaNote` | CC3 Testnet | `0xA8Dfe6f5063a8159524DedbBAc75f034C3BF0625` |
+| `EvmV1Decoder` | Creditcoin CC3 | `0x5eE29aB8845A2AD4BBE1e01c5BD3bCc3AEee47Fd` |
+| `ProofmarkASC` | Creditcoin CC3 | `0x3C6Fe016645CA52952E29C66E435bDa7F611b242` |
+| `ProofmarkRegistry` | Creditcoin CC3 | `0x2F4E5e1270f90E51251651caf08547393e3C0572` |
+| `ComplianceSource` | Ethereum Sepolia | `0xA9A34586303b9fD92e090F9bb1D332DC854c72B9` |
+| `GatedRwaNote` (`KPCN`) | Creditcoin CC3 | `0xa74aB3De359a55A729f9185Fe4Afe90526E585CA` |
 
-The ASC and ComplianceSource share an address. Same deployer, same nonce, different chains, so CREATE produces the same result. The bytecode differs and the first command below shows it.
+The contracts share one testnet owner/issuer key. That is acceptable only for the demo. Production must separate deployer, issuer, policy owner, epoch publisher, worker payer, and asset recovery roles behind managed keys or multisigs.
 
-### Two subjects
+### Frozen policies
 
-| Subject | Story |
-|---|---|
-| `0xb8FEBEaB3705793474fA05b91Bf5D205855dD3c1` | Issued through the honest pipeline. Passes the pilot policy, fails production |
-| `0xFD1222e35a536A62f180aA44826656940e86bD5E` | Revoked. Its `methods` were hand-authored during pipeline testing and claimed checks we never ran |
+| ID | Purpose | Required methods | Assurance | Max age | Regime | Jurisdiction | Trusted issuer | Asset binding |
+|---|---|---|---:|---:|---:|---:|---|---|
+| 1 | KR production | `0x10024` | 2 | 30 days | 1 | 410 | deployer/issuer | none |
+| 2 | KR sandbox pilot | `0x10024` | 2 | 7 days | 2 | 410 | deployer/issuer | `KPCN` |
 
-**One address, three roles.** The revoked subject `0xFD1222e35a536A62f180aA44826656940e86bD5E` is also the deployer of every contract above and the issuer EOA that signed the active mark — one testnet key reused for all three roles. So `getMark` on the honest subject returns an `issuer` that is itself tombstoned. That is address reuse, not a compromised or tombstoned issuer key: a tombstone attaches to an address as a *subject*, and `isVerified` consults only the subject's tombstone and mark (`src/ProofmarkRegistry.sol`, `isVerified`) — the mark's `issuer` field is carried data, never checked against tombstones. Who may issue is decided on the source chain by `ComplianceSource.setIssuer`'s allow-list. A production deployment would use separate keys for deployer, issuer and test subjects.
+Both `policyFrozen(1)` and `policyFrozen(2)` return `true`. The gated note constructor rejects a mutable policy.
 
-### Commands
+### Live cross-chain evidence
 
-```sh
-CC3=https://rpc.cc3-testnet.creditcoin.network
-SEP=https://ethereum-sepolia-rpc.publicnode.com
-ASC=0x93C62D3016123Da0aBdB4AC1857564c30CbE5629
-REG=0x874e0Fd030a8Fe6c7a06835354531b68A31f5FCc
-NOTE=0xA8Dfe6f5063a8159524DedbBAc75f034C3BF0625
-SUB=0xb8FEBEaB3705793474fA05b91Bf5D205855dD3c1
+- Sepolia `issueBatch` [`0x29049802…69f1`](https://sepolia.etherscan.io/tx/0x290498028010e6ce5f75de3d69695091e24863423e01a7981a277db86c8d69f1) materialized two sandbox marks on CC3; the worker submission was [`0x50c30b31…67d8`](https://creditcoin-testnet.blockscout.com/tx/0x50c30b315f74150fecf56b670a5d6c9cf7dc0bc76c815809dbc6af899de567d8).
+- `KPCN` minted 100 tokens to verified subject A in [`0xa1f3b9fa…e77`](https://creditcoin-testnet.blockscout.com/tx/0xa1f3b9fa62419b0352376d633b703442830d95a45179772825e44397342f8e77), then transferred 40 to verified subject B in [`0xefe550ff…aa0d`](https://creditcoin-testnet.blockscout.com/tx/0xefe550ff98e513b8c6cd7fa8541fd1d7d0f33197b149fb674df8acba7aa9aa0d). A call to an unissued recipient reverts with `RecipientNotVerified`.
+- Epoch 1 root `0xfe6cf3e0…364d` was published on Sepolia in [`0x2adefae2…16df`](https://sepolia.etherscan.io/tx/0x2adefae22bd29e7fc43b9f9161f6c722cc2deb4eae6bc720aca5a2b65e7816df) and accepted on CC3 in [`0xb011cd6e…532f`](https://creditcoin-testnet.blockscout.com/tx/0xb011cd6e5a590b924858262cdfc832a6ef0d71cc4b78c3ac61efaf3d0c2f532f), 8m 00s later by block timestamps. Contract calls confirm policy 2 membership `true`, policy 1 membership `false`, and non-membership for an unissued address `true`.
 
-# 1. one address, two different contracts
-cast code $ASC --rpc-url $CC3 | wc -c      # 18121  ProofmarkASC
-cast code $ASC --rpc-url $SEP | wc -c      #  7479  ComplianceSource
+The complete epoch inputs, timings, and verdicts are in [deployments/epoch-1.json](deployments/epoch-1.json).
 
-# 2. the ASC accepts proofs from one chain only
-cast call $ASC "expectedChainKey()(uint64)" --rpc-url $CC3     # 1, Sepolia
-cast call $ASC "sourceContract()(address)"  --rpc-url $CC3
+## Security properties added in the current build
 
-# 3. the mark that crossed over. Note the field order: origin is second
-cast call $ASC "getMark(address)((uint8,uint8,uint8,uint8,uint16,uint16,uint32,uint40,uint40,uint32,bytes32,bytes32,address))" $SUB --rpc-url $CC3
-#   status 1 ACTIVE, origin 1 Direct, kind 1, assurance 1, regime 2 sandbox,
-#   jurisdiction 410 KR, methods 0x190001
+- `ProofmarkASC.configureSource` is one-time and rejects every proof before configuration.
+- The cross-chain query ID follows Attestcoin's `(chainKey, blockHeight, txIndex)` layout; state application uses the same transaction index as a per-subject tiebreaker.
+- A sanctions denial cannot be downgraded by an ordinary revoke or issuance. A non-sanctions revoke can be reactivated only by a newer full issuance.
+- Non-inclusion proofs recompute each boundary leaf from `(key, mark)`. A valid neighboring leaf cannot be relabelled around a listed target.
+- Consumer policy checks include required/all method bits, minimum assurance, maximum mark age, regime, jurisdiction, trusted issuer, and optional fresh roster membership.
+- Policies can be frozen permanently; a policy-gated token can bind only to a frozen policy.
+- The token owner has recovery-only `forceTransfer` and `forceBurn`; recovery cannot move assets to an unverified recipient.
+- The worker persists jobs atomically and requeues pending failures on every poll cycle, not only on restart.
+- Request bodies are size-limited, same-origin state-changing routes are checked, and per-instance throttles return `429`. A multi-instance production deployment still needs host-level distributed controls.
 
-# 4. the same mark under two policies
-cast call $REG "isVerified(address,uint256)(bool)" $SUB 1 --rpc-url $CC3   # false, KR VASP production
-cast call $REG "isVerified(address,uint256)(bool)" $SUB 2 --rpc-url $CC3   # true,  KR pilot
+## Privacy and evidence boundary
+
+On chain:
+
+- wallet/subject address and issuer address;
+- status, origin, kind, assurance, regime, jurisdiction, method bitmap, timestamps, and epoch;
+- `claimsRoot` and `evidenceHash` commitments.
+
+Off chain during issuance:
+
+- declared identity and account inputs;
+- fields needed by the configured verification vendors;
+- salted claim openings and a recomputable evidence chain.
+
+Evidence uses keyed HMACs for low-entropy identity fields. This is pseudonymization, not anonymization. The `proofmark-kyc-v2` consent text is bound into the wallet-signed EIP-4361 flow, every downstream token is bound to the same flow ID and wallet, and one flow can finalize only once.
+
+For non-demo issuance, the API refuses to continue unless a persistent encrypted evidence vault is configured. The pilot vault supports:
+
+```bash
+npm run vault:admin -- counts
+npm run vault:admin -- decide <record-id> cleared "review reason"
+npm run vault:admin -- erase <record-id> "request or policy basis"
+npm run vault:admin -- purge
+npm run rescreen                 # dry run
+npm run rescreen -- --publish    # records decisions and emits a revocation batch
 ```
 
-Two notes for anyone reproducing this.
+See [docs/08-regulatory-position.md](docs/08-regulatory-position.md). It is an engineering position paper pending Korean compliance and legal review, not legal advice.
 
-**Pass `--from` to `cast call`.** Without it msg.sender is zero, `onlyOwner` fires before the gate, and you get `OwnableUnauthorizedAccount` (`0x118cdaa7`) instead of the gate's `RecipientNotVerified` (`0x17887111`). Both look like a revert and mean different things. We walked into this ourselves.
+## AML data and evaluation
 
-**`missing field mixHash` from forge and cast on CC3 is harmless.** Creditcoin runs on Substrate and its block format differs. Every operation still succeeds.
+Refresh, build, and evaluate the source lists:
 
-### The gate in action
-
-`GatedRwaNote` refuses every mint and transfer unless both sides pass deployed policy #1, and until this run no address on CC3 passed it, so only the deny half of the gate had ever fired. Two fresh subjects were issued marks through the local pipeline to close that gap. Both went through the real reconciliation and the real screening against the same 26,566 loaded entries, but the two regulatory checks were answered by the built-in demo vendors: the evidence names `demo:id` and `demo:bank` with `live: false`, no institution was queried, and the mark says so itself — `regime = KR_FSC_NONFACE_SANDBOX`, the same disclosure `/verify` writes under `KYC_DEMO=1`. Both marks carry `methods 0x190027` and `assurance 3`. Policy #1 was not modified to let them through: it still reads `requireAll = 0x10024`, `minAssurance = 2`, `maxAge = 0`, `requireRoster = false`, and the last command below re-reads that from chain. This run demonstrates the gate, not a production onboarding.
-
-| Subject | Role | Address |
-|---|---|---|
-| A | holder. Passes policy #1, signs the transfers | `0x4816B6e3Acb775f65Da888f185f708E2C8D7a3e2` |
-| B | recipient. Passes policy #1 | `0x77858131d1E0eAaAe2c38c2cce508c358C9b58ee` |
-| C | control. Never issued to, never funded, passes nothing | `0x680Cc6e52d80F8f3759C7d7209f576CedCE7F2C5` |
-
-| Chain | Block | Action | Transaction | Result |
-|---|---|---|---|---|
-| Sepolia | 11607741 | `ComplianceSource.issueBatch`, both marks in one transaction | `0x02cdf784fb7808b3d44b37a6e43b9145d7666519aca51d5497d4264bf3857c55` | status 1 |
-| CC3 | 5407725 | 0.2 tCTC to A, so A can pay its own gas | `0xdfb2b58105bafc298475d600077376d11a6ad2e4b0b0837227e8d601efbea9e9` | status 1 |
-| CC3 | 5407761 | worker `execute`, applying both `MarkIssued` logs | `0x2d97cd34a44cb08cbafa82dcb159c01f4a3add85014a0793697ecf3cfa1d7af9` | status 1. `isVerified` turns true for A and B |
-| CC3 | 5407782 | `mint(A, 100 KRCN)`, owner only, gate checks the recipient | `0x9a58b27face8bedeb49eab2d1cd21cc541d96c8880c49b4ee865639652b6db0e` | status 1 |
-| CC3 | 5407786 | A sends 1 KRCN to C, gas limit forced past estimation so the revert lands on chain | `0x121b0d4f4213ba533e0284ec5e78db9d0d8054a970dee8947ab027f39528f18e` | **status 0, reverted.** The gate blocked it |
-| CC3 | 5407787 | A sends 40 KRCN to B | `0x6ec9dbedd37daa607a0df4e50026e61a049c620ce81981afa5f4ebdb39e431ce` | status 1 |
-
-Propagation measured on this run: the Sepolia block carrying `issueBatch` is stamped `2026-08-31T19:30:12Z` and the CC3 block that materialised both marks is stamped `2026-08-31T19:39:30Z`, so **9m 18s** from issuance to `isVerified`. Both marks rode one attestation — the worker recorded two `MarkIssued` logs under that one source transaction — so the figure is the same for A and B. The worker's own job record puts the same round trip at 561s, three seconds longer, because it stamps the moment it wrote the CC3 receipt rather than the block. One run, one number, on the testnets named above — section 6 keeps the earlier observations separately.
-
-```sh
-CC3=https://rpc.cc3-testnet.creditcoin.network
-REG=0x874e0Fd030a8Fe6c7a06835354531b68A31f5FCc
-ASC=0x93C62D3016123Da0aBdB4AC1857564c30CbE5629
-NOTE=0xA8Dfe6f5063a8159524DedbBAc75f034C3BF0625
-A=0x4816B6e3Acb775f65Da888f185f708E2C8D7a3e2
-B=0x77858131d1E0eAaAe2c38c2cce508c358C9b58ee
-C=0x680Cc6e52d80F8f3759C7d7209f576CedCE7F2C5
-
-# both sides of the successful transfer pass the production policy, the control does not
-cast call $REG "isVerified(address,uint256)(bool)" $A 1 --rpc-url $CC3     # true
-cast call $REG "isVerified(address,uint256)(bool)" $B 1 --rpc-url $CC3     # true
-cast call $REG "isVerified(address,uint256)(bool)" $C 1 --rpc-url $CC3     # false
-
-# the token's own preflight view, before anyone spends gas
-cast call $NOTE "canTransfer(address,address)(bool)" $A $C --rpc-url $CC3  # false
-cast call $NOTE "canTransfer(address,address)(bool)" $A $B --rpc-url $CC3  # true
-
-# the revert, reproduced as a call. --from is what exercises the sender-side check
-cast call $NOTE "transfer(address,uint256)" $C 1000000000000000000 --from $A --rpc-url $CC3
-#   revert 0x17887111  RecipientNotVerified(0x680Cc6e5…, 1)   the gate
-# drop --from and msg.sender is zero, which the gate exempts as the mint path:
-cast call $NOTE "mint(address,uint256)" $A 1000000000000000000 --rpc-url $CC3
-#   revert 0x118cdaa7  OwnableUnauthorizedAccount(0x0)        not the gate, just onlyOwner
-
-# what the successful transfer moved, and the mark that allowed it
-cast call $NOTE "balanceOf(address)(uint256)" $B --rpc-url $CC3            # 40000000000000000000
-cast call $ASC "getMark(address)((uint8,uint8,uint8,uint8,uint16,uint16,uint32,uint40,uint40,uint32,bytes32,bytes32,address))" $A --rpc-url $CC3
-#   status 1 ACTIVE, origin 1 Direct, kind 1, assurance 3, regime 2 sandbox,
-#   jurisdiction 410 KR, methods 0x190027
-
-# the policy the two marks were measured against, unchanged
-cast call $REG "policies(uint256)(uint32,uint8,uint40,bool,bool)" 1 --rpc-url $CC3
-#   65572 (0x10024), 2, 0, false, true
+```bash
+bash aml/fetch-lists.sh
+npx tsx aml/build-index.ts
+npx tsx aml/eval.ts
 ```
 
-The deny half needs no new transaction. Of the 101 KRCN outstanding, 1 was minted before any of this and sits in `0xFD1222e35a536A62f180aA44826656940e86bD5E`, the wallet whose mark we revoked — the "One mark on chain was revoked by us" bullet under "Other limits" in section 8 records that revocation and what its propagation cost. `canTransfer` from that wallet is false today, so the balance cannot move: same gate, same policy that just let A pay B.
+The fetch is fail-fast, validates minimum size and XML shape, and atomically replaces all three lists only after every download passes. Runtime loading checks each source timestamp on every request and fails closed once the configured maximum age is exceeded.
 
-### Web demo
+The current corpus contains:
 
-Hosted, nothing to install: **https://attest-kyc.stabled.ai**. The same production build is also served at https://proofmark-swart.vercel.app, so one dead domain cannot take the demo down.
+| Source | Entries |
+|---|---:|
+| OFAC SDN | 19,321 |
+| UN Consolidated | 1,011 |
+| EU Financial Sanctions Files | 6,234 |
+| Total | 26,566 |
 
-Or run it locally:
+Current deterministic evaluation: 200/200 listed-person recall, 610/610 clean-name specificity, 7/7 transliteration/evasion cases, and the listed-wallet case blocked. This is an engineering regression corpus, not a regulatory certification or a substitute for licensed PEP/adverse-media data.
 
-```sh
-cd web && npm install && npm run dev
+## Build and verify
+
+Requirements: Node.js, npm, and Foundry.
+
+Clone with submodules, or initialize `forge-std` before running Foundry:
+
+```bash
+git clone --recurse-submodules https://github.com/stabled-ai/attest-kyc-ctc.git
+# existing clone: git submodule update --init --recursive
 ```
 
-`scripts/check-demo-urls.sh` checks both hosted URLs — the three pages and the three API routes behind them — and exits non-zero if any of them is down.
+```bash
+npm ci
+npm test                    # Solidity
+npm run test:ts             # worker + pipeline + vault
+npm run typecheck
 
-`/` runs live sanctions screening against the real lists. `/onchain` reads Creditcoin and shows the same mark passing one policy and failing the other.
-
----
-
-## 5. Architecture
-
-```
-Ethereum Sepolia (chainKey 1)             where issuance happens
-  ComplianceSource.sol
-    MarkIssued / MarkRevoked / SanctionDenied / RosterEpochPublished
-            |
-            | worker watches
-  Offchain  |- KR adapter: ID document, bank account
-            |- reconciliation: declared details, document, account holder
-            |- AML engine: 26,566 entries from OFAC, UN and EU
-            |- evidence: hash chain per step
-            |- worker: waits for attestation, fetches proof, submits
-            |
-            | merkle proof + continuity proof
-Creditcoin CC3                            the chain of record
-  ProofmarkASC       BlockProver verification, source pinning, ordering cursor
-  ProofmarkRegistry  isVerified(subject, policyId)
-  GatedRwaNote       an RWA note that only moves between wallets a policy accepts
+cd web
+npm ci
+npm run lint
+npm run build
 ```
 
-### Why `ASCBase` is forked
+Deploy and operate on testnet:
 
-`ASCBase.execute()` receives `chainKey` and `blockHeight` and passes neither to the handler. Inheriting it directly leaves two holes.
-
-| Hole | What it allows | Fix |
-|---|---|---|
-| No `chainKey` | CC3 serves Sepolia (1) and Ethereum mainnet (3) at once. A handler that only checks `log.address_` accepts a forged event from a same-address contract on the other chain, and CREATE2 makes that address cheap to arrange | `require(chainKey == expectedChainKey)` |
-| No `blockHeight` | Proof submission is permissionless and unordered. Submit an old `MarkIssued` after a `MarkRevoked` and the dead mark comes back. The queryIds differ, so replay protection does not catch it | `lastAppliedHeight` cursor |
-
-Both guards are mutation tested. Remove either one and exactly its test fails.
-
----
-
-## 6. Measurements
-
-### Cross-chain propagation
-
-| Step | Value |
-|---|---|
-| Sepolia issuance | 27,933 gas |
-| Worker sees the event | 86 seconds later |
-| Attestation completes | 6.5 to 8.5 minutes, two observations |
-| CC3 proof verification | 386,008 gas |
-| Issuance to `isVerified` true | 7m 55s and 10m 48s across two runs |
-| Epoch publish to `latestEpoch` on CC3 | 8m 45s, one run |
-
-We do not describe revocation as instant. Source chain finality sets a floor, so the number is published as a product parameter. Anything needing real-time blocking has to gate on the source chain.
-
-### AML screening
-
-No fixtures. `bash aml/fetch-lists.sh` pulls 57MB of source XML.
-
-| | |
-|---|---|
-| Loaded | OFAC SDN 19,321, UN 1,011, EU FSF 6,234. 26,566 entries, 78,365 names, 124 sanctioned EVM addresses |
-| Recall | 100%. 200 listed individuals looked up by their own name, date of birth and country |
-| Specificity | 100%. 600 ordinary Korean names plus 10 western names, zero false positives |
-| Evasion | 7 of 7: invisible characters, Cyrillic homoglyphs, diacritics, full width, reversed order, inserted punctuation |
-| Wallet | Blocked on address alone, regardless of name |
-
-Romanised expansion is our inference, not something a list asserts.
-
-```
-Kim Jong Un   KP, date of birth matches   BLOCK  band 5   expansion hit, corroborated
-Choi Yeong-ho KR                          ALLOW  band 2   expansion hit, nothing corroborates it
-```
-
-Strip the diacritics and Choi Yeong-ho scores 100 against a different listed person, Choi Yong-ho. A test reproduces that collision. Letting expansion drive decisions produced a 33% false positive rate; refusing to let it drive them produces zero, and Kim Jong Un is still caught. So an uncorroborated expansion hit stays in the evidence and stays out of the decision.
-
----
-
-## 7. Setup
-
-```sh
-forge build && forge test                       # 45 tests
-
-npm install
-bash aml/fetch-lists.sh                         # source lists, not committed
-npx tsx --test "worker/*.test.ts" "pipeline/*.test.ts" "aml/*.test.ts"   # 134 tests
-npx tsx aml/eval.ts                             # screening measurements
-
-cp .env.example .env                            # fill in the keys
-./script/deploy.sh preflight                    # checks only, no transactions
+```bash
+cp .env.example .env
+./script/deploy.sh preflight
 ./script/deploy.sh deploy
 
-npm run worker                                  # start this before issuing
+npm run worker              # start before emitting source events
+npx tsx script/demo-gate-issue.ts
+npx tsx script/publish-epoch.ts --dry-run
+npx tsx script/publish-epoch.ts --publish
 ```
 
-`EVIDENCE_HMAC_KEY` is required. Generate it with `openssl rand -hex 32`. The engine refuses to start without one, and there is no default, because a default is what someone ships.
+`script/publish-epoch.ts` rebuilds the active set from Sepolia issuance events and CC3 materialized state, refuses an incomplete source scan, self-checks proofs, publishes one root, then asks the deployed registry for both membership and non-membership verdicts.
 
-Start the worker before issuing. Its cursor begins at the current head, so an event emitted first is never seen. Set `WORKER_START_BLOCK` if you need to catch up.
+## Repository map
 
-`npx tsx script/publish-epoch.ts --dry-run` rebuilds the epoch roster (Mode B) from chain state and prints the root and the planned calls without reading a key or sending anything; the publication sequence is [docs/10-epoch-roster-runbook.md](docs/10-epoch-roster-runbook.md).
-
----
-
-## 8. What runs and what does not
-
-This section stays. What we did not do is part of what the product is.
-
-### Bits we can set honestly
-
-| Bit | Status | Why |
-|---|---|---|
-| `WALLET_CONTROL` | yes | EIP-4361 signature, verified server side |
-| `SANCTIONS_SCREENED` | yes | 26,566 entries from three real lists |
-| `JURISDICTION_CHECK` | yes | FATF table, marked unverified against the source and recorded that way in evidence |
-| `ONCHAIN_EXPOSURE` | yes | 124 sanctioned wallets from OFAC |
-| `ID_DOC_AUTHENTICITY` | yes, with the vendor configured | CODEF against Government24 (resident registration card) or the Korean National Police Agency's Traffic Civil Service 24 (driver licence), logged in with the issuer's certificate. `pipeline/adapters/codef.ts` |
-| `BANK_ACCOUNT` | yes, on production rails | Holder name from the bank against the real-name number, then one won with a code the customer reads back. KFTC Open Banking (`pipeline/adapters/openbanking.ts`) or CODEF. The KFTC testbed runs the same API without moving money and is recorded as not live, so it sets nothing |
-| `FACE_MATCH`, `LIVENESS` | no | No face vendor connected |
-| `PEP_SCREENED`, `ADVERSE_MEDIA` | no | Commercial datasets we have not licensed |
-
-The flow is at `/verify`: wallet signature, document photo and OCR, authenticity with the authority (including the captcha or app-approval leg the authority may demand), holder name and the one-won code, then screening and `ComplianceSource.issue()`. Vendor credentials go in `web/.env.example`'s `CODEF_*`, `OPENBANKING_*` and `ISSUER_PRIVATE_KEY`. Without them the step reports which variables are missing.
-
-### Demo mode, and what onboards today
-
-| Axis | Self-service today | How | Result |
-|---|---|---|---|
-| ID document | **yes**: CODEF demo tier + app-based authentication | Sign up at codef.io, apply for the demo service, and copy `clientId` / `clientSecret` / `publicKey` from Key Management. Set `CODEF_ENV=demo`, `CODEF_LOGIN_TYPE=simple`, `CODEF_SIMPLE_LEVEL=1` (KakaoTalk), and the operator's name, phone, and resident number. Each check prompts for approval in the operator's app, then Government24 or Traffic Civil Service 24 answers for real | live, bit set, regime production |
-| Bank account | testbed only: KFTC Open Banking | Register at developers.kftc.or.kr, create a test app, set `OPENBANKING_*` with `OPENBANKING_ENV=test`. The real API answers with canned data and moves no money | not live |
-| Bank account, real | not yet: KFTC participating-institution registration or the CODEF partnership contract | milestone plan with per-step status: [docs/07-kyc-vendors.md](docs/07-kyc-vendors.md) section 4.3 — either rail signed, plus the document axis, yields marks that pass policy #1 on live rails | live, bit set |
-
-`KYC_DEMO=1` fills any axis that has no real vendor with the built-in demo vendor (`pipeline/adapters/demo.ts`): same inputs, same procedure, no institution asked. The page says so, the one-won code is shown on the page in place of the bank app, the evidence names `demo:*`, and the mark carries `regime = KR_FSC_NONFACE_SANDBOX`. Under demo the bits are set anyway (`KYC_DEMO_BITS=1`), so the flow ends with a mark that passes policy #1; set `KYC_DEMO_BITS=0` to keep them unset. A name containing `FAKE` is rejected by the demo authority and an account ending in `99` belongs to someone else, so both outcomes can be shown. Real and demo mix per axis: with CODEF configured and no bank vendor, the document is checked for real and the account is demo.
-
-### The two deployed policies
-
-| policyId | Name | requireAll | A mark from the pipeline |
-|---|---|---|---|
-| 1 | KR VASP production | `0x10024`: document authenticity, bank account, sanctions | passes only when both regulatory checks ran against live rails |
-| 2 | KR pilot | `0x190001`: wallet control, sanctions, jurisdiction, on-chain exposure | passes |
-
-We did not lower policy 1 to make our own mark pass. A standard you relax to fit yourself is not a standard.
-
-> The mark deployed on CC3 today was issued before the vendors were wired and does not pass the production policy. It says so on `/onchain`. A mark issued through `/verify` with CODEF on demo or production and Open Banking on production carries both bits and passes.
-
-That is the design. A check that did not run, or ran against a testbed, is a zero bit, and a zero bit is what lets a consumer policy reject the mark. `pipeline/pipeline.test.ts` pins every case: no vendor, a sandbox answer, an authority that says no, a code never read back.
-
-### Other limits
-
-- **Writability is unused.** Attestcoin's cross-chain write is still in development, so pushing state to spoke chains is roadmap, not fact.
-- **Epoch rosters (Mode B) are live: epoch 1 is published on chain.** The active set of 5 marks is one sorted-key Merkle root, `0xc863ed0ca2d107a86eae37a1524c9ab1c184c8209d71a7cb92dcbaf45e9b1895`, published by `ComplianceSource.publishEpoch` on Sepolia (`0x43dae09bdb1eb2e8eb209485aaf0a0112916d01b5c49858acbcef44b4acfb3f7`) and accepted by `ProofmarkASC` on CC3 8m 45s later (one run). What is **not** exercised on chain: the registry's proof-mode entry points. The deployed `ProofmarkRegistry` at `0x874e0Fd030a8Fe6c7a06835354531b68A31f5FCc` is an earlier build whose runtime code contains neither `verifyWithRoster` nor `proveNotInRoster`, so those verdicts did not run and are not claimed here. The published root was verified against `pipeline/roster.ts` — inclusion for the mark, non-membership for an address never issued to and for the revoked subject, all against the root read back from CC3 — and `test/RosterProof.t.sol` pins `src/lib/RosterProof.sol` to that implementation, but agreeing in tests is not a deployed contract answering. Cache mode is unaffected: `isVerified` on the deployed registry answers exactly as before. The roster carries `validUntil 1793395963` (2026-10-30T21:32:43Z, a demo parameter; production cadence would be daily), after which `ASC.isRosterFresh()` is false and `verifyWithRoster` fails closed for every subject. Marks issued before the epoch keep `origin = Direct`; the roster is the set, not a rewrite of their provenance. `Policy.requireRoster` exposes that difference rather than hiding it. Runbook: [docs/10-epoch-roster-runbook.md](docs/10-epoch-roster-runbook.md).
-- **The FATF table is unverified** against the source. `jurisdiction.ts` marks it `verified: false` and the evidence carries that through.
-- **One mark on chain was revoked by us.** Its `methods` were hand-authored and claimed checks we never performed. Revoking it cost 8m 43s of propagation and is visible at `/onchain?subject=0xFD1222e35a536A62f180aA44826656940e86bD5E`.
-
----
-
-## 9. Tests
-
-```
-Solidity     45   ASC 14, Registry 14, GatedRwaNote 7, RosterProof 7, QueryId 2, AttrsVector 1
-TypeScript  134   worker 11, pipeline 106, AML 17
-```
-
-The ones worth reading:
-
-| Test | What it holds |
+| Path | Purpose |
 |---|---|
-| `test_RejectsProofFromWrongChain` | chainKey spoofing, mutation tested |
-| `test_StaleIssueCannotResurrectRevokedMark` | reordering attack, mutation tested |
-| `test_SameMarkDifferentJurisdictionPolicies` | one mark, two answers |
-| `our own mark cannot pass the KR VASP production policy` | honesty |
-| `screening that did not run leaves its bit unset` | honesty |
-| `the real engine leaves no cleartext PII in the evidence` | privacy boundary |
-| `catches Hangul stored as NFD, decomposed into jamo` | the detector itself |
+| `src/` | Solidity source, ASC, registry, source events, policy-gated note |
+| `test/` | Foundry security and lifecycle tests |
+| `worker/` | Source scanner, Attestcoin proof fetcher, durable retry state |
+| `pipeline/` | KYC adapters, reconciliation, evidence, commitments, roster, vault |
+| `aml/` | Official-list loaders, matcher, FATF table, evaluation corpus |
+| `web/` | Next.js product and API journey |
+| `script/` | deployment, epoch, rescreen, and vault operations |
+| `deployments/` | machine-readable testnet evidence |
+| `docs/` | protocol reviews, runbooks, regulatory position, pitch materials |
 
-That last one exists because the first PII check reported clean and was wrong. The engine stored the name in NFD, `includes()` compared against NFC, and the two never matched. A PII detector that fails on Korean names is not something to leave in a product that screens Korean names.
+## Commercial wedge
 
----
+Proofmark should not compete by charging every Creditcoin contract to read a boolean. Reads stay permissionless. The paid surface is issuer and institutional infrastructure:
 
-## 10. Documentation
+- annual platform/SLA for a regulated issuer or asset platform;
+- per issuance and recurring rescreening;
+- encrypted evidence-vault and audit export;
+- adapters for credential providers and jurisdiction-specific policies;
+- integration and policy-governance support for Creditcoin applications.
 
-| File | |
-|---|---|
-| `docs/00-hackathon-brief.md` | Competition requirements |
-| `docs/01-env-verification.md` | Attestcoin environment verification |
-| `docs/02-loan-flow-analysis.md` | Tutorial 4 analysis |
-| **`docs/03-product-plan.md`** | Product, architecture, data model, scope, measurements |
-| `docs/04-event-schema.md` | The four source events |
-| `docs/05-asc-integration-review.md` | `ASCBase` integration review |
-| `docs/06-worker-design.md` | Worker design |
-| `docs/07-kyc-vendors.md` | KYC vendors: what is real, what is demo, how to connect each |
-| `docs/09-ascbase-security-findings.md` | The two `ASCBase` findings, written up for the protocol team |
-| `docs/10-epoch-roster-runbook.md` | Epoch rosters (Mode B): publishing, verifying, roster drift, and the `validUntil` trade-off |
-| `web/DESIGN.md` | Design system |
+The near-term target is two design partners: one Creditcoin RWA/lending application and one regulated KYC/AML issuer. The proposed CEIP milestone is a 12-week, USD 100k testnet-to-pilot program; it is an ask, not awarded funding or booked revenue.
 
-## Originality
+## Known gaps before production
 
-Everything here was written during the hackathon. The team previously built an EAS-based compliance attestation layer on the GIWA chain. What carried over is domain knowledge, specifically the AML normalisation rules and the fail-closed principles. No code carried over.
+- No signed vendor agreement or live institutional ID/bank rail is configured in the public demo.
+- PEP and adverse-media checks are unset because no licensed source is connected.
+- The file vault is not a multi-instance managed service; Vercel sandbox retention is disabled.
+- Rate limiting is per instance until a distributed gateway/WAF is configured.
+- No external smart-contract audit, penetration test, Korean legal sign-off, or production key ceremony has been completed.
+- The reference issuer is centralized. External credential adapters and independent issuers are roadmap.
+- Testnet roles reuse one key; production governance and emergency procedures remain to be implemented.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

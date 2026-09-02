@@ -1,13 +1,13 @@
 import type { ReactNode } from 'react';
 
-/** Page header: eyebrow, Poppins title with `aside` on the same line, one-paragraph lede below. */
+/** Page header: eyebrow, title with `aside` on the same line, one-sentence lede below. */
 export function PageHeader({ eyebrow, title, lede, aside }:
   { eyebrow?: ReactNode; title: ReactNode; lede?: ReactNode; aside?: ReactNode }) {
   return (
     <header className="mb-6">
       {eyebrow && <div className="mb-1.5 text-[11px] font-semibold uppercase leading-4 tracking-[0.08em] text-fg-muted">{eyebrow}</div>}
       <div className="flex flex-wrap items-center justify-between gap-x-8 gap-y-2">
-        <h1 className="font-display text-[26px] font-semibold leading-8 tracking-tight">{title}</h1>
+        <h1 className="text-[26px] font-semibold leading-8 tracking-tight">{title}</h1>
         {aside && <div className="flex h-8 items-center gap-3">{aside}</div>}
       </div>
       {lede && <p className="mt-1.5 max-w-2xl text-sm leading-5 text-fg-muted">{lede}</p>}

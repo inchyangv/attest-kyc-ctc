@@ -14,6 +14,8 @@ const LIST_IDS: ListId[] = ['OFAC_SDN', 'UN_CONSOLIDATED', 'EU_FSF'];
 
 interface Slim {
   v: number;
+  builtAt: string;
+  sourceUpdatedAt: Record<string, string>;
   listVersions: Record<string, number>;
   counts: Record<string, number>;
   entries: { l: number; i: string; p: string; n: string[]; d: string[]; c: string[]; w: string[]; t: number }[];
@@ -21,10 +23,24 @@ interface Slim {
 
 let cached: { engine: ListBackedAmlEngine; meta: Omit<Slim, 'entries'> } | null = null;
 
+function assertFresh(meta: Omit<Slim, 'entries'>): void {
+  if (meta.v < 2 || !meta.builtAt || Object.keys(meta.sourceUpdatedAt ?? {}).length !== LIST_IDS.length) {
+    throw new Error('sanctions index has no provenance timestamps; rebuild it');
+  }
+  const maxAgeHours = Number(process.env.SANCTIONS_MAX_AGE_HOURS ?? '168');
+  if (!Number.isFinite(maxAgeHours) || maxAgeHours <= 0) throw new Error('SANCTIONS_MAX_AGE_HOURS must be positive');
+  const oldest = Math.min(...Object.values(meta.sourceUpdatedAt).map((value) => Date.parse(value)));
+  const ageHours = (Date.now() - oldest) / 3_600_000;
+  if (!Number.isFinite(oldest) || ageHours > maxAgeHours) {
+    throw new Error(`sanctions index is stale (${ageHours.toFixed(1)}h; maximum ${maxAgeHours}h)`);
+  }
+}
+
 export function getEngine() {
-  if (cached) return cached;
+  if (cached) { assertFresh(cached.meta); return cached; }
   const raw = gunzipSync(readFileSync(join(process.cwd(), 'data', 'sanctions-index.json.gz'))).toString('utf8');
   const slim = JSON.parse(raw) as Slim;
+  assertFresh(slim);
   const entries: SanctionEntry[] = slim.entries.map(e => ({
     listId: LIST_IDS[e.l], entryId: e.i, primaryName: e.p, names: e.n,
     dobs: e.d, countries: e.c, programs: [], cryptoAddresses: e.w,
@@ -36,7 +52,13 @@ export function getEngine() {
   }
   cached = {
     engine: new ListBackedAmlEngine({ entries, listVersions: slim.listVersions, evidenceKey: key, keyId: 'web-k1' }),
-    meta: { v: slim.v, listVersions: slim.listVersions, counts: slim.counts },
+    meta: {
+      v: slim.v,
+      builtAt: slim.builtAt,
+      sourceUpdatedAt: slim.sourceUpdatedAt,
+      listVersions: slim.listVersions,
+      counts: slim.counts,
+    },
   };
   return cached;
 }

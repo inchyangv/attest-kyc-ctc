@@ -33,6 +33,18 @@ export class TokenError extends Error {
   constructor(message: string) { super(message); this.name = 'TokenError'; }
 }
 
+export interface FlowBinding {
+  flowId: string;
+  walletAddress: string;
+}
+
+export interface WalletFlow {
+  address: string;
+  flowId: string;
+  consentVersion: string;
+  at: number;
+}
+
 // ─── vendors ───────────────────────────────────────────────────────────────
 
 const CODEF_CLIENT_VARS = ['CODEF_CLIENT_ID', 'CODEF_CLIENT_SECRET', 'CODEF_PUBLIC_KEY'];
@@ -218,6 +230,24 @@ export function open<T extends object>(typ: string, token: unknown): T & { exp: 
   return j;
 }
 
+export function flowFromWalletToken(token: unknown): WalletFlow & { exp: number } {
+  const flow = open<WalletFlow>('wallet', token);
+  if (!flow.flowId || !flow.address || flow.consentVersion !== CONSENT_VERSION) {
+    throw new TokenError('wallet token has no current flow and consent binding');
+  }
+  return flow;
+}
+
+export function flowBinding(flow: WalletFlow): FlowBinding {
+  return { flowId: flow.flowId, walletAddress: flow.address };
+}
+
+export function assertSameFlow(flow: WalletFlow, proof: FlowBinding, label: string): void {
+  if (proof.flowId !== flow.flowId || proof.walletAddress?.toLowerCase() !== flow.address.toLowerCase()) {
+    throw new TokenError(`${label} token belongs to a different wallet verification flow`);
+  }
+}
+
 /** Keyed digest of the one-won code, so the challenge token can carry it without carrying it. */
 export function codeDigest(code: string): string {
   return createHmac('sha256', sealKey()).update(`code|${code.trim()}`).digest('hex');
@@ -239,7 +269,8 @@ export interface SiweFields {
   expirationTime: string;
 }
 
-export const SIWE_STATEMENT = 'Bind this wallet to a Proofmark compliance mark. Consent v1: the checks below are recorded as bits; no personal data goes on chain.';
+export const CONSENT_VERSION = 'proofmark-kyc-v2';
+export const SIWE_STATEMENT = 'Consent proofmark-kyc-v2: process identity and account data for KYC/AML, share it with the configured verification vendors, retain encrypted evidence under the issuer policy, and publish pseudonymous wallet-linked metadata and commitments on chain.';
 export const SIWE_CHAIN_ID = 11155111;
 
 export function siweMessage(f: SiweFields): string {

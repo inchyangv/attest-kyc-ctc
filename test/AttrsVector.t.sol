@@ -10,14 +10,14 @@ import {MarkAttrs} from "../src/lib/MarkAttrs.sol";
 contract AttrsVectorTest is Test {
     function test_KnownVectorMatchesTypeScript() public pure {
         bytes32 got = MarkAttrs.pack(
-            1,              // kind
-            3,              // assurance
-            2,              // regime (KR_FSC_NONFACE_SANDBOX)
-            410,            // jurisdiction (KR)
-            0x10024,        // methods
-            1_700_000_000,  // issuedAt
-            1_800_000_000,  // expiry
-            0               // epoch
+            1, // kind
+            3, // assurance
+            2, // regime (KR_FSC_NONFACE_SANDBOX)
+            410, // jurisdiction (KR)
+            0x10024, // methods
+            1_700_000_000, // issuedAt
+            1_800_000_000, // expiry
+            0 // epoch
         );
         assertEq(got, VECTOR);
     }

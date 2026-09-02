@@ -53,12 +53,12 @@ contract RosterProofTest is Test {
         rs[2] = 0x0747c16b891ec99a024175958b9f661640f5de2be03452e1f881cb2cfdf8f7e8;
 
         return RosterProof.NonInclusion({
-            left:  RosterProof.Inclusion({index: 5, siblings: ls}),
-            leftLeaf:  0x7c31545452aae68f24b57fecf886bf42371c6d66cf7c27f3c95a7ba503a82af3,
-            leftKey:   0xa43c201135cfef37d7be83630438e9c6af9e5ba946c85c47447e0ee967b02772,
+            left: RosterProof.Inclusion({index: 5, siblings: ls}),
+            leftKey: 0xa43c201135cfef37d7be83630438e9c6af9e5ba946c85c47447e0ee967b02772,
+            leftMark: 0x78935246536b71d758f03be218147b414eed21cd155c64a3c7034ac585b70f91,
             right: RosterProof.Inclusion({index: 6, siblings: rs}),
-            rightLeaf: 0xbbd6e7dddd4326dd7c827841ab9733c6e3fcdf38a516374bd10feec8f674ea8a,
-            rightKey:  bytes32(type(uint256).max)
+            rightKey: bytes32(type(uint256).max),
+            rightMark: bytes32(0)
         });
     }
 
@@ -77,9 +77,18 @@ contract RosterProofTest is Test {
     /// @dev Reject when the leaves are not adjacent. Without this a forged gap that skips entries passes.
     function test_RejectsNonAdjacentLeaves() public pure {
         RosterProof.NonInclusion memory p = _nonInclusion();
-        p.right.index = p.left.index + 2;   // break adjacency
+        p.right.index = p.left.index + 2; // break adjacency
         bytes32 targetKey = 0xf546978472b6cbaee6c96f8f5afc15c2ee71e09339a97cae2e243cda496b9b96;
         assertFalse(RosterProof.verifyNonInclusion(ROOT, targetKey, p), "non-adjacent leaves passed");
+    }
+
+    /// @dev Regression for the key/leaf binding flaw: a valid leaf cannot be relabelled with a
+    ///      different ordering key to manufacture a gap around a subject that is present.
+    function test_RejectsRelabelledBoundaryKey() public pure {
+        RosterProof.NonInclusion memory p = _nonInclusion();
+        p.leftKey = bytes32(0); // still bounds the target, but no longer hashes to the proved leaf
+        bytes32 targetKey = 0xf546978472b6cbaee6c96f8f5afc15c2ee71e09339a97cae2e243cda496b9b96;
+        assertFalse(RosterProof.verifyNonInclusion(ROOT, targetKey, p), "relabelled leaf passed");
     }
 
     function test_SentinelConstantsMatchTypeScript() public pure {

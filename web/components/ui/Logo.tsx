@@ -8,11 +8,12 @@ export function Mark({ size = 28, className }: { size?: number; className?: stri
   );
 }
 
+/** Wordmark: Inter semibold, tight. The mark carries the mint; the word stays in text colour. */
 export function Wordmark({ compact: _compact = false }: { compact?: boolean }) {
   void _compact;
   return (
     <span className="inline-flex items-baseline gap-1.5">
-      <span className="font-display text-[15px] font-semibold leading-none tracking-tight text-fg-strong">Proofmark</span>
+      <span className="text-[15px] font-semibold leading-none tracking-tight text-fg-strong">Proofmark</span>
     </span>
   );
 }

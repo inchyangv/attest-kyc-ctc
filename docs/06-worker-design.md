@@ -244,12 +244,12 @@ The contracts, not the worker, are what make duplicate submissions harmless.
 | Guarantee | Where | What it gives us |
 |---|---|---|
 | `execute()` is permissionless and idempotent | `src/ASCBaseX.sol` | "Permissionless by design: anyone may call it", and the replay guard `require(!processedQueries[queryId], "Query already processed")` lets exactly one submission land |
-| Ordering per subject | `src/ProofmarkASC.sol` | `lastAppliedHeight[subject]` skips any proof at or below the height already applied, emitting `StaleProofSkipped` instead of writing |
+| Ordering per subject | `src/ProofmarkASC.sol` | the `(lastAppliedHeight, lastAppliedTxIndex)` cursor skips any older proof, including reversed events inside one source block |
 | Pre-submission check | `worker/worker.ts`, step 3 | The worker reads `processedQueries(queryId)` before submitting and marks the job `skipped`, so a worker that loses the race usually spends no gas at all |
 
 `queryId` is `keccak256(chainKey, blockHeight, txIndex)`, derived from the source transaction and independent of who submits it. Two workers proving the same source transaction therefore compute the same `queryId` and collide on it: one `execute()` lands, the other reverts with `Query already processed`.
 
-Arrival order does not matter either. In `_onIssued` and `_onTombstone`, a proof whose `blockHeight <= lastAppliedHeight[subject]` is skipped with a `StaleProofSkipped` event, so the transaction succeeds with subject state untouched and a late or out-of-order submission cannot resurrect a revoked mark or overwrite a newer one. `_onEpoch` has the same property from `if (epoch <= latestEpoch) revert EpochNotMonotonic(...)`.
+Arrival order does not matter either. `_onIssued` and `_onTombstone` compare the lexicographic pair `(blockHeight, txIndex)` with the subject's stored cursor. An older source block or an earlier transaction in the same block is skipped with `StaleProofSkipped`, so a late submission cannot resurrect a revoked mark or overwrite a newer one. `_onEpoch` independently requires a monotonic epoch.
 
 The cost of full redundancy is bounded, and it is gas rather than correctness. The `processedQueries` read makes the common duplicate free; only inside the window between that read and the winner's inclusion does the loser pay for one reverted transaction.
 
@@ -261,6 +261,6 @@ The cost of full redundancy is bounded, and it is gas rather than correctness. T
 | Leader election | One worker submits while the others stand by | A cost optimization. It removes duplicate gas and nothing else, and it is explicitly not a correctness requirement, because the guarantees in 10.1 hold without it |
 | Dead-letter alerting | A job reaching `dead` pages a human | `dead` means maxAttempts exhausted or a C1 violation (sections 4.5 and 4.6), which is the one class of failure that redundancy cannot fix |
 
-Fleet-wide ordering needs no coordination: every worker is ordered per subject by `lastAppliedHeight`, so an instance replaying old blocks cannot damage a subject another instance has already moved forward.
+Fleet-wide ordering needs no coordination: every worker is ordered per subject by `(blockHeight, txIndex)`, so an instance replaying old blocks cannot damage a subject another instance has already moved forward.
 
 > None of this topology is implemented today; every run in section 6 used one instance.

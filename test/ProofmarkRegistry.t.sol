@@ -16,31 +16,31 @@ import {ReceiptFixture} from "./ReceiptFixture.sol";
 
 contract ProofmarkRegistryTest is Test {
     address constant PRECOMPILE = 0x0000000000000000000000000000000000000FD2;
-    uint64  constant SEPOLIA_KEY = 1;
+    uint64 constant SEPOLIA_KEY = 1;
 
     /// KR VASP policy: document authenticity, bank account, sanctions screening
     uint32 constant KR_VASP = Methods.ID_DOC_AUTHENTICITY | Methods.BANK_ACCOUNT | Methods.SANCTIONS_SCREENED;
     /// EU RWA policy: liveness, sanctions, PEP
-    uint32 constant EU_RWA  = Methods.LIVENESS | Methods.SANCTIONS_SCREENED | Methods.PEP_SCREENED;
+    uint32 constant EU_RWA = Methods.LIVENESS | Methods.SANCTIONS_SCREENED | Methods.PEP_SCREENED;
 
-    ProofmarkASC      asc;
+    ProofmarkASC asc;
     ProofmarkRegistry reg;
-    ComplianceSource  src;
-    ReceiptFixture    fx;
+    ComplianceSource src;
+    ReceiptFixture fx;
 
-    address owner  = address(0xA11CE);
+    address owner = address(0xA11CE);
     address issuer = address(0x1554E4);
-    address alice  = address(0xA11);
-    address dapp   = address(0xDA99);
+    address alice = address(0xA11);
+    address dapp = address(0xDA99);
 
     uint40 constant ISSUED_AT = 1_700_000_000;
-    uint40 constant EXPIRY    = 1_800_000_000;
+    uint40 constant EXPIRY = 1_800_000_000;
 
     function setUp() public {
         vm.etch(PRECOMPILE, address(new MockBlockProver()).code);
         vm.warp(ISSUED_AT + 1 days);
 
-        fx  = new ReceiptFixture();
+        fx = new ReceiptFixture();
         src = new ComplianceSource(owner);
 
         vm.startPrank(owner);
@@ -86,13 +86,22 @@ contract ProofmarkRegistryTest is Test {
     }
 
     function _policy(uint32 requireAll, uint8 minAssurance, uint40 maxAge, bool requireRoster)
-        internal returns (uint256)
+        internal
+        returns (uint256)
     {
         vm.prank(dapp);
-        return reg.registerPolicy(Policy({
-            requireAll: requireAll, minAssurance: minAssurance,
-            maxAge: maxAge, requireRoster: requireRoster, exists: false
-        }));
+        return reg.registerPolicy(
+            Policy({
+                requireAll: requireAll,
+                minAssurance: minAssurance,
+                maxAge: maxAge,
+                requiredRegime: 410,
+                requiredJurisdiction: 410,
+                trustedIssuer: issuer,
+                requireRoster: requireRoster,
+                exists: false
+            })
+        );
     }
 
     // Happy path
@@ -109,14 +118,14 @@ contract ProofmarkRegistryTest is Test {
     ///      through an individual proof, because a Direct mark belongs to no epoch.
     function test_DirectMarkPassesWhenRosterNotRequired() public {
         _issue(alice, KR_VASP, 3, 100, 10);
-        uint256 pid = _policy(KR_VASP, 1, 0, false);   // requireRoster = false
+        uint256 pid = _policy(KR_VASP, 1, 0, false); // requireRoster = false
         assertTrue(reg.isVerified(alice, pid), "Direct mark must pass when roster not required");
     }
 
     /// @dev A high-risk dApp accepts roster-backed marks only. The policy states that Direct is weaker.
     function test_DirectMarkFailsWhenRosterRequired() public {
         _issue(alice, KR_VASP, 3, 100, 11);
-        uint256 pid = _policy(KR_VASP, 1, 0, true);    // requireRoster = true
+        uint256 pid = _policy(KR_VASP, 1, 0, true); // requireRoster = true
         assertFalse(reg.isVerified(alice, pid), "Direct mark must NOT satisfy a roster-only policy");
     }
 
@@ -131,11 +140,11 @@ contract ProofmarkRegistryTest is Test {
 
     /// @dev The same mark gets different answers under different policies. This is the portability claim.
     function test_SameMarkDifferentJurisdictionPolicies() public {
-        _issue(alice, KR_VASP, 3, 100, 21);   // issued through the Korean flow
+        _issue(alice, KR_VASP, 3, 100, 21); // issued through the Korean flow
         uint256 krPid = _policy(KR_VASP, 1, 0, false);
-        uint256 euPid = _policy(EU_RWA,  1, 0, false);   // EU asks for liveness and PEP
+        uint256 euPid = _policy(EU_RWA, 1, 0, false); // EU asks for liveness and PEP
 
-        assertTrue(reg.isVerified(alice, krPid),  "KR policy should pass");
+        assertTrue(reg.isVerified(alice, krPid), "KR policy should pass");
         assertFalse(reg.isVerified(alice, euPid), "EU policy should fail - no LIVENESS/PEP bits");
     }
 
@@ -182,13 +191,89 @@ contract ProofmarkRegistryTest is Test {
 
     function test_OnlyPolicyOwnerCanUpdate() public {
         uint256 pid = _policy(KR_VASP, 1, 0, false);
-        Policy memory p = Policy({requireAll: 0, minAssurance: 0, maxAge: 0, requireRoster: false, exists: false});
+        Policy memory p = Policy({
+            requireAll: 0,
+            minAssurance: 0,
+            maxAge: 0,
+            requiredRegime: 0,
+            requiredJurisdiction: 0,
+            trustedIssuer: address(0),
+            requireRoster: false,
+            exists: false
+        });
 
         vm.expectRevert(abi.encodeWithSelector(ProofmarkRegistry.NotPolicyOwner.selector, pid, address(this)));
         reg.updatePolicy(pid, p);
 
         vm.prank(dapp);
-        reg.updatePolicy(pid, p);   // the owner may
+        reg.updatePolicy(pid, p); // the owner may
+    }
+
+    function test_FrozenPolicyCannotBeUpdated() public {
+        uint256 pid = _policy(KR_VASP, 1, 0, false);
+        vm.prank(dapp);
+        reg.freezePolicy(pid);
+
+        Policy memory p = Policy({
+            requireAll: 0,
+            minAssurance: 0,
+            maxAge: 0,
+            requiredRegime: 0,
+            requiredJurisdiction: 0,
+            trustedIssuer: address(0),
+            requireRoster: false,
+            exists: false
+        });
+        vm.prank(dapp);
+        vm.expectRevert(abi.encodeWithSelector(ProofmarkRegistry.FrozenPolicy.selector, pid));
+        reg.updatePolicy(pid, p);
+    }
+
+    function test_FailsOnWrongRegimeJurisdictionOrIssuer() public {
+        _issue(alice, KR_VASP, 3, 100, 71);
+
+        vm.startPrank(dapp);
+        uint256 wrongRegime = reg.registerPolicy(
+            Policy({
+                requireAll: KR_VASP,
+                minAssurance: 1,
+                maxAge: 0,
+                requiredRegime: 2,
+                requiredJurisdiction: 410,
+                trustedIssuer: issuer,
+                requireRoster: false,
+                exists: false
+            })
+        );
+        uint256 wrongJurisdiction = reg.registerPolicy(
+            Policy({
+                requireAll: KR_VASP,
+                minAssurance: 1,
+                maxAge: 0,
+                requiredRegime: 410,
+                requiredJurisdiction: 840,
+                trustedIssuer: issuer,
+                requireRoster: false,
+                exists: false
+            })
+        );
+        uint256 wrongIssuer = reg.registerPolicy(
+            Policy({
+                requireAll: KR_VASP,
+                minAssurance: 1,
+                maxAge: 0,
+                requiredRegime: 410,
+                requiredJurisdiction: 410,
+                trustedIssuer: address(0xBAD),
+                requireRoster: false,
+                exists: false
+            })
+        );
+        vm.stopPrank();
+
+        assertFalse(reg.isVerified(alice, wrongRegime));
+        assertFalse(reg.isVerified(alice, wrongJurisdiction));
+        assertFalse(reg.isVerified(alice, wrongIssuer));
     }
 
     // Mode B: no roster, no pass
@@ -196,11 +281,12 @@ contract ProofmarkRegistryTest is Test {
     /// @dev With no epoch root published, every roster path must return false.
     ///      Unknown is never a pass.
     function test_RosterPathFailsClosedWithoutEpoch() public {
-        uint256 pid = _policy(KR_VASP, 1, 0, true);   // requireRoster
+        uint256 pid = _policy(KR_VASP, 1, 0, true); // requireRoster
         bytes32[] memory sib = new bytes32[](0);
 
         bool ok = reg.verifyWithRoster(
-            alice, pid,
+            alice,
+            pid,
             RosterMark({attrs: bytes32(0), claimsRoot: bytes32(0), evidenceHash: bytes32(0), issuer: issuer}),
             RosterProof.Inclusion({index: 0, siblings: sib})
         );
@@ -209,10 +295,17 @@ contract ProofmarkRegistryTest is Test {
 
     function test_ProveNotInRosterFailsClosedWithoutEpoch() public view {
         RosterProof.Inclusion memory e = RosterProof.Inclusion({index: 0, siblings: new bytes32[](0)});
-        bool ok = reg.proveNotInRoster(alice, RosterProof.NonInclusion({
-            left: e, leftLeaf: bytes32(0), leftKey: bytes32(0),
-            right: e, rightLeaf: bytes32(0), rightKey: bytes32(0)
-        }));
+        bool ok = reg.proveNotInRoster(
+            alice,
+            RosterProof.NonInclusion({
+                left: e,
+                leftKey: bytes32(0),
+                leftMark: bytes32(0),
+                right: e,
+                rightKey: bytes32(0),
+                rightMark: bytes32(0)
+            })
+        );
         assertFalse(ok, "non-inclusion passed with no epoch root");
     }
 }

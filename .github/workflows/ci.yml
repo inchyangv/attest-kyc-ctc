@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  solidity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: foundry-rs/foundry-toolchain@v1
+      - run: npm ci
+      - run: forge fmt --check
+      - run: forge test -vv
+
+  typescript:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm audit --omit=dev
+      - run: npm run typecheck
+      - run: npm run test:ts
+      - run: bash aml/fetch-lists.sh
+      - run: npx tsx aml/eval.ts
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm audit --omit=dev
+      - run: npm run lint
+      - run: npm run build
+        env:
+          NEXT_PUBLIC_CC3_RPC: https://rpc.cc3-testnet.creditcoin.network
+          NEXT_PUBLIC_SEPOLIA_RPC: https://ethereum-sepolia-rpc.publicnode.com
+          NEXT_PUBLIC_ASC: 0x3C6Fe016645CA52952E29C66E435bDa7F611b242
+          NEXT_PUBLIC_REGISTRY: 0x2F4E5e1270f90E51251651caf08547393e3C0572
+          NEXT_PUBLIC_SOURCE: 0xA9A34586303b9fD92e090F9bb1D332DC854c72B9
+          NEXT_PUBLIC_NOTE: 0xa74aB3De359a55A729f9185Fe4Afe90526E585CA

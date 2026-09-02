@@ -11,12 +11,12 @@ export interface JurisdictionTable {
 }
 
 export const FATF: JurisdictionTable = {
-  source: 'https://www.fatf-gafi.org/en/publications/High-risk-and-other-monitored-jurisdictions.html',
-  asOf: '2026-08-30',
-  verified: false,   // not yet checked against the source. Shows as unverified on screen and in evidence.
+  source: 'https://www.fatf-gafi.org/en/publications/High-risk-and-other-monitored-jurisdictions/increased-monitoring-june-2026.html',
+  asOf: '2026-06-19',
+  verified: true,
   callForAction: ['KP', 'IR', 'MM'],
   increasedMonitoring: [
-    'BF','CM','HR','CD','HT','ML','MZ','MC','NA','NP','NG','PH','SN','ZA','SS','SY','TZ','TR','VU','VE','VN','YE',
+    'AO','BO','BA','BG','CM','CI','CD','HT','IQ','KE','KW','LA','LB','MC','NP','PG','SS','SY','VE','VN','VG','YE',
   ],
 };
 

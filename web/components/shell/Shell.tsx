@@ -1,11 +1,9 @@
 import type { ReactNode } from 'react';
-import { TopBar } from './TopBar';
 import { Sidebar, MobileNav } from './Sidebar';
 
 export function Shell({ children }: { children: ReactNode }) {
   return (
     <div className="flex min-h-screen flex-col">
-      <TopBar />
       <MobileNav />
       <div className="flex flex-1">
         <Sidebar />

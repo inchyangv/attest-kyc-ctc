@@ -74,10 +74,26 @@ describe('roster tree: non-inclusion proofs, how revocation is expressed', () =>
     const tree = buildRoster(set(10));
     const target = tree.entries[4].subject;           // actually in the roster
     const p = {
-      left:  inclusionProof(tree, leafIndexOf(2)), leftLeaf:  tree.leaves[leafIndexOf(2)], leftKey:  tree.keys[leafIndexOf(2)],
-      right: inclusionProof(tree, leafIndexOf(7)), rightLeaf: tree.leaves[leafIndexOf(7)], rightKey: tree.keys[leafIndexOf(7)],
+      left:  inclusionProof(tree, leafIndexOf(2)), leftKey:  tree.keys[leafIndexOf(2)], leftMark:  tree.marks[leafIndexOf(2)],
+      right: inclusionProof(tree, leafIndexOf(7)), rightKey: tree.keys[leafIndexOf(7)], rightMark: tree.marks[leafIndexOf(7)],
     };
     assert.ok(!verifyNonInclusion(tree.root, target, p), 'non-adjacent leaves passed a non-inclusion check');
+  });
+
+  test('adjacent real leaves cannot be relabelled around a subject that is present', () => {
+    const tree = buildRoster(set(10));
+    const targetEntry = 4;
+    const target = tree.entries[targetEntry].subject;
+    const rightIndex = leafIndexOf(targetEntry);
+    const leftIndex = rightIndex - 1;
+
+    // This is the exact old exploit: both physical leaves and proofs are real and adjacent, while
+    // caller-chosen keys falsely claim they surround the target. Recomputing leaf(key, mark) kills it.
+    const forged = {
+      left: inclusionProof(tree, leftIndex), leftKey: MIN_KEY, leftMark: tree.marks[leftIndex],
+      right: inclusionProof(tree, rightIndex), rightKey: MAX_KEY, rightMark: tree.marks[rightIndex],
+    };
+    assert.equal(verifyNonInclusion(tree.root, target, forged), false);
   });
 
   test('sentinels bound every possible key, so there are no boundary cases', () => {

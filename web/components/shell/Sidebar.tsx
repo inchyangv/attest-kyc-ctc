@@ -5,7 +5,7 @@ import { usePathname } from 'next/navigation';
 import { Icon, CreditcoinMark, type IconName } from '@/components/ui/Icon';
 import { Mark, Wordmark } from '@/components/ui/Logo';
 import { Eyebrow } from '@/components/ui/Page';
-import { CONTRACTS, addressUrl } from '@/lib/links';
+import { CONTRACTS, addressUrl, CC3_EXPLORER, SEPOLIA_EXPLORER } from '@/lib/links';
 
 export const NAV: { href: string; label: string; icon: IconName }[] = [
   { href: '/verify', label: 'Verify', icon: 'user' },
@@ -63,11 +63,16 @@ export function Sidebar() {
           </ul>
         </div>
 
-        <div className="mt-auto border-t border-line px-2 pt-4 text-[11px] leading-4 text-fg-subtle">
-          <div className="flex items-center gap-1.5 text-fg-muted">
-            <CreditcoinMark size={12} /> Built on Creditcoin
+        {/* Network lockup: the one place the chrome names Creditcoin. */}
+        <div className="mt-auto border-t border-line px-2 pt-4 text-[11px] leading-4">
+          <a href={CC3_EXPLORER} target="_blank" rel="noreferrer"
+            className="flex items-center gap-1.5 text-xs font-medium text-fg hover:text-mint">
+            <CreditcoinMark size={13} /> Built on Creditcoin
+          </a>
+          <div className="mt-1.5 text-fg-subtle">
+            CC3 Testnet · source <a href={SEPOLIA_EXPLORER} target="_blank" rel="noreferrer" className="hover:text-fg-muted">Sepolia</a>
           </div>
-          <div className="mt-1">Attestcoin Protocol · BUIDL CTC 2026</div>
+          <div className="mt-0.5 text-fg-subtle">Attestcoin Protocol · BUIDL CTC 2026</div>
         </div>
       </aside>
     </div>

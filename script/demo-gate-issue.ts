@@ -1,5 +1,5 @@
 /**
- * Issue two demo-regime marks that pass deployed policy #1, so the GatedRwaNote gate can be
+ * Issue two demo-regime marks that pass frozen pilot policy #2, so the GatedRwaNote gate can be
  * exercised end to end on chain.
  *
  * What this is, stated plainly: both subjects go through the real issuance pipeline — the same
@@ -8,7 +8,7 @@
  * the built-in demo vendors (`pipeline/adapters/demo.ts`). No institution is queried. The adapter
  * runs with `sandboxBits: true`, so the resulting mark carries regime KR_FSC_NONFACE_SANDBOX and
  * the evidence names `demo:id` and `demo:bank` with `live: false`. The mark discloses its own
- * provenance; policy #1 is not touched.
+ * provenance; the production policy rejects their sandbox regime.
  *
  * Both issuances are emitted by a single `ComplianceSource.issueBatch()` transaction on Sepolia, so
  * they ride one cross-chain round trip: the ASC applies every MarkIssued log in a source
@@ -33,9 +33,9 @@ import { DemoIdDocumentVendor, DemoBankAccountVendor } from '../pipeline/adapter
 import { runIssuance, toIssueCall, type IssueOutcome } from '../pipeline/issue.js';
 import { Methods } from '../pipeline/methods.js';
 
-/** Deployed policy #1, KR VASP production: requireAll 0x10024, minAssurance 2. */
-const POLICY_1_REQUIRE_ALL = Methods.ID_DOC_AUTHENTICITY | Methods.BANK_ACCOUNT | Methods.SANCTIONS_SCREENED;
-const POLICY_1_MIN_ASSURANCE = 2;
+/** Both policies require these bits and assurance; policy #2 additionally pins sandbox regime 2. */
+const PILOT_REQUIRE_ALL = Methods.ID_DOC_AUTHENTICITY | Methods.BANK_ACCOUNT | Methods.SANCTIONS_SCREENED;
+const PILOT_MIN_ASSURANCE = 2;
 /** KR_FSC_NONFACE_SANDBOX. Demo vendors cannot produce anything else. */
 const EXPECTED_REGIME = 2;
 
@@ -145,10 +145,10 @@ async function issueOne(
     // A REVIEW or DENIED here is the screening engine's decision and it stands.
     throw new Error(`${persona.label}: issuance returned ${out.status} (${out.reason}). This is a real screening decision — change the persona, never the bits.`);
   }
-  if ((out.methods & POLICY_1_REQUIRE_ALL) !== POLICY_1_REQUIRE_ALL) {
-    throw new Error(`${persona.label}: methods 0x${out.methods.toString(16)} does not carry policy 1's required 0x${POLICY_1_REQUIRE_ALL.toString(16)}`);
+  if ((out.methods & PILOT_REQUIRE_ALL) !== PILOT_REQUIRE_ALL) {
+    throw new Error(`${persona.label}: methods 0x${out.methods.toString(16)} does not carry pilot policy 2's required 0x${PILOT_REQUIRE_ALL.toString(16)}`);
   }
-  if (assurance < POLICY_1_MIN_ASSURANCE) throw new Error(`${persona.label}: assurance ${assurance} is below policy 1's minimum ${POLICY_1_MIN_ASSURANCE}`);
+  if (assurance < PILOT_MIN_ASSURANCE) throw new Error(`${persona.label}: assurance ${assurance} is below pilot policy 2's minimum ${PILOT_MIN_ASSURANCE}`);
   if (out.regime !== EXPECTED_REGIME) {
     throw new Error(`${persona.label}: regime ${out.regime} is not KR_FSC_NONFACE_SANDBOX (${EXPECTED_REGIME}); a demo vendor must never produce a production regime`);
   }

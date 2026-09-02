@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
-import { ConfigError, TokenError, codeDigest, codeMatches, isDemo, maskName, open, requireBankVendor, seal } from '@/lib/kyc-server';
+import { ConfigError, TokenError, assertSameFlow, codeDigest, codeMatches, flowBinding, flowFromWalletToken, isDemo, maskName, open, requireBankVendor, seal, type FlowBinding } from '@/lib/kyc-server';
+import { guardError, guardRequest } from '@/lib/request-guard';
 import { VendorError, isKrBankCode, type BankAccountResult } from '@pipeline/adapters/kr.js';
 
 export const runtime = 'nodejs';
@@ -7,13 +8,14 @@ export const runtime = 'nodejs';
 const MAX_ATTEMPTS = 5;
 
 const fail = (e: unknown) => {
+  const guarded = guardError(e); if (guarded) return guarded;
   if (e instanceof ConfigError) return NextResponse.json({ error: e.message, missing: e.missing }, { status: 503 });
   if (e instanceof TokenError) return NextResponse.json({ error: e.message }, { status: 400 });
   if (e instanceof VendorError) return NextResponse.json({ error: e.message, code: e.code ?? null, ref: e.ref ?? null }, { status: 422 });
-  return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });
+  return NextResponse.json({ error: 'internal bank verification error' }, { status: 500 });
 };
 
-interface Challenge {
+interface Challenge extends FlowBinding {
   bankCode: string;
   accountNumber: string;
   holderName: string;
@@ -33,7 +35,10 @@ interface Challenge {
  */
 export async function POST(req: Request) {
   try {
+    guardRequest(req, { bucket: 'kyc-bank', limit: 20, windowMs: 10 * 60_000, maxBodyBytes: 32_768, sameOrigin: true });
     const body = await req.json().catch(() => ({})) as Record<string, unknown>;
+    const wallet = flowFromWalletToken(body.walletProof);
+    const binding = flowBinding(wallet);
     const action = String(body.action ?? '');
     const adapter = requireBankVendor();
     const vendor = adapter.bankVendor!;
@@ -58,6 +63,7 @@ export async function POST(req: Request) {
       const challenge: Challenge = {
         bankCode, accountNumber, holderName: holder.holderName, codeDigest: codeDigest(won.authCode),
         ref: won.ref ?? holder.ref ?? null, vendor: vendor.name, live: vendor.live, attempts: 0,
+        ...binding,
       };
       return NextResponse.json({
         challenge: seal('bankChallenge', challenge as unknown as Record<string, unknown>, 10 * 60),
@@ -73,6 +79,7 @@ export async function POST(req: Request) {
 
     if (action === 'verify') {
       const c = open<Challenge>('bankChallenge', body.challenge);
+      assertSameFlow(wallet, c, 'bank challenge');
       const code = String(body.code ?? '').trim();
       if (!code) return NextResponse.json({ error: 'code is required' }, { status: 400 });
       if (!codeMatches(code, c.codeDigest)) {
@@ -94,7 +101,7 @@ export async function POST(req: Request) {
       };
       return NextResponse.json({
         status: 'verified',
-        bankProof: seal('bank', result as unknown as Record<string, unknown>, 30 * 60),
+        bankProof: seal('bank', { ...result, ...binding } as unknown as Record<string, unknown>, 30 * 60),
         summary: { bankCode: c.bankCode, holderNameMasked: maskName(c.holderName), vendor: c.vendor, live: c.live, ref: c.ref },
       });
     }

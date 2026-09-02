@@ -11,7 +11,7 @@
 
 ## 1. In one paragraph
 
-An international KYC and AML attestation layer. It issues, on Ethereum and in machine-readable form, which country verified an identity and by what method; Creditcoin verifies that issuance mathematically with no oracle operator in between; any chain can read the result. Not one byte of personal data goes on chain. What remains is a **mark** saying the wallet completed KYC, and a **proof** that the mark was really issued.
+An international KYC and AML attestation layer. It issues, on Ethereum and in machine-readable form, which country verified an identity and by what method; Creditcoin verifies that issuance mathematically with no oracle operator in between; any chain can read the result. No name, date of birth, document number, or account number goes on chain. Wallet-linked metadata and commitments remain pseudonymous and linkable. What remains is a **mark** describing the checks and a **proof** that the mark was really issued.
 
 One design proposition decides whether this works across borders:
 
@@ -28,7 +28,7 @@ The first jurisdiction adapter is Korea: ID document verification, then bank acc
 | Source chain | Ethereum Sepolia, chainKey `1`. Confirmed at runtime, and not the same as chainId 11155111 |
 | Verification hub | Creditcoin CC3 Testnet, chainId 102031, through the ASC and BlockProver |
 | Attestcoin axis | Readability. Writability is roadmap |
-| On-chain personal data | zero bytes |
+| On-chain cleartext PII | zero bytes; wallet-linked metadata and commitments are pseudonymous, not anonymous |
 | First jurisdiction | KR: ID document plus bank account |
 
 ---
@@ -77,15 +77,15 @@ That buys two things at once: portability across regimes, and legal safety, beca
 ### 3.2 The user journey, Korean path
 
 ```
-0. connect wallet, sign ownership (EIP-4361, 10 min TTL, binding address, consent version and claimsRoot)
+0. consent and connect wallet; sign EIP-4361 binding address, flow ID and consent version
 1. [ID document]  capture, OCR, authenticity lookup with the issuing authority (face match and liveness once a face vendor is connected)
 2. [bank account] one-won transfer, account holder name compared with the document name
                   this pair satisfies the FSC two-check requirement
 3. [reconcile]    declared details, document, account holder. All three must agree
 4. [AML]          sanctions lists, jurisdiction, on-chain exposure, risk band, which sets expiry
-5. [commitment]   the browser salts each claim and computes claimsRoot.
-                  32 bytes reach the server. The originals stay in the issuer's vault
-6. [issue]        Sepolia ComplianceSource.issue(...), emitting the mark event
+5. [commitment]   the issuer creates per-claim random salts and computes claimsRoot.
+                  Openings return to the user and enter the encrypted production evidence record
+6. [issue]        Sepolia ComplianceSource.issueOnce(requestId,...), permanently consuming the flow
 7. [cross-chain]  wait for attestation, about 8 min, fetch the proof, the ASC verifies
 8. [use]          any dApp on any chain calls isVerified(wallet, policy)
 ```
@@ -100,7 +100,9 @@ Step 3 is the heart of it. Declared details, document and account holder are rec
 | A dApp | `isVerified(W, policy)` returning a bool, and nothing else |
 | The user | their own credential, held locally, with selective disclosure available |
 | An auditor or regulator, under contract or warrant | the issuer's full offline evidence, checkable against the on-chain `evidenceHash` |
-| Nobody | reverses personal data out of the chain. Salted commitments make it structurally impossible |
+| Nobody from chain data alone | derives cleartext identity fields from the salted commitments; the wallet linkage and metadata remain visible |
+
+The regulatory analysis of the off-chain side of this boundary — controller status, PIPA, the Credit Information Act, AML retention — is in `docs/08-regulatory-position.md` (a position paper, not legal advice).
 
 ---
 
@@ -156,7 +158,7 @@ The additional-authentication legs the institutions impose (a captcha on a corpo
 
 > **What "live" means.** CODEF's demo tier reaches the real Government24 and Traffic Civil Service 24 with a daily allowance; its sandbox answers from fixed sample data, and its bank products return random test data anywhere but production. The KFTC testbed runs the real API against canned data and moves no money. Each vendor result therefore carries `live`, and by default a bit is set only from a live result. Production for the bank axis needs participating-institution registration with KFTC or the CODEF partnership contract; production for the document axis needs either the issuer's certificate or an operator approving each lookup through app-based authentication (KakaoTalk, PASS, and others), which needs nothing but a CODEF demo key. None of the commercial side is code, and the code does not pretend otherwise.
 
-> **Demo mode** (`KYC_DEMO=1`, `web/lib/kyc-server.ts`). An axis without a real vendor gets `pipeline/adapters/demo.ts`: same interface, same inputs, same tokens and reconciliation, no institution asked. The page announces it, the evidence names `demo:*`, and the mark carries `regime = KR_FSC_NONFACE_SANDBOX`. Under demo the adapter's `sandboxBits` switch sets the bits from non-live results so the flow ends with a mark that passes policy #1; the on-chain policy does not read `regime` yet (P1, section 9.1), which is the one place a sandbox mark and a production mark look alike, and the reason the switch defaults to off outside demo. Real and demo mix per axis, so a CODEF demo key gives a real document check next to a demo account. Sign-up steps, wire formats and the environment reference: [`07-kyc-vendors.md`](07-kyc-vendors.md).
+> **Demo mode** (`KYC_DEMO=1`, `web/lib/kyc-server.ts`). An axis without a real vendor gets `pipeline/adapters/demo.ts`: same interface, same inputs, same tokens and reconciliation, no institution asked. The page announces it, the evidence names `demo:*`, and the mark carries `regime = KR_FSC_NONFACE_SANDBOX`. The `sandboxBits` switch can set method bits from non-live results, but frozen production policy #1 pins regime 1 and rejects the mark; frozen pilot policy #2 pins regime 2 and accepts it. Real and demo can mix per axis while the overall regime continues to disclose sandbox participation. Sign-up steps, wire formats and the environment reference: [`07-kyc-vendors.md`](07-kyc-vendors.md).
 
 ### 4.3 Other jurisdictions, on the roadmap
 
@@ -173,19 +175,21 @@ The additional-authentication legs the institutions impose (a captcha on a corpo
 ```solidity
 struct Policy {
     uint32   requireAll;    // every one of these bits must be present
-    uint32   requireAny;    // at least one of these
     uint8    minAssurance;
     uint40   maxAge;        // freshness ceiling
-    uint16[] allowedRegimes;
-    uint16[] deniedJurisdictions;   // FATF high-risk jurisdictions and the like
+    uint16   requiredRegime;
+    uint16   requiredJurisdiction;
+    address  trustedIssuer;
+    bool     requireRoster;
+    bool     exists;
 }
 ```
 
 - A Korean VASP: `requireAll = ID_DOC_AUTHENTICITY | BANK_ACCOUNT | SANCTIONS_SCREENED`
-- An EU RWA issuer: `requireAll = LIVENESS | SANCTIONS_SCREENED | PEP_SCREENED`, `requireAny = EPASSPORT_NFC | GOV_EID`
+- An EU RWA issuer: one frozen policy per accepted credential combination, for example `LIVENESS | SANCTIONS_SCREENED | PEP_SCREENED | EPASSPORT_NFC`
 - A game: `requireAll = SANCTIONS_SCREENED` and nothing more
 
-P0 implements `requireAll` and `maxAge`. The rest is P1.
+The deployed registry enforces every field above. Policy owners can update a policy only before `freezePolicy`; a policy-gated asset constructor accepts only a frozen policy.
 
 ### 4.5 AML lists, international from the start
 
@@ -330,6 +334,7 @@ The hard part is not proving a mark was issued. It is proving it was not revoked
 | Sparse Merkle | natural, through default leaves | 160 to 256 | verification costs too much gas |
 
 A leaf is `H(subjectKey ‖ markHash)` with `subjectKey = keccak256(chainNamespace ‖ subject)`, CAIP-10 shaped so non-EVM subjects remain possible.
+The verifier recomputes each boundary leaf from both `(key, mark)` before checking adjacency. Accepting a supplied key independently of the Merkle leaf would let an attacker relabel two real neighboring leaves around a target that is actually present.
 **Fallback.** If time runs short, keep only the whitelist in the root and express revocation and sanctions through tombstone events. The functionality survives; the query cost rises.
 
 ### 6.4 Decision rules, fail closed and enforced in the contract
@@ -341,6 +346,9 @@ isVerified(W, policy) =
   &&  marks[W].assurance >= policy.minAssurance
   &&  marks[W].expiry > block.timestamp
   &&  block.timestamp - marks[W].issuedAt <= policy.maxAge
+  &&  (policy.requiredRegime == 0 || marks[W].regime == policy.requiredRegime)
+  &&  (policy.requiredJurisdiction == 0 || marks[W].jurisdiction == policy.requiredJurisdiction)
+  &&  (policy.trustedIssuer == 0 || marks[W].issuer == policy.trustedIssuer)
   &&  tombstone[W] == 0                    // revocation and sanctions always win
   &&  _fresh(W, policy)                      // depends on provenance, see below
 ```
@@ -362,7 +370,7 @@ _fresh(W, policy) =
 Hence `Policy.requireRoster`. A high-risk dApp accepts roster-backed marks only; a low-risk one takes individual proofs. Direct being the weaker guarantee is stated in the policy rather than buried in code.
 
 1. **An expired roster verifies nobody.** Unknown is never a pass.
-2. **Deny beats allow.** A tombstone outranks any epoch root.
+2. **Deny beats allow.** A tombstone outranks any epoch root. A newer full issuance may clear an ordinary revocation; it cannot clear a sanctions denial.
 3. **A stale cache is not a truth.** It has to be re-materialised.
 4. **Epochs increase monotonically.** A rollback needs an explicit governance path.
 
@@ -489,30 +497,33 @@ The budget question closed with 10,000 CTC. What is short is time: an attestatio
 
 | Contract | Chain | Address |
 |---|---|---|
-| `EvmV1Decoder` | CC3 Testnet | `0xff3558704c75ed69e1D657474210365b24d31938` |
-| `ProofmarkASC` | CC3 Testnet | `0x93C62D3016123Da0aBdB4AC1857564c30CbE5629` |
-| `ProofmarkRegistry` | CC3 Testnet | `0x874e0Fd030a8Fe6c7a06835354531b68A31f5FCc` |
-| `ComplianceSource` | **Sepolia** | `0x93C62D3016123Da0aBdB4AC1857564c30CbE5629` |
-| `GatedRwaNote` | CC3 Testnet | `0xA8Dfe6f5063a8159524DedbBAc75f034C3BF0625` |
+| `EvmV1Decoder` | CC3 Testnet | `0x5eE29aB8845A2AD4BBE1e01c5BD3bCc3AEee47Fd` |
+| `ProofmarkASC` | CC3 Testnet | `0x3C6Fe016645CA52952E29C66E435bDa7F611b242` |
+| `ProofmarkRegistry` | CC3 Testnet | `0x2F4E5e1270f90E51251651caf08547393e3C0572` |
+| `ComplianceSource` | **Sepolia** | `0xA9A34586303b9fD92e090F9bb1D332DC854c72B9` |
+| `GatedRwaNote` | CC3 Testnet | `0xa74aB3De359a55A729f9185Fe4Afe90526E585CA` |
 
-> **The ASC on CC3 and ComplianceSource on Sepolia share an address.** Same deployer, same nonce, different chains, so CREATE lands in the same place. We verified it: the bytecode differs, 18,120 chars against 7,478, each responds only to its own interface, and cross-calls revert. The risk is that a script passing the ASC address to `configureSource` by mistake would look identical, so a redeployment compares `cast code` on both chains.
+The deploy script records and then re-reads every linkage: source chain key, source contract,
+registry ASC, token policy ID, policy existence, and permanent freeze state. A redeployment aborts
+if any address has no runtime code or any linkage differs from the manifest.
 
 **Post-deployment checks, all passing**
 
 ```
 asc.expectedChainKey  : 1          Sepolia, confirmed at runtime through getSupportedChains()
-asc.sourceContract    : 0x93C6…5629 ComplianceSource on Sepolia
-reg.ASC               : 0x93C6…5629 the ASC on CC3
+asc.sourceContract    : 0xA9A3…72B9 ComplianceSource on Sepolia
+reg.ASC               : 0x3C6F…242  the ASC on CC3
 src.isIssuer(deployer): true
-note.POLICY_ID        : 1          KR policy, methods mask 0x10024
+note.POLICY_ID        : 2          KR sandbox pilot, methods mask 0x10024
+reg.policyFrozen(1/2): true / true
 ```
 
 **On-chain evidence that the gate is closed**
 
 ```
 $ cast call $NOTE "mint(address,uint256)" $ME 1e18 --from $ME --rpc-url $CC3
-revert 0x17887111…  = RecipientNotVerified(0xFD12…bD5E, 1)
-$ cast call $REG "isVerified(address,uint256)(bool)" $ME 1 → false
+revert 0x17887111…  = RecipientNotVerified(0xFD12…bD5E, 2)
+$ cast call $REG "isVerified(address,uint256)(bool)" $ME 2 → false
 ```
 
 > **Without `--from` you reach a different conclusion.** `cast call` leaves msg.sender at zero, so `mint` stops at `OwnableUnauthorizedAccount` (`0x118cdaa7`) before the gate ever runs. That is the ownership check, not the gate, and both look like a revert. Reproduction steps must state `--from`. We walked into this ourselves.
@@ -621,7 +632,7 @@ methodsApplied = 0x190000
   ADVERSE_MEDIA bit 0, no data source connected
 ```
 
-Screening that did not run leaves its bit unset, and a consumer policy filters on that automatically, per section 4.4. The FATF jurisdiction table carries `verified: false`, and the evidence records it as unverified rather than implying a certainty we have not earned.
+Screening that did not run leaves its bit unset, and a consumer policy filters on that automatically, per section 4.4. The FATF jurisdiction table is source-verified against the June 2026 monitored-jurisdiction publications and its version travels in evidence.
 
 **Evidence is deterministic.** The same input produces the same digest, pinned by a test. `engineVersion` travels with it, so a change to the matching rules stays distinguishable even when the list edition is unchanged.
 
@@ -756,7 +767,7 @@ Seven years operating Korea's fourth registered VASP, covering the CEO, complian
 
 ## 15. Lines we hold
 
-1. **No PII on chain.** No exceptions. Commitments and hashes only.
+1. **No cleartext PII on chain.** No names, dates of birth, document numbers, or account numbers. Wallet-linked metadata and commitments are pseudonymous and linkable, not anonymous.
 2. **We do not become an identity verification authority.** Vendors perform the verification; we are responsible for the result's lifecycle and its movement.
 3. **No power to freeze assets.** We publish decisions and never move anyone's funds.
 4. **Everything in the demo works.** No staged screening, no fake timers. An unconnected check is expressed by leaving its bit unset.
@@ -785,8 +796,8 @@ Seven years operating Korea's fourth registered VASP, covering the CEO, complian
 
 ## 17. What is left
 
-1. Push the repository to GitHub. The submission needs the URL, and the README is written.
-2. Watch the AMA recording and fold anything new into the brief and section 13.
-3. Confirm the team roster, since the form asks for residence and citizenship per member.
-4. Record the demo video against the section 10 script.
-5. Produce the deck or whitepaper PDF and host it at a public URL.
+1. Complete a live institutional vendor contract and production credential run.
+2. Replace the single-instance file vault with managed storage and KMS, then complete legal and security review.
+3. Secure two design partners: one Creditcoin application and one regulated issuer.
+4. Separate testnet roles into managed keys or multisigs and rehearse recovery.
+5. Record the final demo against the current deployment and publish the submission artefacts.

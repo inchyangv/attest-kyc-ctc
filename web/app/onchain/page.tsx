@@ -16,7 +16,8 @@ import { METHOD_BITS, setBits } from '@/lib/methods';
 
 type Policy = {
   id: number; name: string; requireAll: number; requireAllHex: string;
-  minAssurance: number; maxAge: number; requireRoster: boolean; exists: boolean; verified: boolean;
+  minAssurance: number; maxAge: number; requiredRegime: number; requiredJurisdiction: number;
+  trustedIssuer: string; requireRoster: boolean; exists: boolean; frozen: boolean; verified: boolean;
 };
 type Data = {
   subject: string; blockNumber: number;
@@ -32,10 +33,10 @@ type Data = {
   epoch: { latestEpoch: number; root: string | null; validUntil: number; fresh: boolean };
 };
 
-/** Two subjects tell the story. The default (no query) is whatever the API considers the current honest mark. */
+/** An active sandbox mark and an unissued control tell the fail-closed story. */
 const SUBJECTS = [
-  { key: 'honest', label: 'Honest mark', subject: null as string | null, note: 'Issued by the pipeline with only the checks it ran.' },
-  { key: 'revoked', label: 'Revoked mark', subject: '0xFD1222e35a536A62f180aA44826656940e86bD5E', note: 'Claimed checks that never happened, so we revoked it.' },
+  { key: 'active', label: 'Active sandbox mark', subject: null as string | null, note: 'Issued by the pipeline with only the checks it ran.' },
+  { key: 'control', label: 'Unissued control', subject: '0x00000000000000000000000000000000DeaDBeef', note: 'No mark exists, so every policy fails closed.' },
 ];
 
 const STATUS: Record<number, { label: string; tone: Tone }> = {
@@ -101,7 +102,8 @@ function SubjectTabs({ current }: { current: string | null }) {
   );
 }
 
-function PolicyCard({ p, mask, revoked }: { p: Policy; mask: number; revoked: boolean }) {
+function PolicyCard({ p, mark, revoked }: { p: Policy; mark: Data['mark']; revoked: boolean }) {
+  const mask = mark.methods;
   const required = METHOD_BITS.filter(b => (p.requireAll & (1 << b.bit)) !== 0);
   const missing = required.filter(b => (mask & (1 << b.bit)) === 0);
   const why = p.verified
@@ -110,13 +112,19 @@ function PolicyCard({ p, mask, revoked }: { p: Policy; mask: number; revoked: bo
       ? 'Revoked. A tombstone outranks every policy: deny beats allow.'
       : missing.length
         ? `Missing ${missing.length} of ${required.length} required checks.`
-        : 'Rejected on assurance, freshness or expiry.';
+        : p.requiredRegime && p.requiredRegime !== mark.regime
+          ? `Regime mismatch: mark ${mark.regime}, policy ${p.requiredRegime}.`
+          : p.requiredJurisdiction && p.requiredJurisdiction !== mark.jurisdiction
+            ? `Jurisdiction mismatch: mark ${mark.jurisdiction}, policy ${p.requiredJurisdiction}.`
+            : p.trustedIssuer !== '0x0000000000000000000000000000000000000000' && p.trustedIssuer.toLowerCase() !== mark.issuer.toLowerCase()
+              ? 'Issuer is not the address pinned by this policy.'
+              : 'Rejected on assurance, freshness or expiry.';
   return (
     <div className="panel flex flex-col overflow-hidden" data-policy={p.name} data-result={p.verified ? 'PASS' : 'FAIL'}>
       <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
         <div className="min-w-0">
           <div className="truncate text-sm font-semibold leading-5 text-fg-strong">{p.name}</div>
-          <div className="mono mt-0.5 text-fg-muted">policy #{p.id} · requireAll {p.requireAllHex}</div>
+          <div className="mono mt-0.5 text-fg-muted">policy #{p.id} · {p.frozen ? 'frozen' : 'mutable'} · requireAll {p.requireAllHex}</div>
         </div>
         <Tag tone={p.verified ? 'ok' : 'bad'} size="lg">{p.verified ? 'PASS' : 'FAIL'}</Tag>
       </div>
@@ -138,6 +146,9 @@ function PolicyCard({ p, mask, revoked }: { p: Policy; mask: number; revoked: bo
         <div className={`text-[13px] leading-5 ${p.verified ? 'text-ok' : 'text-bad'}`}>{why}</div>
         <div className="mono mt-1 text-fg-muted">
           min assurance {p.minAssurance} · max age {days(p.maxAge)} · roster {p.requireRoster ? 'required' : 'not required'}
+        </div>
+        <div className="mono mt-1 text-fg-muted">
+          regime {p.requiredRegime || 'any'} · jurisdiction {p.requiredJurisdiction || 'any'} · issuer {p.trustedIssuer.slice(0, 8)}…
         </div>
       </div>
     </div>
@@ -193,37 +204,21 @@ function EpochRoster({ e, proofMode }: { e: Data['epoch']; proofMode: boolean })
           <>
             <p>
               Membership in this root is the mark; absence from it is what <code className="mono text-fg-strong">proveNotInRoster</code> turns
-              into positive evidence of revocation. Once the roster passes its <code className="mono text-fg-strong">validUntil</code>,
-              {' '}<code className="mono text-fg-strong">isRosterFresh()</code> is false and <code className="mono text-fg-strong">verifyWithRoster</code> answers
-              for nobody.
+              into positive evidence of revocation. Past <code className="mono text-fg-strong">validUntil</code>,
+              {' '}<code className="mono text-fg-strong">verifyWithRoster</code> answers for nobody.
             </p>
             {!proofMode && (
-              <p className="mt-1.5">
-                Not exercised on chain yet: the registry deployed at this address is an earlier build, and its runtime code carries neither
-                {' '}<code className="mono text-fg-strong">verifyWithRoster</code> nor <code className="mono text-fg-strong">proveNotInRoster</code>. The
-                root above is real and the ASC accepted it; the verdicts read against it are not claimed. Cache mode
-                {' '}(<code className="mono text-fg-strong">isVerified</code>, the policy cards above) is unaffected.
+              <p className="mt-1.5 text-fg-muted">
+                The registry deployed here is an earlier build without the roster views, so this root is real but not yet read on chain.
+                Cache mode — the policy cards above — is unaffected.
               </p>
             )}
-            <p className="mt-1.5 text-fg-muted">
-              Marks materialised before the epoch keep <code className="mono text-fg-strong">origin = Direct</code>. The roster is the set at an
-              epoch, not a rewrite of how an individual mark arrived.
-            </p>
           </>
         ) : (
-          <>
-            <p>
-              No epoch has been published on chain, so every mark here is <code className="mono text-fg-strong">origin = Direct</code>: proof that
-              the mark was issued at a source block, and silent about a revocation nobody submitted cross-chain.
-            </p>
-            <p className="mt-1.5 text-fg-muted">
-              Mode B is implemented and tested — <code className="mono text-fg-strong">ComplianceSource.publishEpoch</code>,
-              {' '}<code className="mono text-fg-strong">ProofmarkRegistry.verifyWithRoster</code> and
-              {' '}<code className="mono text-fg-strong">proveNotInRoster</code> — and{' '}
-              <code className="mono text-fg-strong">Policy.requireRoster</code> exposes the difference between the two provenances instead of
-              hiding it. Nothing above is filled in until an epoch exists.
-            </p>
-          </>
+          <p>
+            No epoch has been published, so every mark here is <code className="mono text-fg-strong">origin = Direct</code>: proof of
+            issuance, silent about a revocation nobody submitted cross-chain.
+          </p>
         )}
       </Band>
       </div>
@@ -286,9 +281,9 @@ function OnChainView() {
       {/* ── policies: the demo scene ── */}
       <Section title="Same mark, two policies"
         aside={<>methods <Tag tone="gray" mono>{m.methodsHex}</Tag></>}
-        lede="We do not claim Korean KYC equals EU KYC. The mark carries the checks that were performed; each consumer decides whether that meets its own regime.">
+        lede="The mark carries the checks that were performed; each consumer decides whether that meets its own regime.">
         <div className="grid gap-4 md:grid-cols-2">
-          {d.policies.map(p => <PolicyCard key={p.id} p={p} mask={m.methods} revoked={revoked} />)}
+          {d.policies.map(p => <PolicyCard key={p.id} p={p} mark={m} revoked={revoked} />)}
         </div>
       </Section>
 
@@ -296,9 +291,9 @@ function OnChainView() {
         <Section title="Why this mark was revoked">
           <Band tone="bad">
             <p>
-              Its <code className="mono text-fg-strong">methods</code> were hand-authored while we were validating the cross-chain pipeline, so the mark asserted
-              checks we had never performed: document authenticity and bank-account verification. That is the failure this product
-              exists to prevent, so we revoked it on-chain (reason <code className="mono text-fg-strong">ISSUER_ERROR</code>). Propagation back to Creditcoin took 8m 43s.
+              Its <code className="mono text-fg-strong">methods</code> were hand-authored during pipeline validation, so it asserted checks that never
+              happened — the failure this product exists to prevent. We revoked it on-chain
+              (reason <code className="mono text-fg-strong">ISSUER_ERROR</code>); propagation back to Creditcoin took 8m 43s.
             </p>
             <p className="mt-1.5 text-fg-muted">A mark may not claim a check that did not happen.</p>
           </Band>
@@ -333,21 +328,14 @@ function OnChainView() {
           <DetailRow label="Epoch"><span className="mono">{m.epoch}</span></DetailRow>
         </DetailList>
         <Band tone="note" className="mt-3">
-          Two 32-byte commitments. No name, date of birth or document number. On-chain PII is zero bytes.
+          Two 32-byte commitments. No name, date of birth, document number, or account number is on chain. Wallet-linked metadata remains pseudonymous and linkable.
         </Band>
         {m.issuerTombstoned && (
           /* Band takes no arbitrary props, so the marker attribute lives on the wrapper. */
           <div data-note="issuer-reuse">
             <Band tone="note" className="mt-3">
-              <p>
-                This mark&rsquo;s issuer is itself tombstoned as a subject on this chain. That is testnet address reuse &mdash; one EOA is the
-                contract deployer, the issuer, and the deliberately revoked demo subject &mdash; not a compromised issuer key.
-              </p>
-              <p className="mt-1.5 text-fg-muted">
-                Verification never consults the issuer&rsquo;s tombstone: <code className="mono text-fg-strong">ProofmarkRegistry.isVerified</code> checks
-                the subject only, and who may issue is decided by <code className="mono text-fg-strong">ComplianceSource</code>&rsquo;s
-                {' '}<code className="mono text-fg-strong">setIssuer</code> allow-list on the source chain.
-              </p>
+              This mark&rsquo;s issuer is itself tombstoned as a subject here &mdash; testnet address reuse, not a compromised key.
+              Verification never consults it: <code className="mono text-fg-strong">isVerified</code> checks the subject only.
             </Band>
           </div>
         )}

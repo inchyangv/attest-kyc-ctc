@@ -33,7 +33,7 @@ BASE_URLS=(
   "https://proofmark-swart.vercel.app"
 )
 
-SUBJECT="0xb8FEBEaB3705793474fA05b91Bf5D205855dD3c1"
+SUBJECT="0x4816B6e3Acb775f65Da888f185f708E2C8D7a3e2"
 SCREEN_BODY='{"fullName":"Kim Jong Un"}'
 TIMEOUT=30
 

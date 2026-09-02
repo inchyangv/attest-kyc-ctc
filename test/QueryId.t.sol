@@ -8,7 +8,7 @@ import {MockBlockProver} from "./mocks/MockBlockProver.sol";
 
 /// @dev Test-only harness that exposes `_computeQueryId`.
 contract QueryIdHarness is ASCBaseX {
-    function _processAndEmitEvent(uint8, uint64, uint64, bytes32, bytes memory) internal pure override {}
+    function _processAndEmitEvent(uint8, uint64, uint64, uint64, bytes memory) internal pure override {}
 
     function computeQueryId(
         uint64 chainKey,
@@ -43,9 +43,7 @@ contract QueryIdTest is Test {
         // MockBlockProver returns the low 32 bits of root as txIndex
         uint256 txIndex = uint256(root) & 0xffffffff;
 
-        bytes32 expected = keccak256(
-            abi.encodePacked(uint256(chainKey), blockHeight, txIndex)
-        );
+        bytes32 expected = keccak256(abi.encodePacked(uint256(chainKey), blockHeight, txIndex));
 
         assertEq(h.computeQueryId(chainKey, blockHeight, root, sib), expected);
     }

@@ -89,7 +89,7 @@ Account-holder authentication (`/v1/kr/bank/a/account/holder-authentication`: `o
 
 ### 4.3 Production rails: the milestone plan
 
-Signing either rail — KFTC participating-institution registration or the CODEF partnership contract — turns the bank axis live. Combined with the document axis, which is self-service onboardable today through the CODEF demo tier (section 3), a mark issued through `/verify` then carries `ID_DOC_AUTHENTICITY` (0x4), `BANK_ACCOUNT` (0x20) and `SANCTIONS_SCREENED` (0x10000) from live rails and passes deployed policy #1 on `ProofmarkRegistry` (CC3 testnet, `0x874e0Fd030a8Fe6c7a06835354531b68A31f5FCc`; `requireAll 0x10024`, `minAssurance 2`) with no change to the policy. Nothing in the code changes: `OPENBANKING_ENV=prod` or `CODEF_ENV=api` is the whole switch.
+Signing either rail — KFTC participating-institution registration or the CODEF partnership contract — turns the bank axis live. Combined with the document axis, a mark issued through `/verify` then carries `ID_DOC_AUTHENTICITY` (0x4), `BANK_ACCOUNT` (0x20) and `SANCTIONS_SCREENED` (0x10000) from live rails and can pass frozen policy #1 on `ProofmarkRegistry` (CC3 testnet, `0x2F4E5e1270f90E51251651caf08547393e3C0572`) when it also matches production regime 1, KR jurisdiction 410, the pinned issuer and the 30-day age limit. Nothing in the policy is relaxed for the demo.
 
 **Rail A — KFTC Open Banking production**
 
@@ -130,9 +130,9 @@ Either bank rail live, together with the document axis live on CODEF, is the who
 | Bits | `KYC_DEMO_BITS=1` (default): the adapter's `sandboxBits` switch counts non-live results, so the mark ends with `0x190027` and assurance 3. `KYC_DEMO_BITS=0` leaves the two bits unset |
 | Regime | Always `KR_FSC_NONFACE_SANDBOX` (2) when either axis is not live. The evidence carries `sandboxBits`, `live` and the vendor name per axis |
 
-The page shows a "Demo mode" band naming the demo axes, and the result row says "under regime sandbox; the policy does not check regime yet".
+The page shows a "Demo mode" band naming the demo axes, and the result distinguishes the frozen production policy from the frozen sandbox pilot policy.
 
-**The one caveat.** The deployed `ProofmarkRegistry` policy #1 checks `requireAll 0x10024` and `minAssurance 2`, not `regime` (P1 in the plan). So a demo mark passes policy #1 on chain while `/onchain` shows regime sandbox. The `regime` field exists exactly so a consumer can tell the two apart; until the policy reads it, that is the honest description.
+**The boundary is enforced on chain.** Deployed policy #1 requires `0x10024`, assurance 2, regime 1, jurisdiction 410, a trusted issuer, and a 30-day maximum age. Policy #2 requires the same methods and issuer but pins sandbox regime 2 and a seven-day age. Both are frozen. A demo mark can pass policy #2 and cannot pass policy #1.
 
 ---
 
@@ -168,7 +168,7 @@ then the CODEF keys as they arrive; the document axis turns real on redeploy, th
 | 0 wallet | `GET/POST /api/kyc/wallet` | EIP-4361 message with a sealed nonce; signature checked with viem; returns `walletProof` |
 | 1 document | `POST /api/kyc/id` (multipart) | `action=ocr` prefill; `action=verify` returns `idProof` (sealed result: name, DOB, `docHash`, authenticity, vendor, `live`) or a two-way challenge with `twoWayToken` (170 s). The image is hashed (`keccak256`) and discarded; the resident number is used for the query and never stored |
 | 2 bank | `POST /api/kyc/bank` | `start`: holder name compared with the declared name, one won sent, sealed `challenge` carrying an HMAC of the code (never the code); `verify`: five tries, then `bankProof` |
-| 3 issue | `POST /api/kyc/issue` | Opens the proofs, runs reconciliation, the list-backed AML engine, the salted claims commitment and `packAttrs`, then `ComplianceSource.issue()` from the issuer key. Returns claims and evidence for the customer to save; the server keeps neither |
+| 3 issue | `POST /api/kyc/issue` | Opens proofs bound to the same wallet/flow, runs reconciliation, AML, claims and `packAttrs`, stores a production evidence record, then calls replay-safe `ComplianceSource.issueOnce(requestId,...)`. The public demo retains no server-side record and says so |
 
 Sealed tokens are AES-256-GCM under `sha256(EVIDENCE_HMAC_KEY | proofmark-seal-v1)` with a type tag and expiry; a forged or expired token is a 400. Evidence never holds a name, number or account: vendor, reference, `live`, decision codes and hashes only (`pipeline/pii-guard.ts` checks this in tests).
 
@@ -176,9 +176,9 @@ Sealed tokens are AES-256-GCM under `sha256(EVIDENCE_HMAC_KEY | proofmark-seal-v
 
 ## 8. Verified
 
-- `npm run test:ts`: 117 tests. New: CODEF wire format (token, URL-encoded JSON, RSA fields, both login modes, captcha and simpleAuth second legs, OCR multipart, error codes), Open Banking (2-legged token, `bank_tran_id`, real_name, deposit with `bank_rsp_code`), demo vendors and `sandboxBits`, adapter honesty (no vendor, non-live answer, authority says no, code never read back).
+- `npm run test:ts`: 123 tests. Coverage includes vendor wire formats, adapter honesty, replay/order handling, adversarial roster proofs, encrypted-vault authentication, review/rescreen lifecycle and erasure.
 - `tsc` at root and in `web/`; `next build --webpack`; `config.resolve.modules` points root-level `pipeline/` at `web/node_modules`, and `ethers` is a `web/` dependency, so the Vercel build resolves.
-- Against the built server with `KYC_DEMO=1`: status reports demo on both axes → wallet round trip → demo OCR → document verified / `FAKE` rejected → account ending `99` mismatch → one won with the code revealed → wrong code counted → right code → issue: `ISSUED`, methods `0x190027`, regime 2, assurance 3, policy #1 passes, evidence names `demo:id` and `demo:bank`, no PII; a different declared name → `REJECTED` on reconciliation. With no issuer key the transaction is skipped and says so.
+- Against the built server with `KYC_DEMO=1`: status reports demo on both axes → consent-bound wallet round trip → demo OCR → document verified / `FAKE` rejected → account ending `99` mismatch → one won with the code revealed → wrong code counted → right code → issue: `ISSUED`, methods `0x190027`, regime 2, assurance 3, policy #2 passes and policy #1 fails; evidence names `demo:id` and `demo:bank`, with no cleartext PII. With no issuer key the transaction is skipped and says so.
 - Without `KYC_DEMO`: each vendor step is a 503 listing the missing variables; a forged signature is 422, a forged proof 400, Kim Jong Un · KP → `DENIED`.
 
 ---
@@ -187,8 +187,8 @@ Sealed tokens are AES-256-GCM under `sha256(EVIDENCE_HMAC_KEY | proofmark-seal-v
 
 | Item | Why it matters |
 |---|---|
-| `regime` in `Policy` (P1) | Until the contract reads it, a sandbox mark and a production mark pass the same policy |
 | Face match and liveness vendor | `FACE_MATCH`, `LIVENESS` stay unset |
 | Bank rails | KFTC participating-institution registration or the CODEF partnership contract |
-| Evidence retention | The issuer must keep the evidence to recompute `evidenceHash`; today it is returned to the customer and not stored server-side |
+| Managed evidence service | The AES-GCM file vault is a single-instance pilot; production needs database/KMS, backup, rotation, access control and audit logging |
+| Distributed API controls | Current application throttles are per instance; production needs gateway/WAF rate limiting |
 | Corporate certificate on Traffic Civil Service 24 | Manual captcha every time; app-based authentication avoids it |

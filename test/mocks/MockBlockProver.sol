@@ -10,7 +10,9 @@ import {INativeQueryVerifier} from "../../src/lib/VerifierInterface.sol";
 contract MockBlockProver {
     /// @dev Always verifies. What we are testing is the ASC guard logic, not proof arithmetic.
     function verifyAndEmit(
-        uint64, uint64, bytes calldata,
+        uint64,
+        uint64,
+        bytes calldata,
         INativeQueryVerifier.MerkleProof calldata,
         INativeQueryVerifier.ContinuityProof calldata
     ) external pure returns (bool) {
@@ -26,7 +28,9 @@ contract MockBlockProver {
 /// @notice The failing-verification case
 contract MockBlockProverFailing {
     function verifyAndEmit(
-        uint64, uint64, bytes calldata,
+        uint64,
+        uint64,
+        bytes calldata,
         INativeQueryVerifier.MerkleProof calldata,
         INativeQueryVerifier.ContinuityProof calldata
     ) external pure returns (bool) {

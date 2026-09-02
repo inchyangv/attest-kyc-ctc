@@ -62,7 +62,7 @@ npm run worker
 Then confirm the cursor advances:
 
 ```sh
-grep -o '"cursor": *[0-9]*' state/worker.json; sleep 30; grep -o '"cursor": *[0-9]*' state/worker.json
+grep -o '"cursor": *[0-9]*' state/worker-v2.json; sleep 30; grep -o '"cursor": *[0-9]*' state/worker-v2.json
 ```
 
 → two readings, the second strictly larger. A cursor that does not move means the take-A issuance in
@@ -70,13 +70,13 @@ scene 3 will never cross, and scene 6's take-B verdict is the only proof left on
 
 ### e · The issuer account is funded on Sepolia
 
-The account that signs `ComplianceSource.issue` for the hosted deployment is
-`0xFD1222e35a536A62f180aA44826656940e86bD5E` — the same testnet key as the deployer, the note owner
-and the revoked subject in scene 8 (README section 4 records that reuse).
+The account that signs `ComplianceSource.issueOnce` for the hosted deployment is the testnet
+deployer `0xFD1222e35a536A62f180aA44826656940e86bD5E`. This role reuse is demo-only; the README lists the
+key separation required before production.
 
 ```sh
 cast balance 0xFD1222e35a536A62f180aA44826656940e86bD5E --rpc-url "$SEP"
-cast call 0x93C62D3016123Da0aBdB4AC1857564c30CbE5629 'isIssuer(address)(bool)' \
+cast call 0xA9A34586303b9fD92e090F9bb1D332DC854c72B9 'isIssuer(address)(bool)' \
   0xFD1222e35a536A62f180aA44826656940e86bD5E --rpc-url "$SEP"
 ```
 
@@ -106,10 +106,10 @@ cast chain-id --rpc-url "$SEP"   # -> 11155111
 ### h · The scene 7 cast still passes and fails as scripted
 
 ```sh
-REG=0x874e0Fd030a8Fe6c7a06835354531b68A31f5FCc
-cast call $REG 'isVerified(address,uint256)(bool)' 0x4816B6e3Acb775f65Da888f185f708E2C8D7a3e2 1 --rpc-url "$CC3"  # A -> true
-cast call $REG 'isVerified(address,uint256)(bool)' 0x77858131d1E0eAaAe2c38c2cce508c358C9b58ee 1 --rpc-url "$CC3"  # B -> true
-cast call $REG 'isVerified(address,uint256)(bool)' 0x680Cc6e52d80F8f3759C7d7209f576CedCE7F2C5 1 --rpc-url "$CC3"  # C -> false
+REG=0x2F4E5e1270f90E51251651caf08547393e3C0572
+cast call $REG 'isVerified(address,uint256)(bool)' 0x4816B6e3Acb775f65Da888f185f708E2C8D7a3e2 2 --rpc-url "$CC3"  # A -> true
+cast call $REG 'isVerified(address,uint256)(bool)' 0x77858131d1E0eAaAe2c38c2cce508c358C9b58ee 2 --rpc-url "$CC3"  # B -> true
+cast call $REG 'isVerified(address,uint256)(bool)' 0x00000000000000000000000000000000DeaDBeef 2 --rpc-url "$CC3"  # control -> false
 ```
 
 → `true`, `true`, `false`. A and B are `RWA_HOLDER` and `RWA_RECIPIENT`; C is the control the gate
@@ -133,13 +133,13 @@ export SEPOLIA_TX=0x…                # optional, lets scene 4's block print th
 4. Wait, then confirm it has crossed before you start recording:
 
 ```sh
-cast call 0x874e0Fd030a8Fe6c7a06835354531b68A31f5FCc 'isVerified(address,uint256)(bool)' \
-  "$TAKE_B_SUBJECT" 1 --rpc-url "$CC3"
+cast call 0x2F4E5e1270f90E51251651caf08547393e3C0572 'isVerified(address,uint256)(bool)' \
+  "$TAKE_B_SUBJECT" 2 --rpc-url "$CC3"
 ```
 
-→ `true`. Attestation was measured at 6.5 to 8.5 minutes and issuance to a verified answer at
-7m 55s and 10m 48s across two runs; the gate run recorded in README section 4 took 9m 18s. Fifteen
-minutes of head start covers all three. Until it returns `true`, keep waiting — do not record scene
+→ `true`. The current gate run took about nine minutes from Sepolia issuance to CC3 application.
+Fifteen minutes of head start is the recording allowance, not a latency promise. Until it returns
+`true`, keep waiting — do not record scene
 6 and do not shorten the labelled caption.
 
 ### j · The read-only sequence still matches the kit
@@ -161,6 +161,6 @@ exported variable, so it is safe to run as the last thing before recording.
       environment; export it before recording, in a terminal that is not being captured.
 - [ ] Screen recorder keystroke overlay off — the `/verify` flow has a resident registration number
       field.
-- [ ] The caption for scene 5 already rendered in the editor: **edited — attestation measured at
-      6.5–8.5 minutes**.
+- [ ] The caption for scene 5 already rendered in the editor: **edited — cross-chain propagation
+      took about 9 minutes**.
 - [ ] Final cut is at most 3:00. The shot list budgets 178 seconds; 2 seconds is the whole margin.

@@ -2,7 +2,7 @@ import { ethers } from 'ethers';
 
 import { cfg } from './config.js';
 import { log } from './log.js';
-import { Store, type Job } from './store.js';
+import { Store, jobsReadyForDispatch, type Job } from './store.js';
 import { AttestationWatcher } from './attestation.js';
 import { fetchProof, computeQueryId, txIndexFromProof } from './proof.js';
 import { COMPLIANCE_SOURCE_ABI, PROOFMARK_ASC_ABI, EVENT_TO_ACTION, WATCHED_EVENTS } from './abi.js';
@@ -59,6 +59,9 @@ export class ProofmarkWorker {
       } catch (e: any) {
         log.error(`scan failed, retrying next cycle: ${e?.shortMessage ?? e?.message ?? e}`);
       }
+      // A failed dispatch stays persisted as pending. Requeue on every cycle, including cycles
+      // with no new blocks; startup-only requeue would otherwise strand it until a restart.
+      for (const job of jobsReadyForDispatch(this.store, this.inFlight)) void this.dispatch(job);
       await sleep(cfg.pollMs);
     }
 
@@ -180,7 +183,7 @@ export class ProofmarkWorker {
       } else {
         this.store.update(job.txHash, { attempts, lastError: msg });
         log.warn(`job failed, tx ${job.txHash.slice(0, 10)}... (${attempts}/${cfg.maxAttempts}): ${msg}. Retrying next cycle.`);
-        // pending() picks it up again next scan
+        // run() picks it up on the next polling cycle, even if no new source block arrives
       }
     } finally {
       this.inFlight.delete(job.txHash);

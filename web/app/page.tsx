@@ -1,17 +1,15 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Button } from '@/components/ui/Button';
+import { Button, LinkButton } from '@/components/ui/Button';
 import { Field, Input } from '@/components/ui/Field';
 import { Tag, type Tone } from '@/components/ui/Tag';
 import { Status } from '@/components/ui/Status';
-import { Stats, Stat } from '@/components/ui/Stat';
 import { Band } from '@/components/ui/Band';
 import { Hash } from '@/components/ui/Hash';
 import { DetailRow, DetailList } from '@/components/ui/DetailRow';
 import { PageHeader, Section, Eyebrow } from '@/components/ui/Page';
 import { Icon } from '@/components/ui/Icon';
-import { bitOf } from '@/lib/methods';
 
 type Decision = 'ALLOW' | 'BLOCK' | 'REVIEW';
 type MethodGroup = { group: string; note: string; items: { key: string; label: string; set: boolean }[] };
@@ -19,7 +17,10 @@ type Hit = {
   listId: string; entryId: string; matchedName: string; score: number;
   matchType: string; corroborated: boolean; corroboration?: string[];
 };
-type Meta = { engineVersion: string; listVersions: Record<string, number>; listCounts: Record<string, number> };
+type Meta = {
+  engineVersion: string; listVersions: Record<string, number>; listCounts: Record<string, number>;
+  builtAt?: string; sourceUpdatedAt?: Record<string, string>;
+};
 type Result = Meta & {
   decision: Decision;
   reviewReason: string | null;
@@ -38,14 +39,14 @@ const LIST: Record<string, { label: string; source: string }> = {
 };
 
 const PRESETS = [
-  { label: 'Kim Jong Un · KP', hint: 'Name match corroborated by DOB + country',
+  { label: 'Kim Jong Un · KP', hint: 'DOB and country corroborate the name match',
     v: { fullName: 'Kim Jong Un', dateOfBirth: '1984-01-08', nationality: 'KP', residence: 'KP', walletAddress: '' } },
-  { label: 'Choi Yeong-ho · KR', hint: 'Name expansion collides with a listed name, but nothing corroborates it',
+  { label: 'Choi Yeong-ho · KR', hint: 'Collides with a listed name; nothing corroborates it',
     v: { fullName: 'Choi Yeong-ho', dateOfBirth: '1985-03-14', nationality: 'KR', residence: 'KR', walletAddress: '' } },
-  { label: 'Sanctioned wallet', hint: 'The name does not matter. The address itself is on the OFAC list',
+  { label: 'Sanctioned wallet', hint: 'The address itself is on the OFAC list',
     v: { fullName: 'Totally Unrelated Person', dateOfBirth: '1990-01-01', nationality: 'US', residence: 'US',
          walletAddress: '0x252a8bd2319d8a555b872990601221b3a2053bce' } },
-  { label: 'Park Seo-jun · KR', hint: 'An ordinary Korean name. Must pass cleanly',
+  { label: 'Park Seo-jun · KR', hint: 'An ordinary name. Must pass cleanly',
     v: { fullName: 'Park Seo-jun', dateOfBirth: '1990-05-05', nationality: 'KR', residence: 'KR', walletAddress: '' } },
 ];
 
@@ -90,24 +91,37 @@ export default function Home() {
   return (
     <>
       <PageHeader
-        eyebrow="Proofmark · KYC/AML attestation layer"
-        title="Sanctions screening"
-        lede="OFAC SDN, UN Consolidated and EU FSF, parsed from the source XML. The engine records what it checked and nothing more."
-        aside={<span className="mono text-fg-muted">engine <span className="text-fg-strong">{info?.engineVersion ?? '—'}</span></span>}
+        eyebrow="Creditcoin compliance gateway"
+        title="External credentials in. Policy-ready state on Creditcoin."
+        lede="Proofmark normalizes what an identity provider actually checked, proves the source event through Attestcoin, and lets each Creditcoin application enforce its own frozen policy."
       />
 
-      {/* ── lists ── */}
-      <Stats>
-        {Object.keys(LIST).map(id => (
-          <Stat key={id}
-            label={<>{LIST[id].label} <span className="text-fg-subtle">· {LIST[id].source}</span></>}
-            value={info ? info.listCounts[id]?.toLocaleString() ?? '—' : '…'}
-            sub={info?.listVersions[id] ? <span className="mono">rev {info.listVersions[id]}</span> : undefined} />
-        ))}
-        <Stat label="Entries loaded" value={totalEntries?.toLocaleString() ?? '…'} sub="3 lists" />
-      </Stats>
+      <div className="panel overflow-hidden">
+        <div className="grid gap-px bg-line md:grid-cols-3">
+          {[
+            ['1 · Verify', 'A configured identity rail checks the document, account and sanctions sources. Sandbox results stay sandbox.'],
+            ['2 · Prove', 'The issuer emits on Ethereum; Attestcoin proves that exact source transaction to the ASC on Creditcoin.'],
+            ['3 · Enforce', 'The registry checks methods, regime, jurisdiction, freshness and issuer. A frozen policy gates the RWA note.'],
+          ].map(([title, copy]) => (
+            <div key={title} className="bg-surface p-4">
+              <div className="text-sm font-semibold text-fg-strong">{title}</div>
+              <p className="mt-1.5 text-[13px] leading-5 text-fg-muted">{copy}</p>
+            </div>
+          ))}
+        </div>
+        <div className="flex flex-wrap gap-2 border-t border-line px-4 py-3">
+          <LinkButton href="/verify" variant="primary"><Icon name="user" size={16} />Run the full journey</LinkButton>
+          <LinkButton href="/onchain"><Icon name="block" size={16} />Read live CC3 state</LinkButton>
+        </div>
+      </div>
 
-      <div className="mt-8 grid gap-6 lg:grid-cols-[340px_minmax(0,1fr)]">
+      <div className="mb-4 mt-10">
+        <Eyebrow>Live component</Eyebrow>
+        <h2 className="mt-1 text-xl font-semibold text-fg-strong">Sanctions screening</h2>
+        <p className="mt-1 text-sm text-fg-muted">OFAC SDN, UN Consolidated and EU FSF{totalEntries ? <> — <span className="text-fg-strong">{totalEntries.toLocaleString()}</span> entries</> : null}, parsed from source XML and rejected when stale.</p>
+      </div>
+
+      <div className="grid gap-6 lg:grid-cols-[340px_minmax(0,1fr)]">
         {/* ── input ── */}
         <div>
           <div className="panel p-4">
@@ -161,7 +175,7 @@ export default function Home() {
                 <Status tone={DECISION[res.decision].tone} className="text-base leading-6">{res.decision}</Status>
                 <span className="text-[13px] leading-5 text-fg">{DECISION[res.decision].text}</span>
                 {res.reviewReason && <Tag tone="gray" mono>{res.reviewReason}</Tag>}
-                <span className="mono ml-auto text-fg-muted">risk {res.riskBand}/5 · {res.elapsedMs} ms</span>
+                <span className="mono ml-auto text-fg-muted">risk {res.riskBand}/5</span>
               </div>
 
               {/* checks */}
@@ -170,7 +184,7 @@ export default function Home() {
                 lede="A bit is set only when the check ran. An unset bit is what lets a consumer policy reject this mark.">
                 <div className="panel overflow-hidden">
                   <table className="tbl">
-                    <thead><tr><th>Check</th><th className="num w-24">Bit</th><th className="w-32">Status</th></tr></thead>
+                    <thead><tr><th>Check</th><th className="w-32">Status</th></tr></thead>
                     <tbody>
                       {res.methodGroups.map(g => <Group key={g.group} group={g} />)}
                     </tbody>
@@ -196,7 +210,7 @@ export default function Home() {
                             <td>
                               {h.corroborated
                                 ? <span className="inline-flex flex-wrap gap-1">{h.corroboration?.map(c => <Tag key={c} tone="bad">{c}</Tag>)}</span>
-                                : <span className="text-fg-muted">none · recorded, but does not hold the person</span>}
+                                : <span className="text-fg-muted">none · does not hold the person</span>}
                             </td>
                           </tr>
                         ))}
@@ -210,20 +224,16 @@ export default function Home() {
               <Section title="Evidence">
                 <DetailList>
                   <DetailRow label="Digest" hint="keccak over the evidence record"><Hash value={res.evidenceDigest} full /></DetailRow>
-                  <DetailRow label="List versions">
-                    <span className="flex flex-wrap gap-1.5">
-                      {Object.entries(res.listVersions).map(([k, v]) => <Tag key={k} tone="gray" mono>{LIST[k]?.label ?? k} · rev {v}</Tag>)}
+                  <DetailRow label="Lists">
+                    <span className="mono text-fg-muted">
+                      {Object.entries(res.listVersions).map(([k, v]) => `${LIST[k]?.label ?? k} rev ${v}`).join(' · ')}
                     </span>
                   </DetailRow>
-                  <DetailRow label="Entries loaded">
-                    {Object.entries(res.listCounts).map(([k, v]) => `${LIST[k]?.label ?? k} ${v.toLocaleString()}`).join(' · ')}
-                  </DetailRow>
-                  <DetailRow label="Engine"><span className="mono">{res.engineVersion}</span></DetailRow>
-                  <DetailRow label="Elapsed"><span className="mono">{res.elapsedMs} ms</span></DetailRow>
+                  {res.sourceUpdatedAt && <DetailRow label="Source refresh"><span className="mono text-fg-muted">{Object.values(res.sourceUpdatedAt).sort()[0]}</span></DetailRow>}
                 </DetailList>
                 <Band tone="note" className="mt-3">
-                  The evidence record holds <b className="font-medium text-fg-strong">no name in cleartext</b>. Name fields are keyed HMAC digests. Evidence is kept for audit;
-                  the vault can still be erased on request. The key holder can still confirm a candidate, which is the point of pseudonymisation.
+                  The record holds <b className="font-medium text-fg-strong">no name in cleartext</b> — name fields are keyed HMAC digests,
+                  so the vault can be erased on request while the key holder can still confirm a candidate.
                 </Band>
               </Section>
             </>
@@ -234,22 +244,27 @@ export default function Home() {
   );
 }
 
+/** Checks that ran get a row each; checks that did not collapse into one muted line per group. */
 function Group({ group: g }: { group: MethodGroup }) {
+  const run = g.items.filter(m => m.set);
+  const idle = g.items.filter(m => !m.set);
   return (
     <>
       <tr className="grp">
-        <td colSpan={3}>{g.group}<span className="note">{g.note}</span></td>
+        <td colSpan={2}>{g.group}<span className="note">{g.note}</span></td>
       </tr>
-      {g.items.map(m => {
-        const bit = bitOf(m.key);
-        return (
-          <tr key={m.key}>
-            <td className={m.set ? 'font-medium text-fg-strong' : 'text-fg-muted'}>{m.label}</td>
-            <td className="num mono text-fg-muted">{bit !== undefined ? `1 << ${bit}` : '—'}</td>
-            <td>{m.set ? <Tag tone="ok">Performed</Tag> : <Tag tone="gray">Not run</Tag>}</td>
-          </tr>
-        );
-      })}
+      {run.map(m => (
+        <tr key={m.key}>
+          <td className="font-medium text-fg-strong">{m.label}</td>
+          <td><Tag tone="ok">Performed</Tag></td>
+        </tr>
+      ))}
+      {idle.length > 0 && (
+        <tr>
+          <td className="text-fg-muted">{idle.map(m => m.label).join(' · ')}</td>
+          <td><Tag tone="gray">Not run</Tag></td>
+        </tr>
+      )}
     </>
   );
 }

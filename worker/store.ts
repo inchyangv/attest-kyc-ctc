@@ -100,3 +100,9 @@ export class Store {
     renameSync(tmp, this.path);   // atomic replace
   }
 }
+
+/** Pending jobs not already executing. Kept beside Store so retry scheduling is unit-testable
+ * without loading network configuration. */
+export function jobsReadyForDispatch(store: Store, inFlight: ReadonlySet<string>): Job[] {
+  return store.pending().filter((job) => !inFlight.has(job.txHash));
+}

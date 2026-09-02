@@ -27,33 +27,39 @@ contract ProofmarkASC is Ownable2Step, ASCBaseX {
     using MarkAttrs for bytes32;
 
     // Event signatures, computed with cast keccak. See docs/04 section 8.
-    bytes32 internal constant SIG_ISSUED  = 0xffac883eea6676651044a7e28ee0527defa8e3fce7558142c598e6569ef5a5f3;
+    bytes32 internal constant SIG_ISSUED = 0xffac883eea6676651044a7e28ee0527defa8e3fce7558142c598e6569ef5a5f3;
     bytes32 internal constant SIG_REVOKED = 0xdde75c52928e1a0e5b14011716a8309ab432e435d50ced197b667cc906d3fd09;
-    bytes32 internal constant SIG_DENIED  = 0x4e68a53405a08cc0e2bb7cd374ad540457f069bcf32e0830ea2e851815d6f5ae;
-    bytes32 internal constant SIG_EPOCH   = 0x984d6a4d0b5705f143158aad863f7a4f77abd36d272098cda48adbcbd40b0dc3;
+    bytes32 internal constant SIG_DENIED = 0x4e68a53405a08cc0e2bb7cd374ad540457f069bcf32e0830ea2e851815d6f5ae;
+    bytes32 internal constant SIG_EPOCH = 0x984d6a4d0b5705f143158aad863f7a4f77abd36d272098cda48adbcbd40b0dc3;
 
     // Source pinning, checks 1 and 4
     /// @notice The one source chain accepted. CC3 Testnet serves both 1 (Sepolia) and 3 (Ethereum).
-    uint64  public expectedChainKey;
+    uint64 public expectedChainKey;
     /// @notice The only contract whose events this ASC will act on.
     address public sourceContract;
 
     // State
-    mapping(address => Mark)   public marks;
+    mapping(address => Mark) public marks;
     /// @notice Revocation and sanction tombstones. Outrank every epoch root: deny beats allow.
-    mapping(address => bool)   public tombstone;
-    /// @notice Ordering cursor, check 5. Needing blockHeight here is why ASCBaseX exists.
+    mapping(address => bool) public tombstone;
+    /// @notice Ordering cursor, check 5. The pair orders source transactions, including two
+    ///         transactions for one subject mined in the same block.
     mapping(address => uint64) public lastAppliedHeight;
+    mapping(address => uint64) public lastAppliedTxIndex;
 
     mapping(uint32 => bytes32) public epochRoots;
     uint32 public latestEpoch;
     uint40 public epochValidUntil;
 
     event SourceConfigured(uint64 chainKey, address sourceContract);
-    event MarkMaterialized(address indexed subject, bytes32 attrs, uint64 blockHeight);
-    event MarkTombstoned(address indexed subject, uint8 status, uint64 blockHeight);
+    event MarkMaterialized(address indexed subject, bytes32 attrs, uint64 blockHeight, uint64 txIndex);
+    event MarkTombstoned(address indexed subject, uint8 status, uint64 blockHeight, uint64 txIndex);
+    event MarkReactivated(address indexed subject, uint64 blockHeight, uint64 txIndex);
     event EpochAccepted(uint32 indexed epoch, bytes32 root, uint40 validUntil);
-    event StaleProofSkipped(address indexed subject, uint64 blockHeight, uint64 lastApplied);
+    event StaleProofSkipped(
+        address indexed subject, uint64 blockHeight, uint64 txIndex, uint64 lastHeight, uint64 lastTxIndex
+    );
+    event PermanentDenialSkipped(address indexed subject, uint64 blockHeight, uint64 txIndex);
 
     error SourceNotConfigured();
     error UnexpectedChainKey(uint64 got, uint64 want);
@@ -62,15 +68,17 @@ contract ProofmarkASC is Ownable2Step, ASCBaseX {
     error NoMatchingEvent();
     error BadTopics();
     error EpochNotMonotonic(uint32 given, uint32 latest);
+    error SourceAlreadyConfigured();
 
     constructor(address initialOwner) Ownable(initialOwner) {}
 
     /// @notice Pins the source chain and contract. No proof is accepted before this is set.
     function configureSource(uint64 chainKey_, address sourceContract_) external onlyOwner {
+        if (sourceContract != address(0)) revert SourceAlreadyConfigured();
         require(sourceContract_ != address(0), "zero source");
         require(chainKey_ != 0, "zero chainKey");
         expectedChainKey = chainKey_;
-        sourceContract   = sourceContract_;
+        sourceContract = sourceContract_;
         emit SourceConfigured(chainKey_, sourceContract_);
     }
 
@@ -80,7 +88,7 @@ contract ProofmarkASC is Ownable2Step, ASCBaseX {
         uint8 action,
         uint64 chainKey,
         uint64 blockHeight,
-        bytes32, /* queryId */
+        uint64 txIndex,
         bytes memory encodedTx
     ) internal override {
         if (sourceContract == address(0)) revert SourceNotConfigured();
@@ -88,11 +96,11 @@ contract ProofmarkASC is Ownable2Step, ASCBaseX {
         if (chainKey != expectedChainKey) revert UnexpectedChainKey(chainKey, expectedChainKey);
 
         if (action == uint8(Action.MarkIssued)) {
-            _onIssued(blockHeight, _logs(encodedTx, SIG_ISSUED));
+            _onIssued(blockHeight, txIndex, _logs(encodedTx, SIG_ISSUED));
         } else if (action == uint8(Action.MarkRevoked)) {
-            _onTombstone(blockHeight, _logs(encodedTx, SIG_REVOKED), uint8(MarkStatus.Revoked));
+            _onTombstone(blockHeight, txIndex, _logs(encodedTx, SIG_REVOKED), uint8(MarkStatus.Revoked));
         } else if (action == uint8(Action.SanctionDenied)) {
-            _onTombstone(blockHeight, _logs(encodedTx, SIG_DENIED), uint8(MarkStatus.Denied));
+            _onTombstone(blockHeight, txIndex, _logs(encodedTx, SIG_DENIED), uint8(MarkStatus.Denied));
         } else if (action == uint8(Action.RosterEpoch)) {
             _onEpoch(_logs(encodedTx, SIG_EPOCH));
         } else {
@@ -101,11 +109,7 @@ contract ProofmarkASC is Ownable2Step, ASCBaseX {
     }
 
     /// @dev Receipt check (2) and signature filter, following ASCLoanManager._validateTransactionContents.
-    function _logs(bytes memory encodedTx, bytes32 sig)
-        private
-        pure
-        returns (EvmV1Decoder.LogEntry[] memory logs)
-    {
+    function _logs(bytes memory encodedTx, bytes32 sig) private pure returns (EvmV1Decoder.LogEntry[] memory logs) {
         uint8 t = EvmV1Decoder.getTransactionType(encodedTx);
         require(EvmV1Decoder.isValidTransactionType(t), "bad tx type");
 
@@ -125,47 +129,55 @@ contract ProofmarkASC is Ownable2Step, ASCBaseX {
     // Handlers
 
     /// @dev 3. walk every matching log, so one execute() applies N entries from a single tx. docs/05 section 3
-    function _onIssued(uint64 blockHeight, EvmV1Decoder.LogEntry[] memory logs) private {
+    function _onIssued(uint64 blockHeight, uint64 txIndex, EvmV1Decoder.LogEntry[] memory logs) private {
         uint256 n = logs.length;
         for (uint256 i = 0; i < n; ++i) {
             EvmV1Decoder.LogEntry memory L = logs[i];
             _requireTrusted(L, 4); // sig + subject + attrs + issuer
 
             address subject = address(uint160(uint256(L.topics[1])));
-            bytes32 attrs   = L.topics[2];
-            address issuer  = address(uint160(uint256(L.topics[3])));
+            bytes32 attrs = L.topics[2];
+            address issuer = address(uint160(uint256(L.topics[3])));
             (bytes32 claimsRoot, bytes32 evidenceHash) = abi.decode(L.data, (bytes32, bytes32));
 
             // 5. ordering guard: an older issuance must not overwrite a newer revocation
-            if (blockHeight <= lastAppliedHeight[subject]) {
-                emit StaleProofSkipped(subject, blockHeight, lastAppliedHeight[subject]);
+            if (!_advance(subject, blockHeight, txIndex)) continue;
+
+            // A normal revocation can be cured by a later full KYC issuance. A sanctions denial
+            // cannot: it requires an explicit future governance design, not an ordinary issue().
+            if (tombstone[subject] && marks[subject].status == uint8(MarkStatus.Denied)) {
+                emit PermanentDenialSkipped(subject, blockHeight, txIndex);
                 continue;
             }
-            lastAppliedHeight[subject] = blockHeight;
+            bool reactivated = tombstone[subject];
+            tombstone[subject] = false;
 
             marks[subject] = Mark({
-                status:       uint8(MarkStatus.Active),
+                status: uint8(MarkStatus.Active),
                 // Direct, because this is the individual-proof path. Only Mode B sets Roster.
-                origin:       uint8(MarkOrigin.Direct),
-                kind:         attrs.kind(),
-                assurance:    attrs.assurance(),
-                regime:       attrs.regime(),
+                origin: uint8(MarkOrigin.Direct),
+                kind: attrs.kind(),
+                assurance: attrs.assurance(),
+                regime: attrs.regime(),
                 jurisdiction: attrs.jurisdiction(),
-                methods:      attrs.methods(),
-                issuedAt:     attrs.issuedAt(),
-                expiry:       attrs.expiry(),
-                epoch:        attrs.epoch(),
-                claimsRoot:   claimsRoot,
+                methods: attrs.methods(),
+                issuedAt: attrs.issuedAt(),
+                expiry: attrs.expiry(),
+                epoch: attrs.epoch(),
+                claimsRoot: claimsRoot,
                 evidenceHash: evidenceHash,
-                issuer:       issuer
+                issuer: issuer
             });
 
-            emit MarkMaterialized(subject, attrs, blockHeight);
+            if (reactivated) emit MarkReactivated(subject, blockHeight, txIndex);
+            emit MarkMaterialized(subject, attrs, blockHeight, txIndex);
         }
     }
 
     /// @dev Revocation and sanction share a shape (4 topics, no data), so one handler covers both.
-    function _onTombstone(uint64 blockHeight, EvmV1Decoder.LogEntry[] memory logs, uint8 newStatus) private {
+    function _onTombstone(uint64 blockHeight, uint64 txIndex, EvmV1Decoder.LogEntry[] memory logs, uint8 newStatus)
+        private
+    {
         uint256 n = logs.length;
         for (uint256 i = 0; i < n; ++i) {
             EvmV1Decoder.LogEntry memory L = logs[i];
@@ -173,17 +185,29 @@ contract ProofmarkASC is Ownable2Step, ASCBaseX {
 
             address subject = address(uint160(uint256(L.topics[1])));
 
-            if (blockHeight <= lastAppliedHeight[subject]) {
-                emit StaleProofSkipped(subject, blockHeight, lastAppliedHeight[subject]);
-                continue;
+            if (!_advance(subject, blockHeight, txIndex)) continue;
+
+            tombstone[subject] = true;
+            // Once denied, a later ordinary revocation must not downgrade the permanent denial
+            // into the reissuable Revoked state.
+            if (marks[subject].status != uint8(MarkStatus.Denied) || newStatus == uint8(MarkStatus.Denied)) {
+                marks[subject].status = newStatus;
             }
-            lastAppliedHeight[subject] = blockHeight;
 
-            tombstone[subject]    = true;   // deny beats allow, and outlives any later mark
-            marks[subject].status = newStatus;
-
-            emit MarkTombstoned(subject, newStatus, blockHeight);
+            emit MarkTombstoned(subject, marks[subject].status, blockHeight, txIndex);
         }
+    }
+
+    function _advance(address subject, uint64 blockHeight, uint64 txIndex) private returns (bool) {
+        uint64 lastHeight = lastAppliedHeight[subject];
+        uint64 lastTx = lastAppliedTxIndex[subject];
+        if (blockHeight < lastHeight || (blockHeight == lastHeight && txIndex <= lastTx)) {
+            emit StaleProofSkipped(subject, blockHeight, txIndex, lastHeight, lastTx);
+            return false;
+        }
+        lastAppliedHeight[subject] = blockHeight;
+        lastAppliedTxIndex[subject] = txIndex;
+        return true;
     }
 
     /// @dev Exactly one epoch per transaction. Epochs must increase.
@@ -191,15 +215,15 @@ contract ProofmarkASC is Ownable2Step, ASCBaseX {
         EvmV1Decoder.LogEntry memory L = logs[0];
         _requireTrusted(L, 4); // sig + epoch + root + listVersion
 
-        uint32  epoch      = uint32(uint256(L.topics[1]));
-        bytes32 root       = L.topics[2];
-        uint40  validUntil = uint40(abi.decode(L.data, (uint256)));
+        uint32 epoch = uint32(uint256(L.topics[1]));
+        bytes32 root = L.topics[2];
+        uint40 validUntil = uint40(abi.decode(L.data, (uint256)));
 
         if (epoch <= latestEpoch) revert EpochNotMonotonic(epoch, latestEpoch);
 
         epochRoots[epoch] = root;
-        latestEpoch       = epoch;
-        epochValidUntil   = validUntil;
+        latestEpoch = epoch;
+        epochValidUntil = validUntil;
 
         emit EpochAccepted(epoch, root, validUntil);
     }

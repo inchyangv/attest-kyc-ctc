@@ -4,6 +4,7 @@
  * Proofmark tokens. Dark only.
  * One canvas, one panel step, hairline structure. Mint (#B3FCB2, the Creditcoin brand green)
  * is the single chromatic accent: primary action, active state, focus. Status has its own three hues.
+ * One typeface: Inter, tightened for display; mono is reserved for values the chain could hold.
  * Components use semantic utilities (bg-surface, text-fg-muted, …) and never raw hex.
  */
 
@@ -42,7 +43,6 @@
 
 @theme inline {
   --font-sans: var(--font-inter), "Apple SD Gothic Neo", Pretendard, "Malgun Gothic", ui-sans-serif, system-ui, sans-serif;
-  --font-display: var(--font-poppins), var(--font-inter), "Apple SD Gothic Neo", ui-sans-serif, sans-serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
 
   --color-canvas: var(--canvas);

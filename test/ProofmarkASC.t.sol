@@ -17,23 +17,23 @@ import {ReceiptFixture} from "./ReceiptFixture.sol";
 contract ProofmarkASCTest is Test {
     address constant PRECOMPILE = 0x0000000000000000000000000000000000000FD2;
 
-    uint64 constant SEPOLIA_KEY = 1;   // measured: chainKey 1 is Sepolia
-    uint64 constant MAINNET_KEY = 3;   // measured: chainKey 3 is Ethereum mainnet
+    uint64 constant SEPOLIA_KEY = 1; // measured: chainKey 1 is Sepolia
+    uint64 constant MAINNET_KEY = 3; // measured: chainKey 3 is Ethereum mainnet
 
-    ProofmarkASC     asc;
+    ProofmarkASC asc;
     ComplianceSource src;
-    ReceiptFixture   fx;
+    ReceiptFixture fx;
 
-    address owner   = address(0xA11CE);
-    address issuer  = address(0x1554E4);
-    address alice   = address(0xA11);
-    address bob     = address(0xB0B);
+    address owner = address(0xA11CE);
+    address issuer = address(0x1554E4);
+    address alice = address(0xA11);
+    address bob = address(0xB0B);
     address evilSrc = address(0xBAD);
 
     function setUp() public {
         vm.etch(PRECOMPILE, address(new MockBlockProver()).code);
 
-        fx  = new ReceiptFixture();
+        fx = new ReceiptFixture();
         src = new ComplianceSource(owner);
 
         vm.startPrank(owner);
@@ -51,7 +51,9 @@ contract ProofmarkASCTest is Test {
     }
 
     function _issuedLog(address emitter, address subject, bytes32 attrs)
-        internal view returns (EvmV1Decoder.LogEntryTuple memory)
+        internal
+        view
+        returns (EvmV1Decoder.LogEntryTuple memory)
     {
         bytes32[] memory t = new bytes32[](4);
         t[0] = keccak256("MarkIssued(address,bytes32,address,bytes32,bytes32)");
@@ -65,14 +67,21 @@ contract ProofmarkASCTest is Test {
         bytes32[] memory t = new bytes32[](4);
         t[0] = keccak256("MarkRevoked(address,uint16,uint32)");
         t[1] = bytes32(uint256(uint160(subject)));
-        t[2] = bytes32(uint256(2));  // RESCREEN_HIT
-        t[3] = bytes32(uint256(1));  // epoch
+        t[2] = bytes32(uint256(2)); // RESCREEN_HIT
+        t[3] = bytes32(uint256(1)); // epoch
         return fx.log(address(src), t, bytes(""));
     }
 
-    function _one(EvmV1Decoder.LogEntryTuple memory l)
-        internal pure returns (EvmV1Decoder.LogEntryTuple[] memory a)
-    {
+    function _deniedLog(address subject) internal view returns (EvmV1Decoder.LogEntryTuple memory) {
+        bytes32[] memory t = new bytes32[](4);
+        t[0] = keccak256("SanctionDenied(address,uint32,uint32)");
+        t[1] = bytes32(uint256(uint160(subject)));
+        t[2] = bytes32(uint256(7));
+        t[3] = bytes32(uint256(1));
+        return fx.log(address(src), t, bytes(""));
+    }
+
+    function _one(EvmV1Decoder.LogEntryTuple memory l) internal pure returns (EvmV1Decoder.LogEntryTuple[] memory a) {
         a = new EvmV1Decoder.LogEntryTuple[](1);
         a[0] = l;
     }
@@ -88,31 +97,45 @@ contract ProofmarkASCTest is Test {
 
     /// @dev Do the hardcoded constants match the real keccak. One typo costs eight minutes on chain.
     function test_EventSignatureConstantsAreCorrect() public pure {
-        assertEq(keccak256("MarkIssued(address,bytes32,address,bytes32,bytes32)"),
-                 0xffac883eea6676651044a7e28ee0527defa8e3fce7558142c598e6569ef5a5f3);
-        assertEq(keccak256("MarkRevoked(address,uint16,uint32)"),
-                 0xdde75c52928e1a0e5b14011716a8309ab432e435d50ced197b667cc906d3fd09);
-        assertEq(keccak256("SanctionDenied(address,uint32,uint32)"),
-                 0x4e68a53405a08cc0e2bb7cd374ad540457f069bcf32e0830ea2e851815d6f5ae);
-        assertEq(keccak256("RosterEpochPublished(uint32,bytes32,uint32,uint40)"),
-                 0x984d6a4d0b5705f143158aad863f7a4f77abd36d272098cda48adbcbd40b0dc3);
+        assertEq(
+            keccak256("MarkIssued(address,bytes32,address,bytes32,bytes32)"),
+            0xffac883eea6676651044a7e28ee0527defa8e3fce7558142c598e6569ef5a5f3
+        );
+        assertEq(
+            keccak256("MarkRevoked(address,uint16,uint32)"),
+            0xdde75c52928e1a0e5b14011716a8309ab432e435d50ced197b667cc906d3fd09
+        );
+        assertEq(
+            keccak256("SanctionDenied(address,uint32,uint32)"),
+            0x4e68a53405a08cc0e2bb7cd374ad540457f069bcf32e0830ea2e851815d6f5ae
+        );
+        assertEq(
+            keccak256("RosterEpochPublished(uint32,bytes32,uint32,uint40)"),
+            0x984d6a4d0b5705f143158aad863f7a4f77abd36d272098cda48adbcbd40b0dc3
+        );
     }
 
     // 2. MarkAttrs packing round trip
 
     function testFuzz_AttrsRoundtrip(
-        uint8 kind_, uint8 assurance_, uint16 regime_, uint16 juris_,
-        uint32 methods_, uint40 issuedAt_, uint40 expiry_, uint32 epoch_
+        uint8 kind_,
+        uint8 assurance_,
+        uint16 regime_,
+        uint16 juris_,
+        uint32 methods_,
+        uint40 issuedAt_,
+        uint40 expiry_,
+        uint32 epoch_
     ) public pure {
         bytes32 a = MarkAttrs.pack(kind_, assurance_, regime_, juris_, methods_, issuedAt_, expiry_, epoch_);
-        assertEq(MarkAttrs.kind(a),         kind_);
-        assertEq(MarkAttrs.assurance(a),    assurance_);
-        assertEq(MarkAttrs.regime(a),       regime_);
+        assertEq(MarkAttrs.kind(a), kind_);
+        assertEq(MarkAttrs.assurance(a), assurance_);
+        assertEq(MarkAttrs.regime(a), regime_);
         assertEq(MarkAttrs.jurisdiction(a), juris_);
-        assertEq(MarkAttrs.methods(a),      methods_);
-        assertEq(MarkAttrs.issuedAt(a),     issuedAt_);
-        assertEq(MarkAttrs.expiry(a),       expiry_);
-        assertEq(MarkAttrs.epoch(a),        epoch_);
+        assertEq(MarkAttrs.methods(a), methods_);
+        assertEq(MarkAttrs.issuedAt(a), issuedAt_);
+        assertEq(MarkAttrs.expiry(a), expiry_);
+        assertEq(MarkAttrs.epoch(a), epoch_);
     }
 
     // 3. Happy path
@@ -129,6 +152,7 @@ contract ProofmarkASCTest is Test {
         assertEq(m.jurisdiction, 410);
         assertEq(m.issuer, issuer);
         assertEq(asc.lastAppliedHeight(alice), 100);
+        assertEq(asc.lastAppliedTxIndex(alice), 1);
     }
 
     // 4. Finding 1: chainKey pinning
@@ -173,7 +197,7 @@ contract ProofmarkASCTest is Test {
     ///      The queryIds differ, so replay protection does not catch it. Only the cursor does.
     function test_StaleIssueCannotResurrectRevokedMark() public {
         bytes32 a = _attrs(Methods.ID_DOC_AUTHENTICITY, 2_000_000_000);
-        bytes memory issueTx  = fx.tx2(_one(_issuedLog(address(src), alice, a)));
+        bytes memory issueTx = fx.tx2(_one(_issuedLog(address(src), alice, a)));
         bytes memory revokeTx = fx.tx2(_one(_revokedLog(alice)));
 
         // 1) the revocation lands first, at block 200
@@ -190,6 +214,49 @@ contract ProofmarkASCTest is Test {
         assertEq(asc.lastAppliedHeight(alice), 200);
     }
 
+    function test_SameBlockTxIndexPreventsOutOfOrderResurrection() public {
+        bytes32 a = _attrs(Methods.ID_DOC_AUTHENTICITY, 2_000_000_000);
+        bytes memory issueTx = fx.tx2(_one(_issuedLog(address(src), alice, a)));
+        bytes memory revokeTx = fx.tx2(_one(_revokedLog(alice)));
+
+        // tx index 20 was later in source block 200, but its proof arrives first.
+        _exec(uint8(Action.MarkRevoked), SEPOLIA_KEY, 200, revokeTx, 20);
+        _exec(uint8(Action.MarkIssued), SEPOLIA_KEY, 200, issueTx, 10);
+
+        assertTrue(asc.tombstone(alice));
+        assertEq(asc.getMark(alice).status, uint8(MarkStatus.Revoked));
+        assertEq(asc.lastAppliedHeight(alice), 200);
+        assertEq(asc.lastAppliedTxIndex(alice), 20);
+    }
+
+    function test_LaterFullKycReactivatesOrdinaryRevocation() public {
+        bytes32 a = _attrs(Methods.ID_DOC_AUTHENTICITY, 2_000_000_000);
+        bytes memory issueTx = fx.tx2(_one(_issuedLog(address(src), alice, a)));
+        _exec(uint8(Action.MarkIssued), SEPOLIA_KEY, 100, issueTx, 1);
+        _exec(uint8(Action.MarkRevoked), SEPOLIA_KEY, 200, fx.tx2(_one(_revokedLog(alice))), 2);
+        assertTrue(asc.tombstone(alice));
+
+        _exec(uint8(Action.MarkIssued), SEPOLIA_KEY, 300, issueTx, 3);
+        assertFalse(asc.tombstone(alice));
+        assertEq(asc.getMark(alice).status, uint8(MarkStatus.Active));
+    }
+
+    function test_OrdinaryIssueCannotClearSanctionsDenial() public {
+        bytes32 a = _attrs(Methods.ID_DOC_AUTHENTICITY, 2_000_000_000);
+        bytes memory issueTx = fx.tx2(_one(_issuedLog(address(src), alice, a)));
+        _exec(uint8(Action.SanctionDenied), SEPOLIA_KEY, 200, fx.tx2(_one(_deniedLog(alice))), 2);
+        _exec(uint8(Action.MarkIssued), SEPOLIA_KEY, 300, issueTx, 3);
+
+        assertTrue(asc.tombstone(alice));
+        assertEq(asc.getMark(alice).status, uint8(MarkStatus.Denied));
+    }
+
+    function test_RevocationCannotDowngradeSanctionsDenial() public {
+        _exec(uint8(Action.SanctionDenied), SEPOLIA_KEY, 200, fx.tx2(_one(_deniedLog(alice))), 2);
+        _exec(uint8(Action.MarkRevoked), SEPOLIA_KEY, 300, fx.tx2(_one(_revokedLog(alice))), 3);
+        assertEq(asc.getMark(alice).status, uint8(MarkStatus.Denied));
+    }
+
     // 8. Finding 3: batching through multiple logs in one tx
 
     /// @dev Batching without verifyBatch: N logs in one tx, applied by a single execute().
@@ -198,13 +265,13 @@ contract ProofmarkASCTest is Test {
 
         EvmV1Decoder.LogEntryTuple[] memory logs = new EvmV1Decoder.LogEntryTuple[](3);
         logs[0] = _issuedLog(address(src), alice, a);
-        logs[1] = _issuedLog(address(src), bob,   a);
+        logs[1] = _issuedLog(address(src), bob, a);
         logs[2] = _issuedLog(address(src), address(0xC0FFEE), a);
 
         _exec(uint8(Action.MarkIssued), SEPOLIA_KEY, 300, fx.tx2(logs), 20);
 
-        assertEq(asc.getMark(alice).status,             uint8(MarkStatus.Active));
-        assertEq(asc.getMark(bob).status,               uint8(MarkStatus.Active));
+        assertEq(asc.getMark(alice).status, uint8(MarkStatus.Active));
+        assertEq(asc.getMark(bob).status, uint8(MarkStatus.Active));
         assertEq(asc.getMark(address(0xC0FFEE)).status, uint8(MarkStatus.Active));
     }
 
@@ -257,11 +324,27 @@ contract ProofmarkASCTest is Test {
         fresh.execute(uint8(Action.MarkIssued), SEPOLIA_KEY, 100, encTx, bytes32(uint256(60)), sib, bytes32(0), roots);
     }
 
+    function test_SourceConfigurationIsOneTime() public {
+        vm.prank(owner);
+        vm.expectRevert(ProofmarkASC.SourceAlreadyConfigured.selector);
+        asc.configureSource(SEPOLIA_KEY, address(0xBEEF));
+    }
+
     // 13. Source contract roles
 
     function test_SourceOnlyIssuerCanIssue() public {
         vm.expectRevert(abi.encodeWithSelector(ComplianceSource.NotIssuer.selector, address(this)));
         src.issue(alice, bytes32(0), bytes32(0), bytes32(0));
+    }
+
+    function test_SourceIssueOnceRejectsReplay() public {
+        bytes32 requestId = keccak256("flow-1");
+        vm.startPrank(issuer);
+        src.issueOnce(requestId, alice, bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)));
+        vm.expectRevert(abi.encodeWithSelector(ComplianceSource.RequestAlreadyProcessed.selector, requestId));
+        src.issueOnce(requestId, alice, bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)));
+        vm.stopPrank();
+        assertTrue(src.processedRequest(requestId));
     }
 
     function test_SourceEpochMustBeMonotonic() public {

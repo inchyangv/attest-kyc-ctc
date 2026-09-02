@@ -131,7 +131,7 @@ event MarkIssued(
 ### 3.2 `MarkRevoked`
 
 ```solidity
-/// @notice A mark is revoked. Tombstones outrank every epoch root.
+/// @notice A mark is revoked. The tombstone outranks every epoch root until a newer full issuance.
 event MarkRevoked(
     address indexed subject,      // topics[1]
     uint16  indexed reasonCode,   // topics[2]
@@ -177,7 +177,7 @@ event SanctionDenied(
 | data | 0 bytes |
 | Action | `2` |
 
-> Separate from `MarkRevoked` because a revocation can be undone when a false positive clears, while a sanction runs on its own lane and consumers query it through `isDenied()`. Distinct signatures are what let `getLogsByEventSignature` separate them.
+> Separate from `MarkRevoked` because a later full issuance can reactivate an ordinary revocation, while a sanctions denial is permanent in this contract version and consumers query it through `isDenied()`. Distinct signatures are what let the worker separate them.
 
 ### 3.4 `RosterEpochPublished`
 
@@ -230,17 +230,18 @@ contract ProofmarkASC is Ownable, ASCBaseX {   // the fork, see doc 05 section 2
     uint64  public expectedChainKey;        // doc 05 section 1, cross-chain confusion
     address public sourceContract;          // C4
     mapping(address => uint64) public lastAppliedHeight;   // doc 05 section 3, ordering
+    mapping(address => uint64) public lastAppliedTxIndex;
 
     function _processAndEmitEvent(
         uint8 action, uint64 chainKey, uint64 blockHeight,
-        bytes32, bytes memory encodedTx
+        uint64 txIndex, bytes memory encodedTx
     ) internal override {
         // 1. pin the source chain, or an Ethereum mainnet proof passes
         require(chainKey == expectedChainKey, "unexpected source chain");
 
-        if      (action == uint8(Action.MarkIssued))     _onIssued(blockHeight, _logs(encodedTx, SIG_ISSUED));
-        else if (action == uint8(Action.MarkRevoked))    _onRevoked(blockHeight, _logs(encodedTx, SIG_REVOKED));
-        else if (action == uint8(Action.SanctionDenied)) _onDenied(blockHeight, _logs(encodedTx, SIG_DENIED));
+        if      (action == uint8(Action.MarkIssued))     _onIssued(blockHeight, txIndex, _logs(encodedTx, SIG_ISSUED));
+        else if (action == uint8(Action.MarkRevoked))    _onRevoked(blockHeight, txIndex, _logs(encodedTx, SIG_REVOKED));
+        else if (action == uint8(Action.SanctionDenied)) _onDenied(blockHeight, txIndex, _logs(encodedTx, SIG_DENIED));
         else if (action == uint8(Action.RosterEpoch))    _onEpoch(_logs(encodedTx, SIG_EPOCH));
         else revert InvalidAction(action);
     }
@@ -257,7 +258,7 @@ contract ProofmarkASC is Ownable, ASCBaseX {   // the fork, see doc 05 section 2
         require(logs.length > 0, "no matching event");
     }
 
-    function _onIssued(uint64 blockHeight, EvmV1Decoder.LogEntry[] memory logs) private {
+    function _onIssued(uint64 blockHeight, uint64 txIndex, EvmV1Decoder.LogEntry[] memory logs) private {
         for (uint256 i = 0; i < logs.length; i++) {               // 3. C2, batching
             EvmV1Decoder.LogEntry memory L = logs[i];
             require(L.address_ == sourceContract, "untrusted emitter");   // 4. C4
@@ -269,8 +270,10 @@ contract ProofmarkASC is Ownable, ASCBaseX {   // the fork, see doc 05 section 2
             (bytes32 claimsRoot, bytes32 evidenceHash) = abi.decode(L.data, (bytes32, bytes32));
 
             // 5. ordering guard, so an older issuance cannot overwrite a newer revocation
-            if (blockHeight <= lastAppliedHeight[subject]) continue;
+            if (blockHeight < lastAppliedHeight[subject] ||
+                (blockHeight == lastAppliedHeight[subject] && txIndex <= lastAppliedTxIndex[subject])) continue;
             lastAppliedHeight[subject] = blockHeight;
+            lastAppliedTxIndex[subject] = txIndex;
 
             _applyMark(subject, attrs, issuer, claimsRoot, evidenceHash);
         }
@@ -287,7 +290,7 @@ contract ProofmarkASC is Ownable, ASCBaseX {   // the fork, see doc 05 section 2
 | 2 | `receiptStatus == 1` | A failed transaction is applied as if it succeeded |
 | 3 | Walk every log | Only the first entry of a batch lands |
 | 4 | `log.address_ == sourceContract` | Anyone can emit a forged event and have it accepted |
-| 5 | `blockHeight > lastAppliedHeight` | Resubmitting an old issuance revives a revoked mark (doc 05 section 3) |
+| 5 | `(blockHeight, txIndex)` strictly increases per subject | Resubmitting an old or same-block-earlier issuance revives a revoked mark (doc 05 section 3) |
 
 ---
 

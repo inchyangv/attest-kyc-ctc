@@ -1,6 +1,6 @@
 # Epoch roster runbook: publishing Mode B on chain
 
-> 2026-09-01 · Tech Lead
+> 2026-09-02 · Tech Lead
 > Tooling: [`script/publish-epoch.ts`](../script/publish-epoch.ts)
 > Tree: [`pipeline/roster.ts`](../pipeline/roster.ts) and its Solidity twin [`src/lib/RosterProof.sol`](../src/lib/RosterProof.sol)
 > Contracts: `ComplianceSource.publishEpoch` on Sepolia · `ProofmarkASC._onEpoch` and `ProofmarkRegistry.verifyWithRoster` / `proveNotInRoster` on Creditcoin CC3
@@ -33,7 +33,7 @@ Two things the roster does not do:
 | `.env` (repository root, gitignored) | `DEPLOYER_PRIVATE_KEY`, `SOURCE_CHAIN_RPC_URL`, `CREDITCOIN_RPC_URL`, `PROOF_BUILDER_URL`, `SOURCE_CONTRACT_ADDRESS`, `ASC_CONTRACT_ADDRESS`, `EVIDENCE_HMAC_KEY` |
 | Signer role | `publishEpoch` is `onlyEpochPublisher`; `setEpochPublisher` is `onlyOwner`. The script reads `owner()` and `isEpochPublisher(signer)` and grants the role itself only when the signer is the owner. It never assumes the deployer holds either |
 | Sepolia ETH | one or two transactions, whichever the role state requires |
-| CC3 CTC | the worker submits `execute()`; proof verification measured 386,008 gas |
+| CC3 CTC | the worker submits `execute()`; the current two-subject issuance used 438,623 gas |
 
 Only `--publish` reads the key, and only `--publish` loads `.env`. `--dry-run` and `--check` run
 with no key and no configuration at all — the RPC URLs fall back to the public endpoints — so a
@@ -76,7 +76,7 @@ What it does, in order:
 3. Grants `setEpochPublisher(signer, true)` **as its own transaction**, only when needed.
 4. Sends `publishEpoch(epoch, root, listVersion, validUntil)` **as its own transaction**.
 5. Polls `ProofmarkASC.latestEpoch()` on CC3 every 15 seconds until it reaches that epoch,
-   printing elapsed time. Attestation measured 6.5 to 8.5 minutes.
+   printing the measured propagation time rather than assuming a fixed SLA.
 6. Writes `deployments/epoch-<n>.json` and `deployments/epoch-<n>.md`.
 
 `publishEpoch` is never batched with anything else. `ASCBase` derives `queryId` from
@@ -85,8 +85,8 @@ transaction gets exactly one `execute()`. Mixing event kinds in one transaction 
 land the cheap action first, consume the `queryId`, and seal the other events permanently.
 
 If the wait times out, the publish transaction is still on Sepolia and still valid — only the carry
-is missing. Check that the worker is running, that it started before the publish, and what
-`state/worker.json` says about that transaction.
+is missing. Check that the worker is running, that its configured start block is no later than the
+publish, and what `WORKER_STATE_PATH` (currently `state/worker-v2.json`) says about that transaction.
 
 ### 3.4 Verify
 
@@ -95,30 +95,19 @@ npx tsx script/publish-epoch.ts --check
 ```
 
 View calls only. It rebuilds the roster, compares the rebuilt root with `epochRoots(latestEpoch)`,
-and only then asks the deployed registry for four verdicts: `verifyWithRoster` under the pilot
-policy and under the production policy for the same mark, and `proveNotInRoster` for an address
-never issued to and for the revoked subject.
+and only then asks the deployed registry for three verdicts: `verifyWithRoster` under the pilot
+policy and under the production policy for the same mark, plus `proveNotInRoster` for an address
+never issued to.
 
 Before any epoch exists it exits 1 with `no epoch published yet (latestEpoch=0)`. That is the
 honest answer, not a failure.
 
-**The deployed registry, as of epoch 1.** `ProofmarkRegistry` at
-`0x874e0Fd030a8Fe6c7a06835354531b68A31f5FCc` on CC3 is an earlier build: its runtime code is 4,372
-bytes against 7,021 for the current one, every Mode A function is present, and `NAMESPACE()`,
-`verifyWithRoster` and `proveNotInRoster` are all absent. So the contract-side roster verdicts
-cannot be produced against it. `--check` asks the runtime code for those two selectors before
-calling them and says so, rather than calling into a contract that does not have the function and
-reporting the resulting `execution reverted` as a proof that failed — the two are
-indistinguishable from the caller's side, and a missing deployment reported as a failed verdict is
-the worst available answer. It then verifies the same three proofs against the root read back from
-CC3 using `pipeline/roster.ts`, labels that as off-chain, records it under `offChainChecks` rather
-than `checks`, and exits non-zero. A check that did not run stays unset.
-
-`ProofmarkASC` is the current build — it has all four epoch views and it accepted epoch 1 — and
-cache mode on the deployed registry is untouched: `isVerified` answers exactly as before. What is
-missing is the read path against a roster root. Restoring it means deploying the current
-`ProofmarkRegistry` against the same ASC and re-registering the two policies, which is a deployment
-decision and not something this script does.
+**Current deployment.** `ProofmarkRegistry` at
+`0x2F4E5e1270f90E51251651caf08547393e3C0572` and `ProofmarkASC` at
+`0x3C6Fe016645CA52952E29C66E435bDa7F611b242` are the current builds. The registry exposes
+`verifyWithRoster` and `proveNotInRoster`; both policies are frozen. The script still checks the
+runtime selectors before claiming a contract-side verdict, so an accidental older deployment is
+reported as a missing capability rather than mislabelled as a failed proof.
 
 **Roster drift.** If the rebuilt root differs from the on-chain root, the script prints both and
 exits without printing any verdict. The active set changed after the epoch was published — a mark

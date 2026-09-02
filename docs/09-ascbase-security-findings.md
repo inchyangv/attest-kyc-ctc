@@ -1,12 +1,12 @@
-# ASCBase security findings: the handler never sees `chainKey` or `blockHeight`
+# ASCBase security findings: the handler cannot see source identity or transaction order
 
 > 2026-09-01 · Tech Lead
 > Subject: the Attestcoin Protocol base contract every ASC inherits, `ASCBase`, as vendored in `reference/attestcoin-protocol-examples/contracts/sol/ASCBase.sol`
 > Mitigated in: [`src/ASCBaseX.sol`](../src/ASCBaseX.sol) (the fork) and [`src/ProofmarkASC.sol`](../src/ProofmarkASC.sol) (the handler)
-> Pinned by: `test/ProofmarkASC.t.sol` · `test_RejectsProofFromWrongChain`, `test_StaleIssueCannotResurrectRevokedMark`
+> Pinned by: `test/ProofmarkASC.t.sol` · `test_RejectsProofFromWrongChain`, `test_StaleIssueCannotResurrectRevokedMark`, `test_SameBlockTxIndexPreventsOutOfOrderResurrection`
 > First written up in [`05-asc-integration-review.md`](05-asc-integration-review.md) sections 1 and 2, restated here as a standalone report
 >
-> Offered to the Creditcoin and Attestcoin team as a contribution. Nothing here is unpublished: both findings have been in this repository since 2026-08, and both are already fixed on our side. The pattern is sound — these are two parameters that stop one function short of the handler.
+> Offered to the Creditcoin and Attestcoin team as a contribution. Nothing here is unpublished: both findings have been in this repository since 2026-08, and both are already fixed on our side. The pattern is sound — source coordinates stop one function short of the handler.
 
 ---
 
@@ -15,7 +15,7 @@
 | # | Finding | Class | Severity | Why that severity | Status |
 |---|---|---|---|---|---|
 | **1** | `execute()` receives `chainKey`, verifies against it, and does not pass it to `_processAndEmitEvent`. A handler cannot pin the source chain | source authentication | high | The proof stays valid; only the *origin* is unconstrained. On a hub serving several source chains at once, the emitter-address check that every example ASC relies on is no longer sufficient by itself | Mitigated in `ASCBaseX`. Upstream `ASCBase` narrow signature unchanged in the copy we integrate against, as of 2026-09-01 |
-| **2** | `execute()` receives `blockHeight` and does not pass it either. A handler cannot order what it applies | state integrity | high | Submission is permissionless and unordered by design, and the built-in replay guard is keyed per query, so it does not fire on two genuinely different proofs about the same subject | Mitigated in `ASCBaseX` + `lastAppliedHeight` cursor. Upstream unchanged as of 2026-09-01 |
+| **2** | `execute()` receives `blockHeight`, while the proof can yield `txIndex`; neither reaches the handler. A handler cannot totally order what it applies | state integrity | high | Submission is permissionless and unordered by design, and the built-in replay guard is keyed per query, so it does not fire on two genuinely different proofs about the same subject | Mitigated in `ASCBaseX` + `(lastAppliedHeight,lastAppliedTxIndex)` cursor. Upstream unchanged as of 2026-09-01 |
 
 Severity for both is carried over from the integration review that produced them; no score beyond that is claimed. Both concern the inheritance pattern in `ASCBase`, not the BlockProver precompile, the proof format, or any deployed third-party ASC.
 
@@ -46,7 +46,7 @@ Three things, all ordinary:
 
 1. The hub verifies proofs from more than one source chain at the same time. CC3 Testnet does: reading the supported list off the ChainInfo precompile (`script/check_chains.ts`) returns chainKey 1 = Ethereum Sepolia (chainId 11155111) and chainKey 3 = Ethereum mainnet (chainId 1).
 2. The ASC authenticates events the way the examples do — `log.address_ == sourceContract`.
-3. The same address is reachable by someone else on the other source chain. `CREATE2` makes that cheap: through a shared factory such as Foundry's default at `0x4e59...4956C`, the address depends only on factory, salt and bytecode, so deploying the same bytecode on the other chain first hands the attacker that address. Cross-chain address parity is a deployment convention, not an exotic setup — Proofmark's own contracts show how naturally it happens: `ProofmarkASC` on CC3 and `ComplianceSource` on Sepolia sit at the same address, `0x93C62D3016123Da0aBdB4AC1857564c30CbE5629`, purely because one deployer used the same nonce twice (README section 4).
+3. The same address is reachable by someone else on the other source chain. `CREATE2` makes that cheap: through a shared factory such as Foundry's default at `0x4e59...4956C`, the address depends only on factory, salt and bytecode, so deploying the same bytecode on the other chain first hands the attacker that address. Cross-chain address parity is a deployment convention, not an exotic setup. A previous Proofmark testnet deployment demonstrated this naturally: one deployer used the same nonce on both chains and produced identical addresses for different contracts. The current deployment uses distinct addresses, but the handler must enforce the chain key regardless.
 
 ### Mechanism
 
@@ -112,21 +112,24 @@ Proofmark's own fail-closed rules blunt this without closing it: `MarkRevoked` a
 
 ### Fix
 
-Pass `blockHeight` to the handler and keep a monotonic per-subject cursor. In `ProofmarkASC`, applied identically in the issuance and tombstone handlers:
+Pass `blockHeight` and the transaction index recovered from the proof to the handler, then keep a monotonic per-subject pair. In `ProofmarkASC`, this is applied identically in the issuance and tombstone handlers:
 
 ```solidity
 mapping(address => uint64) public lastAppliedHeight;
+mapping(address => uint64) public lastAppliedTxIndex;
 
-if (blockHeight <= lastAppliedHeight[subject]) {
-    emit StaleProofSkipped(subject, blockHeight, lastAppliedHeight[subject]);
+if (blockHeight < lastAppliedHeight[subject] ||
+    (blockHeight == lastAppliedHeight[subject] && txIndex <= lastAppliedTxIndex[subject])) {
+    emit StaleProofSkipped(subject, blockHeight, txIndex, lastAppliedHeight[subject], lastAppliedTxIndex[subject]);
     continue;                      // an older proof never overwrites a newer one
 }
 lastAppliedHeight[subject] = blockHeight;
+lastAppliedTxIndex[subject] = txIndex;
 ```
 
 Skipped rather than reverted, so one stale entry in a batch cannot block the rest, and the skip is observable on chain.
 
-Known residue, stated rather than hidden: `<=` cannot order two events inside a single source block. Proofmark covers that with two rules rather than with contract logic — `ComplianceSource` is written so each function emits one kind of event, which is the C1 rule of one event kind per transaction ([`04-event-schema.md`](04-event-schema.md) section 0), and the issuer serialises off chain so opposing events for one subject never land in the same block. The second is an operating rule, not something the contract enforces. An ASC that cannot make that guarantee upstream would need `txIndex` or `logIndex` as a tiebreaker.
+The original residue is now closed: the ASC derives `txIndex` from the same Merkle proof that BlockProver verifies, so opposing events for one subject inside one source block are ordered without an off-chain serialization assumption. The C1 rule still forbids mixing different Proofmark event kinds in one source transaction because the Attestcoin query is transaction-scoped rather than log-scoped.
 
 ### The mutation test that pins it
 
@@ -138,6 +141,7 @@ _exec(uint8(Action.MarkIssued),  SEPOLIA_KEY, 100, issueTx,  11);   // valid pro
 assertEq(asc.getMark(alice).status, uint8(MarkStatus.Revoked), "stale proof resurrected the mark");
 assertTrue(asc.tombstone(alice), "tombstone cleared");
 assertEq(asc.lastAppliedHeight(alice), 200);
+assertEq(asc.lastAppliedTxIndex(alice), 10);
 ```
 
 Delete the cursor guard from the issuance handler and the suite reports 44 passed, 1 failed: `[FAIL: stale proof resurrected the mark: 1 != 2]` — status Active where Revoked was required, and again no other test moves.
@@ -146,7 +150,9 @@ Delete the cursor guard from the issuance handler and the suite reports 44 passe
 
 ## Suggested upstream remediation
 
-Both findings share one cause and one fix: `execute()` already holds `chainKey` and `blockHeight`, and the handler is the only place that can act on them. Widen the extension point.
+Both findings share one cause and one fix: `execute()` already holds `chainKey` and `blockHeight`,
+and its Merkle proof yields `txIndex`; the handler is the only place that can act on them. Widen the
+extension point.
 
 ```solidity
 // before
@@ -157,7 +163,7 @@ function _processAndEmitEvent(
     uint8   action,
     uint64  chainKey,        // lets the handler pin the source chain, finding 1
     uint64  blockHeight,     // lets the handler order what it applies, finding 2
-    bytes32 queryId,
+    uint64  txIndex,         // same-block tiebreaker, finding 2
     bytes memory encodedTransaction
 ) internal virtual;
 ```
@@ -166,12 +172,12 @@ function _processAndEmitEvent(
 
 | Kept byte-identical to `ASCBase` | Changed |
 |---|---|
-| `verifyAndEmit` call and the whole `_verifyProof` path | the `_processAndEmitEvent` declaration, two parameters wider |
-| `_computeQueryId`, assembly and 72-byte layout included | the single call site inside `execute()` |
+| `verifyAndEmit` call and the whole `_verifyProof` path | the `_processAndEmitEvent` declaration, three parameters wider |
+| `_computeQueryId`, assembly and 72-byte layout included | the call site inside `execute()` and a read of the proof-derived transaction index |
 | `processedQueries` replay guard and its `require` ordering | — |
 | `execute()`'s external signature, so every existing caller, SDK path and worker is unaffected | — |
 
-Two consequences worth stating plainly. The verification path is untouched, so nothing about proof soundness or replay behaviour is being renegotiated — `test/QueryId.t.sol` fuzzes our `queryId` derivation against the same layout. And because only the internal virtual signature moves, the break is confined to `_processAndEmitEvent` overrides in derived contracts: each needs two parameters added to its declaration, and may then ignore them. Handing the handler information it may discard is strictly more expressive than withholding it; the guards themselves stay the integrator's choice, which is where they belong.
+Two consequences worth stating plainly. The verification path is untouched, so nothing about proof soundness or replay behaviour is being renegotiated — `test/QueryId.t.sol` fuzzes our `queryId` derivation against the same layout. And because the external `execute()` signature is unchanged, callers and SDK paths remain compatible; only derived `_processAndEmitEvent` overrides change. Handing the handler information it may discard is strictly more expressive than withholding it; the guards themselves stay the integrator's choice, which is where they belong.
 
 ---
 

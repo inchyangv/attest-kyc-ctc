@@ -6,8 +6,8 @@
 #    2) both chains have balance
 #
 # Usage:
-#    source .env && ./script/deploy.sh preflight   # checks only, no transactions
-#    source .env && ./script/deploy.sh deploy      # deploy for real
+#    ./script/deploy.sh preflight   # checks only, no transactions
+#    ./script/deploy.sh deploy      # deploy for real
 #
 # Order matters. ProofmarkASC needs the EvmV1Decoder library linked, and the ASC accepts
 # no proof before configureSource runs (test_RejectsBeforeSourceConfigured).
@@ -17,6 +17,15 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="$ROOT/deployments/cc3-testnet.json"
 DECODER_PATH="node_modules/@gluwa/usc-contracts/contracts/decoding/EvmV1Decoder.sol:EvmV1Decoder"
+
+# Shell variables read with `source .env` are not exported to a child process by default. Load and
+# export the repository's testnet configuration here so the documented command works as written.
+if [ -f "$ROOT/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$ROOT/.env"
+  set +a
+fi
 
 # Measured values, docs/01-env-verification.md section 3.3
 SOURCE_CHAIN_KEY="${SOURCE_CHAIN_KEY:-1}"     # chainKey 1 is Sepolia. Not the same as chainId 11155111.
@@ -135,17 +144,29 @@ deploy() {
       --rpc-url "$SOURCE_CHAIN_RPC_URL" --private-key "$DEPLOYER_PRIVATE_KEY" >/dev/null
   grn "   issuer and epoch publisher registered"
 
-  # 7. Demo policy registration. Permissionless: each dApp registers its own.
-  # KR VASP policy: document authenticity | bank account | sanctions screening
+  # 7. Policies. Production pins live regime 1; pilot pins sandbox regime 2. Both pin KR
+  # jurisdiction and this issuer, and are frozen before an asset can bind to them.
+  # KR VASP methods: document authenticity | bank account | sanctions screening
   #   ID_DOC_AUTHENTICITY(1<<2) | BANK_ACCOUNT(1<<5) | SANCTIONS_SCREENED(1<<16) = 0x10024
-  echo "-- 7/8  register KR policy -> Registry"
+  echo "-- 7/8  register and freeze KR production + pilot policies -> Registry"
   local krmask=$((1<<2 | 1<<5 | 1<<16))
-  cast send "$reg" "registerPolicy((uint32,uint8,uint40,bool,bool))" \
-      "($krmask,2,0,false,false)" \
+  cast send "$reg" "registerPolicy((uint32,uint8,uint40,uint16,uint16,address,bool,bool))" \
+      "($krmask,2,2592000,1,410,$addr,false,false)" \
       --rpc-url "$CREDITCOIN_RPC_URL" --private-key "$DEPLOYER_PRIVATE_KEY" >/dev/null
-  local krpolicy; krpolicy=$(cast call "$reg" "nextPolicyId()(uint256)" --rpc-url "$CREDITCOIN_RPC_URL")
-  krpolicy=$(( ${krpolicy%% *} - 1 ))
-  grn "   KR policyId = $krpolicy  (methods mask 0x$(printf '%x' $krmask))"
+  local productionpolicy; productionpolicy=$(cast call "$reg" "nextPolicyId()(uint256)" --rpc-url "$CREDITCOIN_RPC_URL")
+  productionpolicy=$(( ${productionpolicy%% *} - 1 ))
+  cast send "$reg" "freezePolicy(uint256)" "$productionpolicy" \
+      --rpc-url "$CREDITCOIN_RPC_URL" --private-key "$DEPLOYER_PRIVATE_KEY" >/dev/null
+
+  cast send "$reg" "registerPolicy((uint32,uint8,uint40,uint16,uint16,address,bool,bool))" \
+      "($krmask,2,604800,2,410,$addr,false,false)" \
+      --rpc-url "$CREDITCOIN_RPC_URL" --private-key "$DEPLOYER_PRIVATE_KEY" >/dev/null
+  local pilotpolicy; pilotpolicy=$(cast call "$reg" "nextPolicyId()(uint256)" --rpc-url "$CREDITCOIN_RPC_URL")
+  pilotpolicy=$(( ${pilotpolicy%% *} - 1 ))
+  cast send "$reg" "freezePolicy(uint256)" "$pilotpolicy" \
+      --rpc-url "$CREDITCOIN_RPC_URL" --private-key "$DEPLOYER_PRIVATE_KEY" >/dev/null
+  grn "   production policyId = $productionpolicy (regime 1, 30d)"
+  grn "   pilot policyId      = $pilotpolicy (regime 2, 7d)"
 
   # 8. Demo token on CC3
   echo "── 8/8  GatedRwaNote → CC3"
@@ -153,7 +174,7 @@ deploy() {
   note=$(forge create --broadcast --rpc-url "$CREDITCOIN_RPC_URL" \
       --private-key "$DEPLOYER_PRIVATE_KEY" \
       src/GatedRwaNote.sol:GatedRwaNote \
-      --constructor-args "KR Credit Note" "KRCN" "$reg" "$krpolicy" "$addr" \
+      --constructor-args "KR Pilot Credit Note" "KPCN" "$reg" "$pilotpolicy" "$addr" \
       | awk '/Deployed to:/{print $3}')
   grn "   GatedRwaNote = $note"
 
@@ -170,7 +191,11 @@ deploy() {
     "ComplianceSource":  "$srcaddr",
     "GatedRwaNote":      "$note"
   },
-  "demo": { "krPolicyId": $krpolicy }
+  "demo": {
+    "productionPolicyId": $productionpolicy,
+    "pilotPolicyId": $pilotpolicy,
+    "notePolicyId": $pilotpolicy
+  }
 }
 JSON
   grn "ok deployed, written to $OUT"
@@ -183,6 +208,8 @@ JSON
   echo -n "asc.sourceContract   : "; cast call "$asc" "sourceContract()(address)"   --rpc-url "$CREDITCOIN_RPC_URL"
   echo -n "reg.ASC              : "; cast call "$reg" "ASC()(address)"              --rpc-url "$CREDITCOIN_RPC_URL"
   echo -n "note.POLICY_ID       : "; cast call "$note" "POLICY_ID()(uint256)"       --rpc-url "$CREDITCOIN_RPC_URL"
+  echo -n "reg.policyFrozen(1) : "; cast call "$reg" "policyFrozen(uint256)(bool)" 1 --rpc-url "$CREDITCOIN_RPC_URL"
+  echo -n "reg.policyFrozen(2) : "; cast call "$reg" "policyFrozen(uint256)(bool)" 2 --rpc-url "$CREDITCOIN_RPC_URL"
   echo -n "src.isIssuer(deployer): "; cast call "$srcaddr" "isIssuer(address)(bool)" "$addr" --rpc-url "$SOURCE_CHAIN_RPC_URL"
 
   # Same deployer and same nonce give the same CREATE address on different chains.
@@ -190,7 +217,7 @@ JSON
   # so compare the bytecode on both chains to confirm they are different contracts.
   echo
   echo "=== Address collision check (ASC vs ComplianceSource) ==="
-  if [ "${asc,,}" = "${srcaddr,,}" ] || [ "$(echo "$asc" | tr 'A-Z' 'a-z')" = "$(echo "$srcaddr" | tr 'A-Z' 'a-z')" ]; then
+  if [ "$(echo "$asc" | tr 'A-Z' 'a-z')" = "$(echo "$srcaddr" | tr 'A-Z' 'a-z')" ]; then
     ylw "  addresses match. Comparing bytecode on each chain."
     local ccode scode
     ccode=$(cast code "$asc"     --rpc-url "$CREDITCOIN_RPC_URL"  | wc -c | tr -d ' ')
@@ -226,3 +253,9 @@ JSON
   ylw "When reproducing: always pass --from to cast call. Without it onlyOwner fires first and you draw the wrong conclusion."
   ylw "The 'missing field mixHash' errors from forge/cast on CC3 come from the Substrate block format and are harmless."
 }
+
+case "${1:-preflight}" in
+  preflight) preflight ;;
+  deploy) deploy ;;
+  *) echo "usage: $0 [preflight|deploy]" >&2; exit 2 ;;
+esac

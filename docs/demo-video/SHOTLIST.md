@@ -24,12 +24,12 @@ real time and never as immediate.
 |---|---|---|---|---|
 | 1 | Cold open | 12 | Title card over the landing page. "Proofmark — a KYC mark issued on Ethereum, verified on Creditcoin, gating a tokenised note." Contract addresses held for two seconds | `$DEMO_URL/` |
 | 2 | Live sanctions screening | 20 | `$DEMO_URL/` — click the "Kim Jong Un · KP" preset, run it. BLOCK, risk band 5, the OFAC SDN hit `entryId 20157` with `corroborated: dob`. Scroll once to "Checks performed" so the unset PEP and adverse-media bits are visible | `$DEMO_URL/`, block `SCENES=2` |
-| 3 | Guided issuance, `/verify` | 28 | `$DEMO_URL/verify` — steps 0 Wallet control, 1 ID document, 2 Bank account, 3 Screen and issue, run to ISSUED. Hold on the result panel: `demo:id` / `demo:bank` vendor rows, `KR_FSC_NONFACE_SANDBOX · level 3`, KR VASP production PASS, the Sepolia tx row. Copy that hash | `$DEMO_URL/verify`, block `SCENES=3` |
-| 4 | The Sepolia issuance | 20 | `sepolia.etherscan.io/tx/<hash from scene 3>` — status Success, the `MarkIssued` log, `ComplianceSource` as the recipient. Then the contract page at `0x93C62D3016123Da0aBdB4AC1857564c30CbE5629` | `sepolia.etherscan.io`, block `SCENES=4` |
-| 5 | Attestation, as a labelled edit | 16 | Split second: worker log tailing on the left, a full-frame caption on the right reading **"edited — attestation measured at 6.5–8.5 minutes"**. Cut from take A to take B under that caption; the caption stays up through the whole cut | worker log, caption in the editor |
-| 6 | Creditcoin verdicts | 36 | Terminal, large font. One address holding two different contracts (18121 bytes on Creditcoin, 7479 on Sepolia); `expectedChainKey` 1; then the same mark twice — `isVerified(0xb8FEBEaB…, 1)` false, `isVerified(0xb8FEBEaB…, 2)` true; policy 1 re-read from chain, unchanged; then take B's subject under policy 1, true | block `SCENES=6`, `RECORD=1` for take B |
+| 3 | Guided issuance, `/verify` | 28 | `$DEMO_URL/verify` — steps 0 Wallet control, 1 ID document, 2 Bank account, 3 Screen and issue. Hold on `demo:id` / `demo:bank`, sandbox regime, production FAIL, pilot PASS, and the Sepolia transaction | `$DEMO_URL/verify`, block `SCENES=3` |
+| 4 | The Sepolia issuance | 20 | `sepolia.etherscan.io/tx/<hash from scene 3>` — status Success, `MarkIssued`, and `ComplianceSource`. Then current source `0xA9A34586303b9fD92e090F9bb1D332DC854c72B9` | `sepolia.etherscan.io`, block `SCENES=4` |
+| 5 | Attestation, as a labelled edit | 16 | Worker log plus the full-frame caption **"edited — cross-chain propagation took about 9 minutes"**. Cut from take A to take B under that caption | worker log, caption in the editor |
+| 6 | Creditcoin verdicts | 36 | Both contracts have runtime code; `expectedChainKey` is 1 and source address is pinned; the same mark fails policy 1 and passes policy 2; both policies frozen; take B passes policy 2 | block `SCENES=6`, `RECORD=1` for take B |
 | 7 | GatedRwaNote refuses, then allows | 28 | Terminal. `canTransfer` false to the control wallet, true to the verified one; the call reverting with `0x17887111` `RecipientNotVerified`; then the live transfer landing status 1. Cut to the token on `creditcoin-testnet.blockscout.com` | block `SCENES=7`, `RECORD=1` |
-| 8 | Revocation, and zero personal data | 18 | Terminal: `tombstone(0xFD1222…)` true, `isVerified` false under both policies. Then the full `getMark` dump — two 32-byte commitments and an issuer address, no name, no date of birth, no account number. Close on `$DEMO_URL/onchain` | block `SCENES=8`, `$DEMO_URL/onchain` |
+| 8 | Fail closed, no cleartext personal data | 18 | An unissued control fails both policies. Then the active `getMark` dump — commitments and scoped metadata, no cleartext name, birth date, document or account number | block `SCENES=8`, `$DEMO_URL/onchain` |
 | | **Total** | **178** | under the 180-second ceiling, 2 seconds of headroom | |
 
 ## What each scene must not do
@@ -45,10 +45,8 @@ real time and never as immediate.
 - **Scene 7.** Keep `--from` on the read-only revert. Without it `msg.sender` is zero, `onlyOwner`
   fires before the gate, and the frame shows `0x118cdaa7 OwnableUnauthorizedAccount` — the wrong
   error entirely. Two error selectors that both look like "reverted".
-- **Scene 8.** `0xFD1222e35a536A62f180aA44826656940e86bD5E` is the deployer, the issuer EOA and the
-  revoked subject, all one testnet key. Narrate it as address reuse. Never as a compromised or
-  tombstoned issuer key — `isVerified` reads the subject's tombstone only, and who may issue is
-  decided by `ComplianceSource`'s allow-list on the source chain.
+- **Scene 8.** Do not say anonymous or zero data. Wallets, issuer, method metadata and commitments
+  are public and linkable; the narrower claim is no cleartext personal fields on chain.
 
 ## If a live transaction fails on camera
 
@@ -58,9 +56,9 @@ retrying on camera. All three were re-read and still return the status below.
 
 | What | Chain | Transaction | Status |
 |---|---|---|---|
-| `issueBatch`, the two scene 7 marks in one transaction | Sepolia | `0x02cdf784fb7808b3d44b37a6e43b9145d7666519aca51d5497d4264bf3857c55` | 1, success |
-| The gate refusing an unverified recipient | CC3 | `0x121b0d4f4213ba533e0284ec5e78db9d0d8054a970dee8947ab027f39528f18e` | 0, reverted |
-| The same transfer to a verified recipient | CC3 | `0x6ec9dbedd37daa607a0df4e50026e61a049c620ce81981afa5f4ebdb39e431ce` | 1, success |
+| `issueBatch`, the two current marks | Sepolia | `0x290498028010e6ce5f75de3d69695091e24863423e01a7981a277db86c8d69f1` | 1, success |
+| Mint 100 KPCN to verified A | CC3 | `0xa1f3b9fa62419b0352376d633b703442830d95a45179772825e44397342f8e77` | 1, success |
+| Transfer 40 KPCN from verified A to verified B | CC3 | `0xefe550ff98e513b8c6cd7fa8541fd1d7d0f33197b149fb674df8acba7aa9aa0d` | 1, success |
 
 Narrate a cut like that as what it is — a transaction from an earlier run, not the one just sent.
 README section 4 records all six transactions from that run and the propagation measured on it.
@@ -69,12 +67,10 @@ README section 4 records all six transactions from that run and the propagation 
 
 | Address | Role in the video |
 |---|---|
-| `0xb8FEBEaB3705793474fA05b91Bf5D205855dD3c1` | The honest-pipeline mark. Fails policy 1, passes policy 2 — scene 6 |
-| `$TAKE_B_SUBJECT` | Take B's subject, pre-issued through `/verify`. Passes policy 1 after the cut — scene 6 |
-| `0x4816B6e3Acb775f65Da888f185f708E2C8D7a3e2` | Holder A. Holds 60 KRCN, passes policy 1, signs scene 7's transfers |
-| `0x77858131d1E0eAaAe2c38c2cce508c358C9b58ee` | Recipient B. Passes policy 1. The transfer the gate allows |
-| `0x680Cc6e52d80F8f3759C7d7209f576CedCE7F2C5` | Control C. Never issued to. The transfer the gate refuses |
-| `0xFD1222e35a536A62f180aA44826656940e86bD5E` | Revoked subject, and the same key as deployer and issuer — scene 8 |
+| `0x4816B6e3Acb775f65Da888f185f708E2C8D7a3e2` | Holder A. Holds 60 KPCN; fails production policy 1 and passes sandbox policy 2 |
+| `0x77858131d1E0eAaAe2c38c2cce508c358C9b58ee` | Recipient B. Holds 40 KPCN and passes policy 2 |
+| `$TAKE_B_SUBJECT` | Optional take B, pre-issued through `/verify`; passes policy 2 after the cut |
+| `0x00000000000000000000000000000000DeaDBeef` | Unissued control; the gate refuses it and both policies fail |
 
 ## Frame notes
 

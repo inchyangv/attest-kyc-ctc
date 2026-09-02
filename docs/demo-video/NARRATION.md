@@ -53,24 +53,22 @@ grep '^> ' docs/demo-video/NARRATION.md | sed 's/^> //' | wc -w      # 448 words
 
 ## 5 · Attestation, as a labelled edit — 16s, ~40 words
 
-> Attestation is where the wait lives. Source-chain confirmation was measured at 6.5 to 8.5 minutes,
-> and issuance to a verified answer took 7 minutes 55 and 10 minutes 48 across two runs. This cut is
-> edited, and labelled so.
+> Attestation is where the wait lives. The current two-subject issuance took about nine minutes from
+> Sepolia inclusion to Creditcoin application. This cut is edited, and labelled so.
 
-*On screen: the caption "edited — attestation measured at 6.5–8.5 minutes", held through the cut.*
+*On screen: the caption "edited — cross-chain propagation took about 9 minutes", held through the cut.*
 
 ## 6 · Creditcoin verdicts — 36s, ~90 words
 
-> On Creditcoin, one address holds two contracts: the verifier here, the issuer on
-> Sepolia. Same deployer, same nonce, two chains. The verifier accepts proofs from one source chain
-> and one source contract only.
+> On Creditcoin, the verifier accepts proofs from one source chain and one source contract only.
+> The deployment script reads those linkages back on both chains before declaring success.
 >
-> Then the point. One mark, two policies, two answers. Under Korea's production policy, false — it
-> never carried a document authenticity bit. Under the pilot policy, true. Portability is a return
-> value here, not a promise. Verifying the proof on Creditcoin cost 386,008 gas measured. And the
-> mark the cut waited for now passes production.
+> Then the point. One mark, two policies, two answers. Under Korea's production policy, false — its
+> regime honestly says sandbox. Under the pilot policy, true. Both policies are frozen. Portability
+> is a return value here, not a promise. And the mark the cut waited for now passes only the sandbox
+> policy; production stays closed until regulated rails are connected.
 
-*On screen: `isVerified(0xb8FEBEaB…, 1)` false, `(…, 2)` true, then take B's subject under policy 1.*
+*On screen: `isVerified(0x4816B6e3…, 1)` false, `(…, 2)` true, then take B's subject under policy 2.*
 
 ## 7 · The gate — 28s, ~70 words
 
@@ -81,25 +79,22 @@ grep '^> ' docs/demo-video/NARRATION.md | sed 's/^> //' | wc -w      # 448 words
 
 *On screen: `canTransfer` false then true, `0x17887111`, then the live transfer at status 1.*
 
-## 8 · Revocation, and zero personal data — 18s, ~45 words
+## 8 · Fail closed, and no cleartext personal data — 18s, ~45 words
 
-> Last, revocation. This subject's mark was hand-authored during testing and claimed checks we never
-> ran, so we revoked it. Propagation to Creditcoin was measured at 8 minutes 43. And the whole
-> record: commitments and an issuer address. No name, no date of birth, no account number.
+> Last, fail closed. An address with no mark fails both policies. And the whole active record is
+> commitments, scoped metadata, wallet and issuer addresses. No name, no date of birth, no account
+> number. Those public values are linkable, so this is pseudonymisation, not anonymity.
 
-*On screen: `tombstone` true, `isVerified` false under both policies, the full `getMark` dump.*
+*On screen: the unissued control false under both policies, then the full active `getMark` dump.*
 
 ---
 
 ## Things not to say
 
-- **Never "a compromised key."** The revoked subject in scene 8 is the same testnet address as the
-  deployer and the issuer EOA. That is one key reused for three roles on a testnet. Verification
-  never consults the issuer's tombstone: `isVerified` reads the subject only, and who may issue is
-  decided by `ComplianceSource`'s allow-list on the source chain.
-- **Never a number that is not in this file.** The measured set is fixed: 27,933 gas issuance;
-  6.5–8.5 minutes attestation; 7m 55s and 10m 48s issuance to verified across two runs; 8m 43s
-  revocation propagation; 386,008 gas proof verification; 26,566 list entries, being OFAC SDN
+- **Never “anonymous.”** Wallet and issuer addresses plus commitments remain linkable. The accurate
+  claim is that no cleartext identity or bank fields are written on chain.
+- **Never a number that is not in this file.** The current measured set is fixed: about nine minutes
+  for the two-subject issuance to apply on CC3; 438,623 gas for that CC3 application; 26,566 list entries, being OFAC SDN
   19,321, UN 1,011 and EU 6,234; recall 100% over n=200; 0 false positives over n=610; evasion 7 of
   7. If a scene needs a figure that is not on that list, cut the claim, not the provenance.
 - **Never describe the demo vendors as anything but demo vendors.** They label themselves in the

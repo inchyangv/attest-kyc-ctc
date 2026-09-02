@@ -19,7 +19,7 @@ contract ComplianceSource is Ownable2Step {
     /// @dev sig 0xffac883eea6676651044a7e28ee0527defa8e3fce7558142c598e6569ef5a5f3
     event MarkIssued(
         address indexed subject,
-        bytes32 indexed attrs,   // eight scalar fields packed by MarkAttrs
+        bytes32 indexed attrs, // eight scalar fields packed by MarkAttrs
         address indexed issuer,
         bytes32 claimsRoot,
         bytes32 evidenceHash
@@ -32,7 +32,9 @@ contract ComplianceSource is Ownable2Step {
     event SanctionDenied(address indexed subject, uint32 indexed listVersion, uint32 indexed epoch);
 
     /// @dev sig 0x984d6a4d0b5705f143158aad863f7a4f77abd36d272098cda48adbcbd40b0dc3
-    event RosterEpochPublished(uint32 indexed epoch, bytes32 indexed root, uint32 indexed listVersion, uint40 validUntil);
+    event RosterEpochPublished(
+        uint32 indexed epoch, bytes32 indexed root, uint32 indexed listVersion, uint40 validUntil
+    );
 
     // Operational events. Not read cross-chain; the ASC ignores them.
     event IssuerSet(address indexed account, bool allowed);
@@ -42,6 +44,9 @@ contract ComplianceSource is Ownable2Step {
 
     mapping(address => bool) public isIssuer;
     mapping(address => bool) public isEpochPublisher;
+    /// @notice Durable idempotency for public API-backed issuance. The request id is an opaque
+    ///         flow digest; it contains no cleartext PII but remains wallet-linkable.
+    mapping(bytes32 => bool) public processedRequest;
 
     /// @notice Last published epoch. The source enforces monotonicity as a first line of defence.
     uint32 public lastEpoch;
@@ -51,6 +56,7 @@ contract ComplianceSource is Ownable2Step {
     error LengthMismatch();
     error EpochNotMonotonic(uint32 given, uint32 last);
     error ZeroSubject();
+    error RequestAlreadyProcessed(bytes32 requestId);
 
     modifier onlyIssuer() {
         if (!isIssuer[msg.sender]) revert NotIssuer(msg.sender);
@@ -90,6 +96,18 @@ contract ComplianceSource is Ownable2Step {
         emit MarkIssued(subject, attrs, msg.sender, claimsRoot, evidenceHash);
     }
 
+    /// @notice Idempotent issuance for retryable APIs. Replaying a sealed browser flow cannot
+    ///         spend issuer gas or create another source event after the first transaction lands.
+    function issueOnce(bytes32 requestId, address subject, bytes32 attrs, bytes32 claimsRoot, bytes32 evidenceHash)
+        external
+        onlyIssuer
+    {
+        if (subject == address(0)) revert ZeroSubject();
+        if (processedRequest[requestId]) revert RequestAlreadyProcessed(requestId);
+        processedRequest[requestId] = true;
+        emit MarkIssued(subject, attrs, msg.sender, claimsRoot, evidenceHash);
+    }
+
     /// @notice Emit N issuances in one transaction; the ASC applies all of them in a single execute().
     /// @dev N marks per cross-chain round trip of about eight minutes. This is batching without
     function issueBatch(Issuance[] calldata items) external onlyIssuer {
@@ -108,10 +126,7 @@ contract ComplianceSource is Ownable2Step {
     }
 
     /// @notice The event carries no data, which makes batch revocation cheap.
-    function revokeBatch(address[] calldata subjects, uint16[] calldata reasonCodes, uint32 epoch)
-        external
-        onlyIssuer
-    {
+    function revokeBatch(address[] calldata subjects, uint16[] calldata reasonCodes, uint32 epoch) external onlyIssuer {
         uint256 n = subjects.length;
         if (n != reasonCodes.length) revert LengthMismatch();
         for (uint256 i = 0; i < n; ++i) {

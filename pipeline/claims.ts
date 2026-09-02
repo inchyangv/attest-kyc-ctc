@@ -4,7 +4,8 @@ import { merkleRoot, merkleProof, verifyProof } from './merkle.js';
 /**
  * Claim commitments.
  *
- * Not one byte of personal data goes on chain.
+ * No cleartext PII goes on chain. The wallet-linked commitment can still be personal data under
+ * privacy law, so this is pseudonymisation rather than anonymisation.
  * Each claim is salted and hashed, and only the root travels with the mark.
  * The salts stay in the user's browser, so the on-chain value cannot be reversed.
  *

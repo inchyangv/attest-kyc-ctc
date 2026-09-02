@@ -17,8 +17,12 @@ broadcast/
 artifacts/
 .DS_Store
 
-# Foundry dependencies (forge install)
-lib/
+# Foundry dependencies (forge install). Anchor this at the repository root: an
+# unanchored `lib/` also ignores our Solidity sources under `src/lib/`.
+/lib/*
+!/lib/forge-std
+!src/lib/
+!src/lib/**
 !web/lib/
 !web/lib/**
 

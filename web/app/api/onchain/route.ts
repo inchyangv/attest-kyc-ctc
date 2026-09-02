@@ -34,20 +34,23 @@ const ascAbi = parseAbi([
 ]);
 const regAbi = parseAbi([
   'function isVerified(address,uint256) view returns (bool)',
-  'function policies(uint256) view returns (uint32,uint8,uint40,bool,bool)',
+  'function policies(uint256) view returns (uint32,uint8,uint40,uint16,uint16,address,bool,bool)',
+  'function policyFrozen(uint256) view returns (bool)',
 ]);
 
 export async function GET(req: Request) {
   const subject = (new URL(req.url).searchParams.get('subject') ??
-    '0xb8FEBEaB3705793474fA05b91Bf5D205855dD3c1') as Address;
+    '0x4816B6e3Acb775f65Da888f185f708E2C8D7a3e2') as Address;
 
-  const [chainKey, source, tomb, mark, p1, p2, v1, v2, block, latestEpoch, epochValidUntil, rosterFresh, regCode] = await Promise.all([
+  const [chainKey, source, tomb, mark, p1, p2, frozen1, frozen2, v1, v2, block, latestEpoch, epochValidUntil, rosterFresh, regCode] = await Promise.all([
     client.readContract({ address: ASC, abi: ascAbi, functionName: 'expectedChainKey' }),
     client.readContract({ address: ASC, abi: ascAbi, functionName: 'sourceContract' }),
     client.readContract({ address: ASC, abi: ascAbi, functionName: 'tombstone', args: [subject] }),
     client.readContract({ address: ASC, abi: ascAbi, functionName: 'getMark', args: [subject] }),
     client.readContract({ address: REG, abi: regAbi, functionName: 'policies', args: [1n] }),
     client.readContract({ address: REG, abi: regAbi, functionName: 'policies', args: [2n] }),
+    client.readContract({ address: REG, abi: regAbi, functionName: 'policyFrozen', args: [1n] }),
+    client.readContract({ address: REG, abi: regAbi, functionName: 'policyFrozen', args: [2n] }),
     client.readContract({ address: REG, abi: regAbi, functionName: 'isVerified', args: [subject, 1n] }),
     client.readContract({ address: REG, abi: regAbi, functionName: 'isVerified', args: [subject, 2n] }),
     client.getBlockNumber(),
@@ -74,9 +77,10 @@ export async function GET(req: Request) {
     ? false
     : await client.readContract({ address: ASC, abi: ascAbi, functionName: 'tombstone', args: [issuer] });
 
-  const pol = (p: readonly [number, number, number, boolean, boolean]) => ({
+  const pol = (p: readonly [number, number, number, number, number, Address, boolean, boolean]) => ({
     requireAll: p[0], requireAllHex: '0x' + p[0].toString(16),
-    minAssurance: p[1], maxAge: Number(p[2]), requireRoster: p[3], exists: p[4],
+    minAssurance: p[1], maxAge: Number(p[2]), requiredRegime: p[3], requiredJurisdiction: p[4],
+    trustedIssuer: p[5], requireRoster: p[6], exists: p[7],
   });
 
   return NextResponse.json({
@@ -95,8 +99,8 @@ export async function GET(req: Request) {
       claimsRoot: m[10], evidenceHash: m[11], issuer, issuerTombstoned,
     },
     policies: [
-      { id: 1, name: 'KR VASP production', ...pol(p1 as never), verified: v1 },
-      { id: 2, name: 'KR pilot',           ...pol(p2 as never), verified: v2 },
+      { id: 1, name: 'KR VASP production', ...pol(p1 as never), frozen: frozen1, verified: v1 },
+      { id: 2, name: 'KR sandbox pilot',    ...pol(p2 as never), frozen: frozen2, verified: v2 },
     ],
     epoch: {
       latestEpoch: Number(latestEpoch),

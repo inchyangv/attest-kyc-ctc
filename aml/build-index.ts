@@ -2,11 +2,19 @@
  * Bakes a slim index holding only what screening needs.
  * Parsing 57MB of XML per request is not something a serverless function can do.
  */
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, mkdirSync, statSync } from 'node:fs';
 import { gzipSync } from 'node:zlib';
 import { loadLists } from './loader.js';
 
 const { entries, listVersions, counts } = await loadLists();
+const rawFiles = {
+  OFAC_SDN: 'data/raw/ofac_sdn.xml',
+  UN_CONSOLIDATED: 'data/raw/un_consolidated.xml',
+  EU_FSF: 'data/raw/eu_fsf.xml',
+};
+const sourceUpdatedAt = Object.fromEntries(
+  Object.entries(rawFiles).map(([id, path]) => [id, statSync(path).mtime.toISOString()]),
+);
 
 // Keep names, dates of birth, countries and crypto addresses. Programs, addresses and remarks
 const slim = entries.map(e => ({
@@ -21,7 +29,7 @@ const slim = entries.map(e => ({
 }));
 
 mkdirSync('web/data', { recursive: true });
-const payload = JSON.stringify({ v: 1, listVersions, counts, entries: slim });
+const payload = JSON.stringify({ v: 2, builtAt: new Date().toISOString(), sourceUpdatedAt, listVersions, counts, entries: slim });
 const gz = gzipSync(Buffer.from(payload), { level: 9 });
 writeFileSync('web/data/sanctions-index.json.gz', gz);
 

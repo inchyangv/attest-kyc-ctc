@@ -1,78 +1,52 @@
 {
   "epoch": 1,
-  "root": "0xc863ed0ca2d107a86eae37a1524c9ab1c184c8209d71a7cb92dcbaf45e9b1895",
-  "listVersion": 1,
-  "validUntil": 1793395963,
-  "validUntilIso": "2026-10-30T21:32:43Z",
+  "root": "0xfe6cf3e0fc518c85ec822fd119fa8291461ff5fc1e0a5d6dbe6be1e7e8f5364d",
+  "listVersion": 20260902,
+  "validUntil": 1793461436,
+  "validUntilIso": "2026-10-31T15:43:56Z",
   "validDays": 60,
-  "entryCount": 5,
+  "entryCount": 2,
   "entries": [
     {
       "subject": "0x4816B6e3Acb775f65Da888f185f708E2C8D7a3e2",
-      "attrs": "0x01030002019a00190027006a95d637006c7709b7000000000000000000000000",
-      "claimsRoot": "0x481a2a4b03bb8f8086a05af1ecb4a9300950b0f99dccb4cdd2e5cc1d9db7bfaa",
-      "evidenceHash": "0x6d9c2f5637ea70f34ce774ee6db54492831b6d96dff2fd57dfc48555913a2a8c",
-      "issuer": "0xFD1222e35a536A62f180aA44826656940e86bD5E"
-    },
-    {
-      "subject": "0xD37c5a527bEd9E5B387153D0e639d5EA8E0bec10",
-      "attrs": "0x01030002019a00190027006a95d275006c7705f5000000000000000000000000",
-      "claimsRoot": "0x6ca2ee8f5f8492cb79e7be8864a136914750acc87f8959d29b42515e00caf7fd",
-      "evidenceHash": "0xeec462a085624b917f7cadcf7ed430bb25435ea591a327cbb0164429527c2946",
-      "issuer": "0xFD1222e35a536A62f180aA44826656940e86bD5E"
-    },
-    {
-      "subject": "0xb8FEBEaB3705793474fA05b91Bf5D205855dD3c1",
-      "attrs": "0x01010002019a00190001006a94eb05006c761e85000000000000000000000000",
-      "claimsRoot": "0x6e7b9593fb19589c00d6c5416cb8606aadf69fb3f28acb73eee1a265aaaf05c9",
-      "evidenceHash": "0x3f976d2fa1edd537afada70ffad28e8a16a6af253115dcf578ea72eb7e4f47d7",
-      "issuer": "0xFD1222e35a536A62f180aA44826656940e86bD5E"
-    },
-    {
-      "subject": "0x2f47859B7cDAA95DC9baa7Ffd079E087C277f03e",
-      "attrs": "0x01030002019a00190027006a95d076006c7703f6000000000000000000000000",
-      "claimsRoot": "0x02ad8b9050837481f23328d2a000d382ebe71773de53dda110fe835e066e45e2",
-      "evidenceHash": "0xe688c9812836962c74c37515f3b428e1faa6c013a7831483a74901931a214caa",
+      "attrs": "0x01030002019a00190027006a96ee79006c7821f9000000000000000000000000",
+      "claimsRoot": "0xbe0929d2752cdb11af49dfae213c66a8870ceaa0795f89de98469c4318751777",
+      "evidenceHash": "0x25a67531299129104935cab221d560df0bba49ccda02c3b20579e8c1127b6ee6",
       "issuer": "0xFD1222e35a536A62f180aA44826656940e86bD5E"
     },
     {
       "subject": "0x77858131d1E0eAaAe2c38c2cce508c358C9b58ee",
-      "attrs": "0x01030002019a00190027006a95d638006c7709b8000000000000000000000000",
-      "claimsRoot": "0xc9a56c52fb2c5d1f948f0cf0a9b1c7e5e9c6a3efeac51279ba3fc9466ddd0c1e",
-      "evidenceHash": "0x8dd43b5901d58a822566e00259a067393e0fe3be11178a3e512f83e2b7b76c53",
+      "attrs": "0x01030002019a00190027006a96ee7a006c7821fa000000000000000000000000",
+      "claimsRoot": "0xb2d8b426cf6e674c64d05170082c66a1876978184421c3762ba4348a49801a76",
+      "evidenceHash": "0x83ef85ec3983c392ccb2d39fcae847457f9831d93572afbc67ae8ba546fc4862",
       "issuer": "0xFD1222e35a536A62f180aA44826656940e86bD5E"
     }
   ],
-  "excluded": [
-    {
-      "subject": "0xFD1222e35a536A62f180aA44826656940e86bD5E",
-      "reason": "tombstoned on CC3 (revoked or sanctioned), so it is out of the roster — absence is the revocation"
-    }
-  ],
+  "excluded": [],
   "setEpochPublisherTx": null,
-  "publishEpochTx": "0x43dae09bdb1eb2e8eb209485aaf0a0112916d01b5c49858acbcef44b4acfb3f7",
-  "sepoliaBlock": 11608333,
-  "sepoliaConfirmedAt": "2026-08-31T21:33:00Z",
-  "cc3AcceptedAt": "2026-08-31T21:41:45Z",
-  "propagationSeconds": 525,
+  "publishEpochTx": "0x2adefae22bd29e7fc43b9f9161f6c722cc2deb4eae6bc720aca5a2b65e7816df",
+  "sepoliaBlock": 11613568,
+  "sepoliaConfirmedAt": "2026-09-01T15:44:00Z",
+  "cc3AcceptedAt": "2026-09-01T15:52:00Z",
+  "propagationSeconds": 480,
   "propagationMethod": "source block timestamp to CC3 EpochAccepted block timestamp",
-  "registryProofMode": false,
-  "offChainChecks": [
+  "registryProofMode": true,
+  "checkedAt": "2026-09-01T15:54:31.133Z",
+  "checks": [
     {
-      "label": "inclusion of 0xb8FEBEaB… under the on-chain root",
+      "label": "verifyWithRoster(0x4816B6e3…, policy 2 KR pilot)",
       "expected": true,
       "actual": true
     },
     {
-      "label": "non-inclusion of 0x00000000… (never issued) under the on-chain root",
-      "expected": true,
-      "actual": true
+      "label": "verifyWithRoster(0x4816B6e3…, policy 1 KR VASP production)",
+      "expected": false,
+      "actual": false
     },
     {
-      "label": "non-inclusion of 0xFD1222e3… (revoked) under the on-chain root",
+      "label": "proveNotInRoster(0x00000000…, never issued)",
       "expected": true,
       "actual": true
     }
-  ],
-  "checkedAt": "2026-08-31T21:46:12.281Z"
+  ]
 }

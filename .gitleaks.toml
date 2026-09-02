@@ -1,0 +1,29 @@
+title = "Proofmark gitleaks configuration"
+minVersion = "8.25.0"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Public epoch roots in generated prose"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+paths = ['''(^|/)(README\.md|deployments/epoch-[0-9]+\.md)$''']
+regexes = ['''sorted-key Merkle root, `0x[0-9a-fA-F]{64}`''']
+
+[[allowlists]]
+description = "Public EU sanctions download token in the official dataset URL"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+paths = ['''(^|/)aml/fetch-lists\.sh$''']
+regexes = ['''webgate\.ec\.europa\.eu/fsd/fsf/public/files/xmlFullSanctionsList_1_1/content\?token=[A-Za-z0-9_-]+''']
+
+[[allowlists]]
+description = "Public Merkle key attack vectors"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+paths = ['''(^|/)test/RosterProof\.t\.sol$''']
+regexes = ['''targetKey = 0x[0-9a-fA-F]{64};''']

@@ -6,6 +6,7 @@ import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step
 
 interface IProofmarkRegistry {
     function isVerified(address subject, uint256 policyId) external view returns (bool);
+    function policyFrozen(uint256 policyId) external view returns (bool);
 }
 
 /// @title GatedRwaNote
@@ -26,15 +27,19 @@ contract GatedRwaNote is ERC20, Ownable2Step {
     /// @notice The compliance policy this token requires. Immutable.
     uint256 public immutable POLICY_ID;
 
+    bool private complianceBypass;
+
     error SenderNotVerified(address from, uint256 policyId);
     error RecipientNotVerified(address to, uint256 policyId);
+    error PolicyMustBeFrozen(uint256 policyId);
 
     constructor(string memory name_, string memory symbol_, address registry, uint256 policyId, address initialOwner)
         ERC20(name_, symbol_)
         Ownable(initialOwner)
     {
         require(registry != address(0), "zero registry");
-        REGISTRY  = IProofmarkRegistry(registry);
+        if (!IProofmarkRegistry(registry).policyFrozen(policyId)) revert PolicyMustBeFrozen(policyId);
+        REGISTRY = IProofmarkRegistry(registry);
         POLICY_ID = policyId;
     }
 
@@ -48,6 +53,21 @@ contract GatedRwaNote is ERC20, Ownable2Step {
         _burn(msg.sender, amount);
     }
 
+    /// @notice Compliance recovery from a holder who can no longer initiate a transfer. The
+    ///         destination still has to pass policy; use forceBurn for redemption/seizure.
+    function forceTransfer(address from, address to, uint256 amount) external onlyOwner {
+        complianceBypass = true;
+        _transfer(from, to, amount);
+        complianceBypass = false;
+    }
+
+    /// @notice Forced redemption/seizure path for a blocked holder.
+    function forceBurn(address from, uint256 amount) external onlyOwner {
+        complianceBypass = true;
+        _burn(from, amount);
+        complianceBypass = false;
+    }
+
     /// @dev OpenZeppelin 5.x routes mint (from == 0), burn (to == 0) and transfer through this hook.
     ///
     ///      Both sides are checked. Gate only the sender and a sanctioned wallet can still receive.
@@ -55,7 +75,7 @@ contract GatedRwaNote is ERC20, Ownable2Step {
     ///      The zero address is exempt. Calling isVerified(address(0)) here would block every mint
     ///      and every burn.
     function _update(address from, address to, uint256 value) internal override {
-        if (from != address(0) && !REGISTRY.isVerified(from, POLICY_ID)) {
+        if (!complianceBypass && from != address(0) && !REGISTRY.isVerified(from, POLICY_ID)) {
             revert SenderNotVerified(from, POLICY_ID);
         }
         if (to != address(0) && !REGISTRY.isVerified(to, POLICY_ID)) {

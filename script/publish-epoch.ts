@@ -41,35 +41,38 @@ import {
 } from '../pipeline/roster.js';
 import { packAttrs } from '../pipeline/attrs.js';
 
-// ── Address book. deployments/cc3-testnet.json, pinned here so a dry run needs no files. ──
+const HERE = dirname(fileURLToPath(import.meta.url));
+const REPO = join(HERE, '..');
+const deployment = JSON.parse(readFileSync(join(REPO, 'deployments', 'cc3-testnet.json'), 'utf8')) as {
+  contracts: { ComplianceSource: string; ProofmarkASC: string; ProofmarkRegistry: string };
+};
 
-const SOURCE_ADDRESS   = '0x93C62D3016123Da0aBdB4AC1857564c30CbE5629';   // ComplianceSource, Sepolia
-const ASC_ADDRESS      = '0x93C62D3016123Da0aBdB4AC1857564c30CbE5629';   // ProofmarkASC, CC3 (same address, different bytecode)
-const REGISTRY_ADDRESS = '0x874e0Fd030a8Fe6c7a06835354531b68A31f5FCc';   // ProofmarkRegistry, CC3
+// ── Address book. The checked-in deployment is the default; shell env can override it. ──
+
+const SOURCE_ADDRESS   = process.env.SOURCE_CONTRACT_ADDRESS ?? deployment.contracts.ComplianceSource;
+const ASC_ADDRESS      = process.env.ASC_CONTRACT_ADDRESS ?? deployment.contracts.ProofmarkASC;
+const REGISTRY_ADDRESS = process.env.REGISTRY_CONTRACT_ADDRESS ?? deployment.contracts.ProofmarkRegistry;
 
 const DEFAULT_SOURCE_RPC = 'https://ethereum-sepolia-rpc.publicnode.com';
 const DEFAULT_HUB_RPC    = 'https://rpc.cc3-testnet.creditcoin.network';
 
-/** The mark the demo is built around: passes deployed policy 2, fails policy 1. */
-const DEMO_SUBJECT = '0xb8FEBEaB3705793474fA05b91Bf5D205855dD3c1';
-/** Deployer, issuer and deliberately revoked demo subject, all one testnet EOA. Excluded as a subject. */
-const REVOKED_SUBJECT = '0xFD1222e35a536A62f180aA44826656940e86bD5E';
-/** Never issued to. The other half of the non-membership demonstration. */
+/** The current demo holder: passes frozen sandbox policy 2, fails production policy 1. */
+const DEMO_SUBJECT = '0x4816B6e3Acb775f65Da888f185f708E2C8D7a3e2';
+/** Never issued to: the fail-closed non-membership demonstration for the current deployment. */
 const NEVER_ISSUED = '0x00000000000000000000000000000000DeaDBeef';
 
-const POLICY_PILOT = 2n;        // KR pilot, requireAll 0x190001
-const POLICY_PRODUCTION = 1n;   // KR VASP production, requireAll 0x10024, minAssurance 2
+const POLICY_PILOT = 2n;        // KR sandbox pilot, requireAll 0x10024, regime 2
+const POLICY_PRODUCTION = 1n;   // KR production, requireAll 0x10024, regime 1
 
 // ── ABIs. Hand-written fragments, so the script runs without `forge build`. ──
 
 /** ComplianceSource.MarkIssued(address,bytes32,address,bytes32,bytes32), docs/04 section 8. */
 const MARK_ISSUED_TOPIC = '0xffac883eea6676651044a7e28ee0527defa8e3fce7558142c598e6569ef5a5f3';
-/** ProofmarkASC.MarkMaterialized(address,bytes32,uint64) */
-const MARK_MATERIALIZED_TOPIC = '0xd39908fbf96ca1a6a6921f1ba6a603b019b3b87fbb4262c3f40ef45e3373d49a';
-/** ProofmarkASC.MarkTombstoned(address,uint8,uint64) */
-const MARK_TOMBSTONED_TOPIC = '0x880e750f20f345a8a90fdaf287f423e33cea724427e3838a9e906d85b4dde2e3';
+/** ProofmarkASC events. Compute these from the signature so a schema change cannot leave stale topics. */
+const MARK_MATERIALIZED_TOPIC = ethers.id('MarkMaterialized(address,bytes32,uint64,uint64)');
+const MARK_TOMBSTONED_TOPIC = ethers.id('MarkTombstoned(address,uint8,uint64,uint64)');
 /** ProofmarkASC.EpochAccepted(uint32,bytes32,uint40) */
-const EPOCH_ACCEPTED_TOPIC = '0xfcff600f0b9092688b51858706a9ecb86f00ca2cc9a2cc7fd495f6ddeee9663c';
+const EPOCH_ACCEPTED_TOPIC = ethers.id('EpochAccepted(uint32,bytes32,uint40)');
 
 const SOURCE_ABI = [
   'function lastEpoch() view returns (uint32)',
@@ -90,13 +93,10 @@ const ASC_ABI = [
 
 const REGISTRY_ABI = [
   'function verifyWithRoster(address subject, uint256 policyId, tuple(bytes32 attrs, bytes32 claimsRoot, bytes32 evidenceHash, address issuer) mark, tuple(uint256 index, bytes32[] siblings) inclusion) view returns (bool)',
-  'function proveNotInRoster(address subject, tuple(tuple(uint256 index, bytes32[] siblings) left, bytes32 leftLeaf, bytes32 leftKey, tuple(uint256 index, bytes32[] siblings) right, bytes32 rightLeaf, bytes32 rightKey) proof) view returns (bool)',
+  'function proveNotInRoster(address subject, tuple(tuple(uint256 index, bytes32[] siblings) left, bytes32 leftKey, bytes32 leftMark, tuple(uint256 index, bytes32[] siblings) right, bytes32 rightKey, bytes32 rightMark) proof) view returns (bool)',
 ];
 
 // ── Small helpers ──
-
-const HERE = dirname(fileURLToPath(import.meta.url));
-const REPO = join(HERE, '..');
 
 const num = (name: string, dflt: number): number => {
   const v = process.env[name];
@@ -243,8 +243,10 @@ async function hubKnownSubjects(
       if (l.topics[0] !== MARK_MATERIALIZED_TOPIC && l.topics[0] !== MARK_TOMBSTONED_TOPIC) continue;
       hits++;
       subjects.add(ethers.getAddress(ethers.dataSlice(l.topics[1], 12)));
-      // data: MarkMaterialized (bytes32 attrs, uint64 blockHeight) · MarkTombstoned (uint8 status, uint64 blockHeight)
-      const shape = l.topics[0] === MARK_MATERIALIZED_TOPIC ? ['bytes32', 'uint64'] : ['uint8', 'uint64'];
+      // data: MarkMaterialized (bytes32 attrs, uint64 blockHeight, uint64 txIndex)
+      //    or MarkTombstoned (uint8 status, uint64 blockHeight, uint64 txIndex).
+      const shape = l.topics[0] === MARK_MATERIALIZED_TOPIC
+        ? ['bytes32', 'uint64', 'uint64'] : ['uint8', 'uint64', 'uint64'];
       const srcHeight = Number(coder.decode(shape, l.data)[1]);
       if (srcHeight > 0) minSourceHeight = minSourceHeight === null ? srcHeight : Math.min(minSourceHeight, srcHeight);
     }
@@ -468,10 +470,6 @@ function printRoster(r: Roster): void {
     say(`  in   ${e.subject}  leaf ${leafIndexOf(i)}  attrs ${e.attrs}`);
   });
   for (const x of r.excluded) say(`  out  ${x.subject}  excluded: ${x.reason}`);
-  if (!r.excluded.some((x) => x.subject.toLowerCase() === REVOKED_SUBJECT.toLowerCase())
-    && !tree.entries.some((e) => e.subject.toLowerCase() === REVOKED_SUBJECT.toLowerCase())) {
-    say(`  out  ${REVOKED_SUBJECT}  excluded: no MarkIssued event in the scanned range, so absent from the roster by construction`);
-  }
   say(`  root ${tree.root}`);
 }
 
@@ -490,7 +488,7 @@ function selfCheck(tree: RosterTree): void {
   say('  self-check inclusion: ok');
 
   let nonInclusionOk = true;
-  for (const target of [REVOKED_SUBJECT, NEVER_ISSUED]) {
+  for (const target of [NEVER_ISSUED]) {
     try {
       if (!verifyNonInclusion(tree.root, target, nonInclusionProof(tree, target))) {
         nonInclusionOk = false;
@@ -542,9 +540,9 @@ function freshnessNote(p: EpochParams): string[] {
 interface Verdict { label: string; expected: boolean; actual: boolean }
 
 /** `verifyWithRoster(address,uint256,(bytes32,bytes32,bytes32,address),(uint256,bytes32[]))` */
-const SEL_VERIFY_WITH_ROSTER = '82a45d56';
+const SEL_VERIFY_WITH_ROSTER = ethers.id('verifyWithRoster(address,uint256,(bytes32,bytes32,bytes32,address),(uint256,bytes32[]))').slice(2, 10);
 /** `proveNotInRoster(address,((uint256,bytes32[]),bytes32,bytes32,(uint256,bytes32[]),bytes32,bytes32))` */
-const SEL_PROVE_NOT_IN_ROSTER = 'b755ed28';
+const SEL_PROVE_NOT_IN_ROSTER = ethers.id('proveNotInRoster(address,((uint256,bytes32[]),bytes32,bytes32,(uint256,bytes32[]),bytes32,bytes32))').slice(2, 10);
 
 /**
  * Does the deployed registry actually carry the proof-mode entry points.
@@ -560,7 +558,8 @@ async function registryHasProofMode(hub: ethers.JsonRpcProvider): Promise<boolea
 }
 
 /**
- * The same three proofs, verified against the root read from chain, by `pipeline/roster.ts`.
+ * The same inclusion and non-inclusion proofs, verified against the root read from chain, by
+ * `pipeline/roster.ts`.
  *
  * This is NOT a contract verdict and is never recorded as one. It is what can still be shown when
  * the deployed registry has no proof-mode path: the published root is the tree we built, and the
@@ -578,7 +577,7 @@ function offChainVerdicts(tree: RosterTree, onChainRoot: string): Verdict[] {
       actual: verifyInclusion(onChainRoot, rosterLeaf(tree.entries[i]), inclusionProof(tree, leafIndexOf(i))),
     });
   }
-  for (const [target, what] of [[NEVER_ISSUED, 'never issued'], [REVOKED_SUBJECT, 'revoked']] as const) {
+  for (const [target, what] of [[NEVER_ISSUED, 'never issued']] as const) {
     let actual = false;
     try {
       actual = verifyNonInclusion(onChainRoot, target, nonInclusionProof(tree, target));
@@ -612,11 +611,11 @@ async function rosterVerdicts(hub: ethers.JsonRpcProvider, tree: RosterTree): Pr
     actual: await retry('verifyWithRoster(policy 1)', () => reg.verifyWithRoster(DEMO_SUBJECT, POLICY_PRODUCTION, mark, inc)),
   });
 
-  for (const [target, what] of [[NEVER_ISSUED, 'never issued'], [REVOKED_SUBJECT, 'revoked']] as const) {
+  for (const [target, what] of [[NEVER_ISSUED, 'never issued']] as const) {
     const p = nonInclusionProof(tree, target);
     const arg = {
-      left: p.left, leftLeaf: p.leftLeaf, leftKey: p.leftKey,
-      right: p.right, rightLeaf: p.rightLeaf, rightKey: p.rightKey,
+      left: p.left, leftKey: p.leftKey, leftMark: p.leftMark,
+      right: p.right, rightKey: p.rightKey, rightMark: p.rightMark,
     };
     out.push({
       label: `proveNotInRoster(${short(target)}, ${what})`,
@@ -701,14 +700,14 @@ function writeSnippet(rec: Record): string {
   b.push('. ');
   if (rec.checks?.length) {
     const v = (i: number) => String(rec.checks![i].actual);
-    b.push(`Against that root the registry answers \`verifyWithRoster\` ${v(0)} under policy 2 and ${v(1)} under policy 1 for the same mark, and \`proveNotInRoster\` ${v(2)} for an address never issued to and ${v(3)} for the revoked subject — revocation as positive evidence of absence, not a missing record. `);
+    b.push(`Against that root the registry answers \`verifyWithRoster\` ${v(0)} under policy 2 and ${v(1)} under policy 1 for the same mark, and \`proveNotInRoster\` ${v(2)} for an address never issued to. The same adjacency proof is how a future subject removed from a roster is proven absent. `);
   } else if (rec.registryProofMode === false) {
     // Say what did not run. A missing deployment is not a passing check with a caveat.
     const off = rec.offChainChecks ?? [];
     const allOff = off.length > 0 && off.every((c) => c.expected === c.actual);
     b.push(`What is **not** exercised on chain: the registry's proof-mode entry points. The deployed \`ProofmarkRegistry\` at \`${REGISTRY_ADDRESS}\` is an earlier build whose runtime code contains neither \`verifyWithRoster\` nor \`proveNotInRoster\`, so those verdicts did not run and are not claimed here. `);
     if (allOff) {
-      b.push(`The published root was verified against \`pipeline/roster.ts\` — inclusion for the mark, non-membership for an address never issued to and for the revoked subject, all against the root read back from CC3 — and \`test/RosterProof.t.sol\` pins \`src/lib/RosterProof.sol\` to that implementation, but agreeing in tests is not a deployed contract answering. `);
+      b.push(`The published root was verified against \`pipeline/roster.ts\` — inclusion for the mark and non-membership for an address never issued to, both against the root read back from CC3 — and \`test/RosterProof.t.sol\` pins \`src/lib/RosterProof.sol\` to that implementation, but agreeing in tests is not a deployed contract answering. `);
     }
     b.push('Cache mode is unaffected: `isVerified` on the deployed registry answers exactly as before. ');
   }
@@ -744,7 +743,7 @@ function usage(): void {
   --publish   Send at most two transactions on Sepolia, each on its own: setEpochPublisher (only
               when the signer is the owner and not yet a publisher), then publishEpoch. Then poll
               ProofmarkASC.latestEpoch() on CC3 until the worker has carried the event across
-              (attestation measured 6.5-8.5 minutes) and record the measurement.
+              and record the observed propagation time.
   --check     View calls only. Rebuild the roster, compare it with the on-chain root, then ask the
               deployed ProofmarkRegistry for membership and non-membership verdicts.
   --help      This text.
@@ -885,7 +884,7 @@ async function publish(): Promise<void> {
   // The worker carries the event: it watches ComplianceSource, waits for the Attestcoin
   // attestation, then submits execute() to the ASC. Nothing here can hurry that along.
   step('Waiting for CC3 to accept the epoch');
-  say('  the separately-running worker carries the event; attestation measured 6.5 to 8.5 minutes');
+  say('  the separately-running worker carries the event; this run records the observed propagation time');
   const pollMs = num('EPOCH_POLL_SECONDS', 15) * 1000;
   const timeoutMs = num('EPOCH_TIMEOUT_MINUTES', 30) * 60_000;
   const started = Date.now();
@@ -906,7 +905,7 @@ async function publish(): Promise<void> {
     bad('  - is `npm run worker` running?');
     bad('  - was it started BEFORE the publish transaction? Its cursor starts at the current head,');
     bad(`    so an earlier event is never seen. Restart it with WORKER_START_BLOCK=${rc.blockNumber}.`);
-    bad('  - does state/worker.json list this transaction, and in what state?');
+    bad('  - does WORKER_STATE_PATH (currently state/worker-v2.json) list this transaction, and in what state?');
     process.exit(1);
   }
 

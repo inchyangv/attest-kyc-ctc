@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
-import { ConfigError, TokenError, open, requireIdVendor, seal } from '@/lib/kyc-server';
+import { ConfigError, TokenError, assertSameFlow, flowBinding, flowFromWalletToken, open, requireIdVendor, seal, type FlowBinding } from '@/lib/kyc-server';
+import { guardError, guardRequest } from '@/lib/request-guard';
 import { VendorError, docHashOf, type IdDocType, type IdDocumentInput, type IdDocumentResult, type TwoWayContinuation } from '@pipeline/adapters/kr.js';
 
 export const runtime = 'nodejs';
@@ -7,10 +8,11 @@ export const runtime = 'nodejs';
 const MAX_IMAGE = 5 * 1024 * 1024;
 
 const fail = (e: unknown) => {
+  const guarded = guardError(e); if (guarded) return guarded;
   if (e instanceof ConfigError) return NextResponse.json({ error: e.message, missing: e.missing }, { status: 503 });
   if (e instanceof TokenError) return NextResponse.json({ error: e.message }, { status: 400 });
   if (e instanceof VendorError) return NextResponse.json({ error: e.message, code: e.code ?? null, ref: e.ref ?? null }, { status: 422 });
-  return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });
+  return NextResponse.json({ error: 'internal document verification error' }, { status: 500 });
 };
 
 const text = (form: FormData, k: string) => { const v = form.get(k); return typeof v === 'string' ? v.trim() : ''; };
@@ -25,7 +27,10 @@ const digits = (s: string) => s.replace(/\D/g, '');
  */
 export async function POST(req: Request) {
   try {
+    guardRequest(req, { bucket: 'kyc-id', limit: 20, windowMs: 10 * 60_000, maxBodyBytes: 6 * 1024 * 1024, sameOrigin: true });
     const form = await req.formData();
+    const wallet = flowFromWalletToken(text(form, 'walletProof'));
+    const binding = flowBinding(wallet);
     const action = text(form, 'action') || 'verify';
     const docType: IdDocType = text(form, 'docType') === 'DL' ? 'DL' : 'RRC';
     const file = form.get('image');
@@ -53,7 +58,8 @@ export async function POST(req: Request) {
 
     const twoWayToken = text(form, 'twoWayToken');
     if (twoWayToken) {
-      const t = open<TwoWayContinuation & { docHash: string }>('idTwoWay', twoWayToken);
+      const t = open<TwoWayContinuation & { docHash: string } & FlowBinding>('idTwoWay', twoWayToken);
+      assertSameFlow(wallet, t, 'document continuation');
       if (t.docHash !== docHashOf(image)) return NextResponse.json({ error: 'the document changed between legs; start again' }, { status: 400 });
       input.twoWay = { jobIndex: t.jobIndex, threadIndex: t.threadIndex, jti: t.jti, twoWayTimestamp: t.twoWayTimestamp };
       const secureNo = text(form, 'secureNo');
@@ -70,7 +76,7 @@ export async function POST(req: Request) {
         status: 'two_way',
         challenge: { method: rest.method, message: message ?? null, imageBase64: imageBase64 ?? null },
         // The authority holds the session for about three minutes.
-        twoWayToken: seal('idTwoWay', { ...rest, docHash: docHashOf(image) }, 170),
+        twoWayToken: seal('idTwoWay', { ...rest, docHash: docHashOf(image), ...binding }, 170),
       });
     }
 
@@ -79,7 +85,7 @@ export async function POST(req: Request) {
     const r: IdDocumentResult = result;
     return NextResponse.json({
       status: r.authentic ? 'verified' : 'rejected',
-      idProof: seal('id', r as unknown as Record<string, unknown>, 30 * 60),
+      idProof: seal('id', { ...r, ...binding } as unknown as Record<string, unknown>, 30 * 60),
       summary: {
         docType: r.docType, docHash: r.docHash, authenticityChecked: r.authenticityChecked, authentic: r.authentic,
         live: r.live, vendor: r.vendor, ref: r.ref ?? null, code: r.code ?? null,

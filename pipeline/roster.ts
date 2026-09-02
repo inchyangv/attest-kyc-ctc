@@ -31,6 +31,8 @@ export interface RosterTree {
   entries: RosterEntry[];
   /** All keys including sentinels. `keys[i+1]` corresponds to `entries[i]` */
   keys: string[];
+  /** Mark hashes aligned with keys. Sentinel marks are zero. */
+  marks: string[];
   /** All leaves including sentinels */
   leaves: string[];
   layers: string[][];           // layers[0] = leaves
@@ -102,11 +104,10 @@ export function buildRoster(entries: readonly RosterEntry[], namespace: string =
   // Sentinels at both ends, so every non-membership is an adjacency proof
   const sorted = withKeys.map((x) => x.e);
   const keys = [MIN_KEY, ...withKeys.map((x) => x.k), MAX_KEY];
-  const leaves = [
-    sentinelLeaf(MIN_KEY),
-    ...sorted.map((e) => rosterLeaf(e, namespace)),
-    sentinelLeaf(MAX_KEY),
-  ];
+  const marks = [SENTINEL_MARK, ...sorted.map(markHash), SENTINEL_MARK];
+  const leaves = keys.map((key, i) =>
+    ethers.keccak256(ethers.solidityPacked(['bytes32', 'bytes32'], [key, marks[i]])),
+  );
 
   const layers: string[][] = [leaves];
   while (layers[layers.length - 1].length > 1) {
@@ -119,7 +120,7 @@ export function buildRoster(entries: readonly RosterEntry[], namespace: string =
     layers.push(next);
   }
 
-  return { entries: sorted, keys, leaves, layers, root: layers[layers.length - 1][0] };
+  return { entries: sorted, keys, marks, leaves, layers, root: layers[layers.length - 1][0] };
 }
 
 export interface InclusionProof {
@@ -155,8 +156,8 @@ export function verifyInclusion(root: string, leaf: string, proof: InclusionProo
  * Sentinels remove the boundary cases.
  */
 export interface NonInclusionProof {
-  left: InclusionProof;  leftLeaf: string;  leftKey: string;
-  right: InclusionProof; rightLeaf: string; rightKey: string;
+  left: InclusionProof;  leftKey: string;  leftMark: string;
+  right: InclusionProof; rightKey: string; rightMark: string;
 }
 
 /**
@@ -172,8 +173,8 @@ export function nonInclusionProof(tree: RosterTree, target: string, namespace: s
   const lo = hi - 1;
 
   return {
-    left:  inclusionProof(tree, lo), leftLeaf:  tree.leaves[lo], leftKey:  tree.keys[lo],
-    right: inclusionProof(tree, hi), rightLeaf: tree.leaves[hi], rightKey: tree.keys[hi],
+    left:  inclusionProof(tree, lo), leftKey:  tree.keys[lo], leftMark:  tree.marks[lo],
+    right: inclusionProof(tree, hi), rightKey: tree.keys[hi], rightMark: tree.marks[hi],
   };
 }
 
@@ -185,7 +186,14 @@ export function verifyNonInclusion(
   if (!(proof.leftKey < tk && tk < proof.rightKey)) return false;
   // 2. are the leaves consecutive. Without this a forged gap that skips entries passes.
   if (proof.right.index !== proof.left.index + 1) return false;
-  // 3. do both leaves actually belong to this root
-  return verifyInclusion(root, proof.leftLeaf, proof.left)
-      && verifyInclusion(root, proof.rightLeaf, proof.right);
+  // 3. bind each ordering key to the leaf it claims. The old shape accepted keys and leaves
+  // independently, allowing real adjacent leaves to be relabelled around a present target.
+  const leftLeaf = ethers.keccak256(
+    ethers.solidityPacked(['bytes32', 'bytes32'], [proof.leftKey, proof.leftMark]),
+  );
+  const rightLeaf = ethers.keccak256(
+    ethers.solidityPacked(['bytes32', 'bytes32'], [proof.rightKey, proof.rightMark]),
+  );
+  return verifyInclusion(root, leftLeaf, proof.left)
+      && verifyInclusion(root, rightLeaf, proof.right);
 }

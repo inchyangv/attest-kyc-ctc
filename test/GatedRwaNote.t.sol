@@ -17,32 +17,32 @@ import {ReceiptFixture} from "./ReceiptFixture.sol";
 /// @notice Checks the demo script in docs/03-product-plan.md section 10 actually runs.
 contract GatedRwaNoteTest is Test {
     address constant PRECOMPILE = 0x0000000000000000000000000000000000000FD2;
-    uint64  constant SEPOLIA_KEY = 1;
+    uint64 constant SEPOLIA_KEY = 1;
 
     uint32 constant KR_VASP = Methods.ID_DOC_AUTHENTICITY | Methods.BANK_ACCOUNT | Methods.SANCTIONS_SCREENED;
-    uint32 constant EU_RWA  = Methods.LIVENESS | Methods.SANCTIONS_SCREENED | Methods.PEP_SCREENED;
+    uint32 constant EU_RWA = Methods.LIVENESS | Methods.SANCTIONS_SCREENED | Methods.PEP_SCREENED;
 
-    ProofmarkASC      asc;
+    ProofmarkASC asc;
     ProofmarkRegistry reg;
-    ComplianceSource  src;
-    ReceiptFixture    fx;
-    GatedRwaNote      krNote;
+    ComplianceSource src;
+    ReceiptFixture fx;
+    GatedRwaNote krNote;
 
-    address owner  = address(0xA11CE);
+    address owner = address(0xA11CE);
     address issuer = address(0x1554E4);
-    address alice  = address(0xA11);
-    address bob    = address(0xB0B);
+    address alice = address(0xA11);
+    address bob = address(0xB0B);
     address mallory = address(0xBAD1);
 
     uint256 krPolicy;
     uint40 constant ISSUED_AT = 1_700_000_000;
-    uint40 constant EXPIRY    = 1_800_000_000;
+    uint40 constant EXPIRY = 1_800_000_000;
 
     function setUp() public {
         vm.etch(PRECOMPILE, address(new MockBlockProver()).code);
         vm.warp(ISSUED_AT + 1 days);
 
-        fx  = new ReceiptFixture();
+        fx = new ReceiptFixture();
         src = new ComplianceSource(owner);
 
         vm.startPrank(owner);
@@ -52,9 +52,19 @@ contract GatedRwaNoteTest is Test {
         vm.stopPrank();
 
         reg = new ProofmarkRegistry(address(asc));
-        krPolicy = reg.registerPolicy(Policy({
-            requireAll: KR_VASP, minAssurance: 2, maxAge: 0, requireRoster: false, exists: false
-        }));
+        krPolicy = reg.registerPolicy(
+            Policy({
+                requireAll: KR_VASP,
+                minAssurance: 2,
+                maxAge: 0,
+                requiredRegime: 410,
+                requiredJurisdiction: 410,
+                trustedIssuer: issuer,
+                requireRoster: false,
+                exists: false
+            })
+        );
+        reg.freezePolicy(krPolicy);
 
         krNote = new GatedRwaNote("KR Credit Note", "KRCN", address(reg), krPolicy, owner);
     }
@@ -102,7 +112,7 @@ contract GatedRwaNoteTest is Test {
 
         // 2. once issued, minting works
         _issue(alice, KR_VASP, 100, 1);
-        _issue(bob,   KR_VASP, 101, 2);
+        _issue(bob, KR_VASP, 101, 2);
         vm.prank(owner);
         krNote.mint(alice, 1000);
         assertEq(krNote.balanceOf(alice), 1000);
@@ -136,7 +146,7 @@ contract GatedRwaNoteTest is Test {
 
     /// @dev Sending to a sanctioned recipient is blocked too.
     function test_BlocksTransferToSanctionedRecipient() public {
-        _issue(alice,   KR_VASP, 100, 20);
+        _issue(alice, KR_VASP, 100, 20);
         _issue(mallory, KR_VASP, 101, 21);
         vm.prank(owner);
         krNote.mint(alice, 1000);
@@ -157,7 +167,7 @@ contract GatedRwaNoteTest is Test {
         krNote.mint(alice, 1000);
 
         vm.prank(alice);
-        krNote.burn(400);   // to == address(0); isVerified(0) must not be called
+        krNote.burn(400); // to == address(0); isVerified(0) must not be called
         assertEq(krNote.balanceOf(alice), 600);
         assertEq(krNote.totalSupply(), 600);
     }
@@ -167,21 +177,31 @@ contract GatedRwaNoteTest is Test {
     /// @dev The same mark passes on the KR note and is rejected on the EU note.
     ///      The portability claim is executable here, not just described.
     function test_SameMarkPassesKrNoteButFailsEuNote() public {
-        uint256 euPolicy = reg.registerPolicy(Policy({
-            requireAll: EU_RWA, minAssurance: 2, maxAge: 0, requireRoster: false, exists: false
-        }));
+        uint256 euPolicy = reg.registerPolicy(
+            Policy({
+                requireAll: EU_RWA,
+                minAssurance: 2,
+                maxAge: 0,
+                requiredRegime: 276,
+                requiredJurisdiction: 276,
+                trustedIssuer: issuer,
+                requireRoster: false,
+                exists: false
+            })
+        );
+        reg.freezePolicy(euPolicy);
         GatedRwaNote euNote = new GatedRwaNote("EU RWA Note", "EURN", address(reg), euPolicy, owner);
 
         // issued through the Korean flow
         _issue(alice, KR_VASP, 100, 40);
 
         vm.prank(owner);
-        krNote.mint(alice, 1000);                 // KR note: passes
+        krNote.mint(alice, 1000); // KR note: passes
         assertEq(krNote.balanceOf(alice), 1000);
 
         vm.prank(owner);
         vm.expectRevert(abi.encodeWithSelector(GatedRwaNote.RecipientNotVerified.selector, alice, euPolicy));
-        euNote.mint(alice, 1000);                 // EU note: rejected
+        euNote.mint(alice, 1000); // EU note: rejected
     }
 
     // Frontend helper
@@ -198,5 +218,49 @@ contract GatedRwaNoteTest is Test {
     function test_PolicyIdIsImmutable() public view {
         assertEq(krNote.POLICY_ID(), krPolicy);
         assertEq(address(krNote.REGISTRY()), address(reg));
+    }
+
+    function test_DeploymentRejectsMutablePolicy() public {
+        uint256 mutablePolicy = reg.registerPolicy(
+            Policy({
+                requireAll: KR_VASP,
+                minAssurance: 2,
+                maxAge: 0,
+                requiredRegime: 410,
+                requiredJurisdiction: 410,
+                trustedIssuer: issuer,
+                requireRoster: false,
+                exists: false
+            })
+        );
+        vm.expectRevert(abi.encodeWithSelector(GatedRwaNote.PolicyMustBeFrozen.selector, mutablePolicy));
+        new GatedRwaNote("Mutable", "MUT", address(reg), mutablePolicy, owner);
+    }
+
+    function test_OwnerCanForceBurnBlockedHolder() public {
+        _issue(alice, KR_VASP, 100, 60);
+        vm.prank(owner);
+        krNote.mint(alice, 1000);
+        _revoke(alice, 200, 61);
+
+        vm.prank(owner);
+        krNote.forceBurn(alice, 400);
+        assertEq(krNote.balanceOf(alice), 600);
+    }
+
+    function test_ForceTransferStillRequiresVerifiedRecipient() public {
+        _issue(alice, KR_VASP, 100, 70);
+        vm.prank(owner);
+        krNote.mint(alice, 1000);
+        _revoke(alice, 200, 71);
+
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(GatedRwaNote.RecipientNotVerified.selector, bob, krPolicy));
+        krNote.forceTransfer(alice, bob, 100);
+
+        _issue(bob, KR_VASP, 300, 72);
+        vm.prank(owner);
+        krNote.forceTransfer(alice, bob, 100);
+        assertEq(krNote.balanceOf(bob), 100);
     }
 }

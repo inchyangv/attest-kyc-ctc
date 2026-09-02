@@ -6,7 +6,6 @@ import { Button } from '@/components/ui/Button';
 import { Field, Input } from '@/components/ui/Field';
 import { Tag, type Tone } from '@/components/ui/Tag';
 import { Status } from '@/components/ui/Status';
-import { Stats, Stat } from '@/components/ui/Stat';
 import { Band } from '@/components/ui/Band';
 import { Hash } from '@/components/ui/Hash';
 import { DetailRow, DetailList } from '@/components/ui/DetailRow';
@@ -29,15 +28,17 @@ type Side = { configured: boolean; vendor: string | null; live: boolean; demo: b
 type Config = {
   demo: boolean; sandboxBits: boolean; id: Side; bank: Side;
   issuer: { configured: boolean; address: string | null; missing: string[] }; banks: { code: string; name: string }[];
+  vault: { configured: boolean; persistent: boolean; missing: string[]; mode: 'file' | 'none' };
 };
 type IdSummary = { docType: 'RRC' | 'DL'; docHash: string; authenticityChecked: boolean; authentic: boolean; live: boolean; vendor: string; ref: string | null; code: string | null };
 type BankSummary = { bankCode: string; holderNameMasked: string; vendor: string; live: boolean; ref: string | null };
 type TwoWay = { token: string; method: string; message: string | null; imageBase64: string | null };
-type Onchain = { sent: boolean; txHash?: string; issuer?: string; blockNumber?: number | null; reverted?: boolean | null; reason?: string };
+type Onchain = { sent: boolean; txHash?: string; requestId?: string; issuer?: string; blockNumber?: number | null; reverted?: boolean | null; reason?: string };
 type Issued = {
   status: 'ISSUED' | 'DENIED' | 'REVIEW' | 'REJECTED'; reason?: string; subject?: string;
   attrs?: string; claimsRoot?: string; evidenceHash: string; methodsHex?: string; methodNames?: string[];
-  regime?: number; assurance?: number; expiry?: number; passesKrProduction?: boolean; claims?: unknown; evidence: unknown; onchain?: Onchain;
+  regime?: number; assurance?: number; expiry?: number; passesKrProduction?: boolean; passesKrPilot?: boolean; claims?: unknown; evidence: unknown; onchain?: Onchain;
+  vault?: { stored: boolean; mode: string; recordId: string; reason?: string };
 };
 
 declare global {
@@ -67,6 +68,7 @@ export default function Verify() {
   const [cfg, setCfg] = useState<Config | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<{ step: string; text: string } | null>(null);
+  const [consented, setConsented] = useState(false);
 
   // 0 wallet
   const [wallet, setWallet] = useState<{ address: string; proof: string } | null>(null);
@@ -100,6 +102,7 @@ export default function Verify() {
 
   // ── 0 wallet ──
   const connect = () => run('wallet', async () => {
+    if (!consented) throw new Error('Review and accept the KYC/AML processing notice first.');
     if (!window.ethereum) throw new Error('No wallet found. Install MetaMask or another EIP-1193 wallet.');
     const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' }) as string[];
     const address = accounts[0];
@@ -114,6 +117,7 @@ export default function Verify() {
   const idForm = (action: 'ocr' | 'verify', extra: Record<string, string> = {}) => {
     const f = new FormData();
     f.set('action', action); f.set('docType', docType); if (image) f.set('image', image);
+    if (wallet) f.set('walletProof', wallet.proof);
     for (const [k, v] of Object.entries({ ...doc, ...extra })) f.set(k, v);
     return f;
   };
@@ -154,14 +158,14 @@ export default function Verify() {
     setBankRes(null); setChallenge(null); setCode('');
     const r = await api<{ challenge: string; holderNameMasked: string; vendor: string; live: boolean; ref: string | null; demoCode?: string }>('/api/kyc/bank', json({
       action: 'start', bankCode: bank.bankCode, accountNumber: bank.accountNumber,
-      birthDate: digits(doc.birthDate).slice(2), declaredName: declared.fullName,
+      birthDate: digits(doc.birthDate).slice(2), declaredName: declared.fullName, walletProof: wallet?.proof,
     }));
     setChallenge({ token: r.challenge, holderNameMasked: r.holderNameMasked, vendor: r.vendor, live: r.live, ref: r.ref, demoCode: r.demoCode });
   });
   const confirmCode = () => run('bank', async () => {
     if (!challenge) return;
     try {
-      const r = await api<{ bankProof: string; summary: BankSummary }>('/api/kyc/bank', json({ action: 'verify', challenge: challenge.token, code }));
+      const r = await api<{ bankProof: string; summary: BankSummary }>('/api/kyc/bank', json({ action: 'verify', challenge: challenge.token, code, walletProof: wallet?.proof }));
       setBankRes({ proof: r.bankProof, summary: r.summary });
     } catch (e) {
       if (e instanceof ApiError && typeof e.body.challenge === 'string') setChallenge({ ...challenge, token: e.body.challenge });
@@ -194,36 +198,27 @@ export default function Verify() {
   const testbed = cfg && cfg.bank.configured && !cfg.bank.demo && !cfg.bank.live;
   const demoSides = cfg ? [cfg.id.demo && 'ID document', cfg.bank.demo && 'bank account'].filter(Boolean) as string[] : [];
   const bankName = (c: string) => cfg?.banks.find((b) => b.code === c)?.name ?? c;
-  const sideLabel = (s: Side) => s.demo ? 'demo' : s.vendor ?? 'not configured';
 
   return (
     <>
       <PageHeader
-        eyebrow="Proofmark · KR · FSC non-face-to-face identification"
+        eyebrow="KR · FSC non-face-to-face identification"
         title="Verify and issue"
-        lede="ID document against the issuing authority, one won into the account, sanctions screening, then a mark on Sepolia. Every check that runs sets its bit; nothing else does."
-        aside={cfg && (
-          <span className="mono text-fg-muted">
-            id <span className={cfg.id.configured ? (cfg.id.demo ? 'text-warn' : 'text-fg-strong') : 'text-bad'}>{sideLabel(cfg.id)}</span>
-            <span className="mx-2 text-fg-subtle">·</span>
-            bank <span className={cfg.bank.configured ? (cfg.bank.demo ? 'text-warn' : 'text-fg-strong') : 'text-bad'}>{sideLabel(cfg.bank)}</span>
-          </span>
-        )}
+        lede="ID document against the issuing authority, one won into the account, sanctions screening, then a mark on Sepolia."
       />
 
       {err?.step === 'config' && <Band tone="bad" className="mb-4">{err.text}</Band>}
       {cfg?.demo && demoSides.length > 0 && (
         <Band tone="warn" className="mb-4">
-          <div className="font-medium text-fg-strong">Demo mode. No real vendor behind: {demoSides.join(' and ')}.</div>
+          <div className="font-medium text-fg-strong">Demo mode — no institution behind {demoSides.join(' or ')}. The mark is issued under regime sandbox.</div>
           <div className="mt-1">
-            The demo vendor takes the same inputs and runs the same procedure, but asks no institution. The mark is issued with regime
-            <span className="mono"> KR_FSC_NONFACE_SANDBOX</span>, the evidence names <span className="mono">demo:*</span>,
-            {cfg.sandboxBits
-              ? <> and the bits are set anyway (<span className="mono">KYC_DEMO_BITS=1</span>). The one-won code appears on this page in place of the bank app.</>
-              : <> and the bits stay unset (<span className="mono">KYC_DEMO_BITS=0</span>).</>}
-            {' '}Try a name containing <span className="mono">FAKE</span> for a rejected document, or an account ending in <span className="mono">99</span> for a holder mismatch.
+            {cfg.sandboxBits ? 'The one-won code appears on this page in place of the bank app. ' : ''}
+            Try a name containing <span className="mono">FAKE</span> for a rejected document, or an account ending in <span className="mono">99</span> for a holder mismatch.
           </div>
         </Band>
+      )}
+      {cfg && !cfg.demo && !cfg.vault.configured && (
+        <Band tone="bad" className="mb-4">Production issuance is disabled until a persistent encrypted evidence vault is configured.</Band>
       )}
       {vendorsMissing && (
         <Band tone="warn" className="mb-4">
@@ -242,25 +237,18 @@ export default function Verify() {
         <Band tone="note" className="mb-4">Issuer key not set (<span className="mono">{cfg.issuer.missing.join(' ')}</span>): the pipeline runs, the Sepolia transaction is skipped.</Band>
       )}
 
-      <Stats>
-        <Stat label="0 · Wallet control" value={walletDone ? <Status tone="ok">Signed</Status> : <Status tone="gray">Pending</Status>}
-          sub={wallet ? <span className="mono">{wallet.address.slice(0, 6)}…{wallet.address.slice(-4)}</span> : 'EIP-4361'} />
-        <Stat label="1 · ID document" value={id ? (id.summary.authentic ? <Status tone="ok">Authentic</Status> : <Status tone="bad">Rejected</Status>) : twoWay ? <Status tone="warn">Captcha</Status> : <Status tone="gray">Pending</Status>}
-          sub={id ? <span className="mono">{id.summary.vendor}{id.summary.live ? '' : ' · not live'}</span> : cfg?.id.demo ? 'demo vendor' : docType === 'RRC' ? 'Government24' : 'Traffic Civil Service 24'} />
-        <Stat label="2 · Bank account" value={bankDone ? <Status tone="ok">Verified</Status> : challenge ? <Status tone="warn">₩1 sent</Status> : <Status tone="gray">Pending</Status>}
-          sub={bankRes ? <span className="mono">{bankRes.summary.vendor}{bankRes.summary.live ? '' : ' · not live'}</span> : cfg?.bank.demo ? 'demo vendor' : 'holder name + one won'} />
-        <Stat label="3 · Mark" value={issued ? <Status tone={issued.status === 'ISSUED' ? 'ok' : issued.status === 'REVIEW' ? 'warn' : 'bad'}>{issued.status}</Status> : <Status tone="gray">Pending</Status>}
-          sub={issued?.onchain?.txHash ? <span className="mono">Sepolia</span> : 'screen · commit · issue'} />
-      </Stats>
-
-      <div className="mt-8 grid gap-4">
+      <div className="grid gap-4">
         {/* ── 0 wallet ── */}
-        <Step n={0} title="Wallet control" state={walletDone ? 'done' : 'active'} tag={walletDone ? <Tag tone="ok">WALLET_CONTROL</Tag> : <Tag tone="gray">1 &lt;&lt; 0</Tag>}>
+        <Step n={0} title="Wallet control" state={walletDone ? 'done' : 'active'} tag={walletDone && <Tag tone="ok">bit set</Tag>}>
           <p className="text-[13px] leading-5 text-fg-muted">
             Sign an EIP-4361 message with the wallet the mark will be bound to. The server checks the signature; the message expires in ten minutes.
           </p>
+          <label className="mt-3 flex max-w-3xl items-start gap-2.5 text-[12px] leading-5 text-fg-muted">
+            <input type="checkbox" checked={consented} disabled={walletDone} onChange={(e) => setConsented(e.target.checked)} className="mt-1" />
+            <span>I consent under <span className="mono text-fg-strong">proofmark-kyc-v2</span> to identity and account data processing for KYC/AML, disclosure to the configured verification vendors, evidence retention under the issuer policy, and publication of pseudonymous wallet-linked metadata and commitments on chain. The wallet signature binds this exact notice.</span>
+          </label>
           <div className="mt-3 flex flex-wrap items-center gap-3">
-            <Button onClick={connect} disabled={busy !== null || walletDone}><Icon name="wallet" size={16} />{walletDone ? 'Signed' : busy === 'wallet' ? 'Waiting for the wallet…' : 'Connect and sign'}</Button>
+            <Button onClick={connect} disabled={busy !== null || walletDone || !consented}><Icon name="wallet" size={16} />{walletDone ? 'Signed' : busy === 'wallet' ? 'Waiting for the wallet…' : 'Connect and sign'}</Button>
             {wallet && <Hash value={wallet.address} full />}
           </div>
           <StepError err={err} step="wallet" />
@@ -268,13 +256,13 @@ export default function Verify() {
 
         {/* ── 1 identity ── */}
         <Step n={1} title="ID document" state={idDone ? 'done' : walletDone ? 'active' : 'locked'}
-          tag={id ? <Tag tone={id.summary.authentic ? 'ok' : 'bad'}>{id.summary.authentic ? 'ID_DOC_AUTHENTICITY' : 'not confirmed'}</Tag> : <Tag tone="gray">1 &lt;&lt; 1 · 1 &lt;&lt; 2</Tag>}>
+          tag={id && <Tag tone={id.summary.authentic ? 'ok' : 'bad'}>{id.summary.authentic ? 'authentic · bits set' : 'not confirmed'}</Tag>}>
           <div className="grid gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
             <div className="grid content-start gap-3.5">
               <div>
                 <Eyebrow className="mb-1.5">Document</Eyebrow>
                 <div className="inline-flex h-9 w-full items-center gap-0.5 rounded-sm border border-line bg-sunk p-0.5" role="tablist">
-                  {([['RRC', 'Resident registration card'], ['DL', 'Driver licence']] as const).map(([k, label]) => (
+                  {([['RRC', 'Resident card'], ['DL', 'Driver licence']] as const).map(([k, label]) => (
                     <button key={k} type="button" role="tab" aria-selected={docType === k} disabled={!!id || !walletDone}
                       onClick={() => { setDocType(k); setTwoWay(null); }}
                       className={`h-full flex-1 rounded-[3px] text-[13px] font-medium transition-colors ${docType === k ? 'bg-surface-2 text-fg-strong' : 'text-fg-muted hover:text-fg-strong'}`}>
@@ -360,7 +348,7 @@ export default function Verify() {
 
         {/* ── 2 bank ── */}
         <Step n={2} title="Bank account" state={bankDone ? 'done' : canBank ? 'active' : 'locked'}
-          tag={bankDone ? <Tag tone={bankRes!.summary.live ? 'ok' : 'warn'}>{bankRes!.summary.live ? 'BANK_ACCOUNT' : cfg?.sandboxBits ? 'BANK_ACCOUNT · regime sandbox' : 'not live · bit not set'}</Tag> : <Tag tone="gray">1 &lt;&lt; 5</Tag>}>
+          tag={bankDone && <Tag tone={bankRes!.summary.live ? 'ok' : 'warn'}>{bankRes!.summary.live ? 'bit set' : cfg?.sandboxBits ? 'bit set · sandbox' : 'not live · bit not set'}</Tag>}>
           <p className="text-[13px] leading-5 text-fg-muted">
             The bank confirms the holder of the account against the real-name number and the name on the document. Then one won arrives with a code as the sender; type the code back.
           </p>
@@ -416,7 +404,7 @@ export default function Verify() {
 
         {/* ── 3 issue ── */}
         <Step n={3} title="Screen and issue" state={issued?.status === 'ISSUED' ? 'done' : canIssue ? 'active' : 'locked'}
-          tag={issued ? <Tag tone={issued.status === 'ISSUED' ? 'ok' : issued.status === 'REVIEW' ? 'warn' : 'bad'}>{issued.status}</Tag> : <Tag tone="gray">reconcile · AML · commit</Tag>}>
+          tag={issued && <Tag tone={issued.status === 'ISSUED' ? 'ok' : issued.status === 'REVIEW' ? 'warn' : 'bad'}>{issued.status}</Tag>}>
           <div className="grid gap-3.5 sm:grid-cols-4">
             <Field label="Declared name"><Input value={declared.fullName} readOnly /></Field>
             <Field label="Date of birth"><Input className="mono" value={declared.dateOfBirth} readOnly /></Field>
@@ -424,8 +412,8 @@ export default function Verify() {
             <Field label="Residence" hint="ISO-2"><Input className="mono" value={country.residence} maxLength={2} disabled={!!issued} onChange={(e) => setCountry({ ...country, residence: e.target.value.toUpperCase() })} /></Field>
           </div>
           <p className="mt-3 text-[13px] leading-5 text-fg-muted">
-            Declared details, the document and the account holder must agree. Then OFAC SDN, UN and EU lists, jurisdiction and on-chain exposure.
-            The claims are salted and committed; the salts stay in this browser. Only two 32-byte commitments and the bits go to Sepolia.
+            Declared details, the document and the account holder must agree; then the sanctions lists.
+            Only two 32-byte commitments and the bits go to Sepolia — the salts stay in this browser.
           </p>
           <div className="mt-3 flex flex-wrap items-center gap-3">
             <Button onClick={issue} disabled={!canIssue || busy !== null || issued?.status === 'ISSUED'}>
@@ -464,8 +452,10 @@ export default function Verify() {
                 </DetailRow>
                 <DetailRow label="KR VASP production" hint="policy #1: document authenticity, bank account, sanctions">
                   <Status tone={issued.passesKrProduction ? 'ok' : 'bad'}>{issued.passesKrProduction ? 'passes' : 'fails'}</Status>
-                  {!issued.passesKrProduction && <span className="ml-2 text-fg-muted">a required check did not run against live rails</span>}
-                  {issued.passesKrProduction && issued.regime === 2 && <span className="ml-2 text-fg-muted">under regime sandbox; the policy does not check regime yet</span>}
+                  {!issued.passesKrProduction && <span className="ml-2 text-fg-muted">requires live rails, regime 1, KR jurisdiction and the pinned issuer</span>}
+                </DetailRow>
+                <DetailRow label="KR sandbox pilot" hint="frozen policy #2, never a production pass">
+                  <Status tone={issued.passesKrPilot ? 'ok' : 'bad'}>{issued.passesKrPilot ? 'passes' : 'fails'}</Status>
                 </DetailRow>
                 <DetailRow label="Regime · assurance"><span className="mono">{issued.regime === 1 ? 'KR_FSC_NONFACE' : 'KR_FSC_NONFACE_SANDBOX'} · level {issued.assurance}</span></DetailRow>
                 <DetailRow label="Expiry"><span className="mono">{issued.expiry ? new Date(issued.expiry * 1000).toISOString().slice(0, 10) : '—'}</span></DetailRow>
@@ -473,7 +463,8 @@ export default function Verify() {
                 <DetailRow label="Evidence hash"><Hash value={issued.evidenceHash} full /></DetailRow>
               </DetailList>
               <Band tone="note" className="mt-3">
-                Save the file above. It holds the salted claims (yours to disclose selectively) and the evidence chain an auditor recomputes against the on-chain hash. The server keeps neither the salts nor the card.
+                The file holds the salted claims — yours to disclose selectively — and the evidence an auditor recomputes against the on-chain hash.
+                {' '}{issued.vault?.stored ? 'An encrypted issuer record was retained under the configured policy.' : issued.vault?.reason ?? 'No server-side record was retained.'}
               </Band>
             </>
           )}
