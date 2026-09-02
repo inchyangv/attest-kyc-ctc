@@ -13,6 +13,7 @@ The privacy claim is deliberately narrow: names, dates of birth, document number
 - Full verification journey: [attest-kyc.stabled.ai/verify](https://attest-kyc.stabled.ai/verify)
 - Pitch deck: [docs/deck/proofmark-deck.pdf](docs/deck/proofmark-deck.pdf)
 - Investment and pilot memo: [docs/11-investment-memo.md](docs/11-investment-memo.md)
+- 한국어 CTC·해커톤·투자 실사 보고서: [docs/12-ctc-investment-review-ko.md](docs/12-ctc-investment-review-ko.md)
 
 The public journey is a sandbox. Demo identity and bank adapters do not contact an institution and can only produce `regime = 2`. Frozen production policy #1 requires `regime = 1`, so a demo mark cannot pass it.
 
