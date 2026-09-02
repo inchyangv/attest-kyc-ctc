@@ -9,7 +9,7 @@ trap 'rm -rf "$tmp"' EXIT
 download() {
   curl --fail --silent --show-error --location \
     --connect-timeout 20 --max-time 180 \
-    --retry 5 --retry-delay 5 --retry-max-time 600 \
+    --retry 5 --retry-delay 5 --retry-max-time 600 --retry-all-errors \
     -o "$1" "$2"
 }
 
