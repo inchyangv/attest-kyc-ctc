@@ -147,7 +147,7 @@ Requirements: Node.js, npm, and Foundry.
 Clone with submodules, or initialize `forge-std` before running Foundry:
 
 ```bash
-git clone --recurse-submodules https://github.com/stabled-ai/attest-kyc-ctc.git
+git clone --recurse-submodules https://github.com/inchyangv/attest-kyc-ctc.git
 # existing clone: git submodule update --init --recursive
 ```
 
