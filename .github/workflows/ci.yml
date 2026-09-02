@@ -34,8 +34,8 @@ jobs:
       - run: npm ci
       - run: npm audit --omit=dev
       - run: npm run typecheck
-      - run: npm run test:ts
       - run: bash aml/fetch-lists.sh
+      - run: npm run test:ts
       - run: npx tsx aml/eval.ts
 
   web:
