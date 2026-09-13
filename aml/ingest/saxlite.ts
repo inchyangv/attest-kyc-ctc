@@ -1,10 +1,10 @@
 /**
- * Minimal XML element extractor.
- * The target tags (sdnEntry, INDIVIDUAL, ENTITY, sanctionEntity) never nest inside themselves,
- * so we slice from the opening tag to its closing tag and parse that span into a small tree.
- * This is not a general XML parser. It handles these three feeds and nothing else.
+ * Small selected-element tree API over a well-formedness-checking XML parser.
+ * Only matching subtrees are retained. Comments are never parsed as real entries.
+ * This is not XML-schema validation; source-specific fields are checked by loader.ts.
  */
 import { readFileSync } from 'node:fs';
+import { SaxesParser } from 'saxes';
 
 export interface El {
   tag: string;
@@ -13,67 +13,28 @@ export interface El {
   text: string;
 }
 
-const ENTITIES: Record<string, string> = {
-  '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&apos;': "'",
-};
-function decode(s: string): string {
-  return s.replace(/&(amp|lt|gt|quot|apos);/g, m => ENTITIES[m])
-          .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)))
-          .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16)));
-}
-
-const localName = (t: string) => { const i = t.indexOf(':'); return i < 0 ? t : t.slice(i + 1); };
-
-/** One element, opening tag through closing tag, as a tree */
-function parseElement(src: string, start: number): { el: El; end: number } {
-  const openEnd = src.indexOf('>', start);
-  const head = src.slice(start + 1, openEnd);
-  const selfClosing = head.endsWith('/');
-  const body = selfClosing ? head.slice(0, -1) : head;
-  const m = body.match(/^([^\s/>]+)/);
-  const tag = localName(m ? m[1] : '');
-  const attrs: Record<string, string> = {};
-  for (const a of body.slice(m ? m[1].length : 0).matchAll(/([\w:.-]+)\s*=\s*"([^"]*)"/g)) {
-    attrs[localName(a[1])] = decode(a[2]);
-  }
-  const el: El = { tag, attrs, kids: [], text: '' };
-  if (selfClosing) return { el, end: openEnd + 1 };
-
-  let i = openEnd + 1;
-  let textBuf = '';
-  while (i < src.length) {
-    const lt = src.indexOf('<', i);
-    if (lt < 0) break;
-    textBuf += src.slice(i, lt);
-    if (src.startsWith('</', lt)) {
-      const ce = src.indexOf('>', lt);
-      el.text = decode(textBuf).trim();
-      return { el, end: ce + 1 };
-    }
-    if (src.startsWith('<!--', lt)) { i = src.indexOf('-->', lt) + 3; continue; }
-    if (src.startsWith('<![CDATA[', lt)) {
-      const ce = src.indexOf(']]>', lt);
-      textBuf += src.slice(lt + 9, ce); i = ce + 3; continue;
-    }
-    const r = parseElement(src, lt);
-    el.kids.push(r.el);
-    i = r.end;
-  }
-  el.text = decode(textBuf).trim();
-  return { el, end: i };
-}
-
 /** Walks a file and yields every element with the given tag */
-export async function streamElements(path: string, tag: string, cb: (el: El) => void): Promise<void> {
-  const src = readFileSync(path, 'utf8');
-  // Require whitespace, > or / after <tag, so <ENTITY does not swallow <ENTITY_ALIAS
-  const open = new RegExp(`<(?:[\\w.-]+:)?${tag}(?=[\\s/>])`, 'g');
-  let m: RegExpExecArray | null;
-  while ((m = open.exec(src)) !== null) {
-    const { el, end } = parseElement(src, m.index);
-    cb(el);
-    open.lastIndex = end;
-  }
+export type XmlInput = string | { xml: string };
+export async function streamElements(path: XmlInput, tag: string, cb: (el: El) => void): Promise<void> {
+  const src = typeof path === 'string' ? readFileSync(path, 'utf8') : path.xml;
+  const parser = new SaxesParser({ xmlns: true });
+  const stack: El[] = [];
+  parser.on('doctype', () => { throw new Error('sanctions DTD is forbidden'); });
+  parser.on('opentag', node => {
+    if (!stack.length && node.local !== tag) return;
+    const el: El = { tag: node.local, attrs: Object.fromEntries(Object.values(node.attributes).map(a => [a.local, a.value])), kids: [], text: '' };
+    if (stack.length) stack[stack.length - 1].kids.push(el);
+    stack.push(el);
+  });
+  const append = (text: string) => { if (stack.length) stack[stack.length - 1].text += text; };
+  parser.on('text', append); parser.on('cdata', append);
+  parser.on('closetag', () => {
+    const el = stack.pop();
+    if (!el) return;
+    el.text = el.text.trim();
+    if (!stack.length) cb(el);
+  });
+  parser.write(src).close();
 }
 
 // Accessors

@@ -7,7 +7,8 @@ import { merkleRoot, merkleProof, verifyProof } from './merkle.js';
  * No cleartext PII goes on chain. The wallet-linked commitment can still be personal data under
  * privacy law, so this is pseudonymisation rather than anonymisation.
  * Each claim is salted and hashed, and only the root travels with the mark.
- * The salts stay in the user's browser, so the on-chain value cannot be reversed.
+ * Openings are returned to the browser and retained by the encrypted recovery journal/vault.
+ * Random salts resist guessing; retained openings and wallet linkage remain privacy inputs.
  *
  *   leaf_i     = keccak256(abi.encode(key, value, salt_i))
  *   claimsRoot = MerkleRoot(sorted(leaf_1..leaf_n))

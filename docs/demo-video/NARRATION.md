@@ -1,103 +1,101 @@
 # Demo video — narration
 
-English, read as voiceover, keyed to the scene numbers in [SHOTLIST.md](SHOTLIST.md). Each scene's
-lines are budgeted at about two and a half words per second of its allotted time — roughly 150 words
-per minute, which is a calm reading pace, not a rushed one.
-
-Every spoken number comes from a measurement in this repository, with the provenance said out loud:
-"measured", "across two runs", "over 200 listed people". Nothing is rounded up, nothing is
-extrapolated, and the attestation wait is never described as quick.
+English voiceover keyed to the scene numbers in [SHOTLIST.md](SHOTLIST.md). Two minutes at a calm
+150 words per minute is 300 words; the lines below total about 290. Read them slowly. The
+numbers are the product's numbers, each with its provenance in this repository, and the wait is
+never described as quick.
 
 The narration body is every blockquoted line below. To check the budget:
 
 ```sh
-grep '^> ' docs/demo-video/NARRATION.md | sed 's/^> //' | wc -w      # 448 words, budget 450
+grep '^> ' docs/demo-video/NARRATION.md | sed 's/^> //' | wc -w      # budget 300
 ```
 
 ---
 
-## 1 · Cold open — 12s, ~30 words
+## 1 · Cold open — 8s
 
-> Tokenised assets have to know who holds them. Proofmark issues a KYC mark on Ethereum, verifies it
-> trustlessly on Creditcoin through Attestcoin, and lets a credit note refuse anyone who fails.
+> A tokenised credit note on Creditcoin just refused a transfer. No admin, no allowlist. It read a
+> fact from Ethereum.
 
-*On screen: the landing page, then the contract addresses.*
+*On screen: the revert, then the title card.*
 
-## 2 · Live sanctions screening — 20s, ~50 words
+## 2 · Live sanctions screening — 14s
 
-> Screening first, and this part is real. Three sanctions lists, 26,566 entries, loaded from source.
-> A listed name, corroborated by date of birth and country: block, risk band five. Measured recall
-> was 100 percent over 200 listed people, 0 false positives over 610 ordinary names. Checks we have
-> not licensed stay unset: silence, not a guess.
+> Proofmark starts with screening, and this part is real. Three sanctions lists, 26,566 entries,
+> parsed from source. A listed name, corroborated by date of birth: block, risk band five.
 
-*On screen: the Kim Jong Un preset, the OFAC SDN hit, the unset PEP and adverse-media bits.*
+*On screen: the Kim Jong Un preset, BLOCK, the OFAC SDN entry, the unset PEP and adverse-media bits.*
 
-## 3 · Guided issuance — 28s, ~70 words
+## 3 · Guided issuance — 22s
 
-> Now onboarding. Wallet control, an identity document, a bank account, then screening — and only
-> the checks that actually ran set a bit. About this deployment: the identity and bank vendors here
-> are labelled demo adapters. The mark says so on chain, in its regime field — Korean
-> non-face sandbox. The sanctions screening in the same flow is real. Both axes passed, so assurance
-> is level three, and the mark passes Korea's production policy.
+> Onboarding: wallet signature, ID document, bank account, then screening. Only the checks that ran
+> set a bit. In this public sandbox the ID and bank vendors are labelled demo adapters, and the mark
+> says so on chain. The mark lands on Ethereum Sepolia as a bitmap and two commitments. No name, no
+> birth date, no account number.
 
-*On screen: the `demo:id` and `demo:bank` vendor rows, `KR_FSC_NONFACE_SANDBOX · level 3`, PASS.*
+*On screen: the four steps, the `demo:id` / `demo:bank` rows, ISSUED, the Sepolia transaction.*
 
-## 4 · The Sepolia issuance — 20s, ~50 words
+## 4 · The crossing — 12s
 
-> The mark is now a transaction on Ethereum Sepolia. ComplianceSource dot issue, 27,933 gas
-> measured. What goes on chain is a methods bitmap, an assurance level, a jurisdiction, and two
-> 32-byte commitments. The evidence and the claims stay off chain. The commitments are all another
-> chain needs.
+> Attestcoin proves that Ethereum block to Creditcoin. Our contract verifies the inclusion proof
+> itself; no relayer signs anything. Take Attestcoin away and this becomes a bridge you would have to
+> trust.
 
-*On screen: Etherscan, status Success, the `MarkIssued` log.*
+*On screen: the worker log, the caption "edited — cross-chain propagation took about 9 minutes",
+then `/onchain` showing the mark ACTIVE and the verifier's pins.*
 
-## 5 · Attestation, as a labelled edit — 16s, ~40 words
+## 5 · One mark, two policies — 16s
 
-> Attestation is where the wait lives. The current two-subject issuance took about nine minutes from
-> Sepolia inclusion to Creditcoin application. This cut is edited, and labelled so.
+> Now the point. One mark, two policies, two answers. Korea's production policy says no, because the
+> mark honestly says sandbox. The pilot policy says yes. Both policies are frozen on chain. Nobody can
+> loosen an asset's rules after the fact.
 
-*On screen: the caption "edited — cross-chain propagation took about 9 minutes", held through the cut.*
+*On screen: `isVerified(A, 1)` false, `isVerified(A, 2)` true, `policyFrozen` true and true.*
 
-## 6 · Creditcoin verdicts — 36s, ~90 words
+## 6 · The gate — 16s
 
-> On Creditcoin, the verifier accepts proofs from one source chain and one source contract only.
-> The deployment script reads those linkages back on both chains before declaring success.
->
-> Then the point. One mark, two policies, two answers. Under Korea's production policy, false — its
-> regime honestly says sandbox. Under the pilot policy, true. Both policies are frozen. Portability
-> is a return value here, not a promise. And the mark the cut waited for now passes only the sandbox
-> policy; production stays closed until regulated rails are connected.
+> The gate. Verified wallet to verified wallet: the notes move. To an unverified wallet, the token's
+> own check says no and the transfer reverts: recipient not verified. Not an allowlist. A credential
+> that crossed a chain boundary.
 
-*On screen: `isVerified(0x4816B6e3…, 1)` false, `(…, 2)` true, then take B's subject under policy 2.*
+*On screen: `canTransfer` true then false, `0x17887111`, the live transfer at status 1.*
 
-## 7 · The gate — 28s, ~70 words
+## 7 · Revocation travels — 22s
 
-> A tokenised credit note, gated on that same policy. Send to an unverified wallet: the token's own
-> preflight says no, and the transfer reverts — recipient not verified. That is the gate, not an
-> owner check. Send to a verified wallet and the same call succeeds. Remove Attestcoin and this
-> stops working: no signing server sits behind the gate, only a mark that crossed a chain boundary.
+> Then the part a regulator cares about. The issuer revokes holder A on Ethereum. A rescreen hit, an
+> expired document, whatever the reason: it is a code on the event. About nine minutes later, with
+> nobody touching Creditcoin, the same wallet can no longer move the note. Sender not verified.
+> Revocation travels too.
 
-*On screen: `canTransfer` false then true, `0x17887111`, then the live transfer at status 1.*
+*On screen: the Sepolia `revoke` receipt, the caption with the measured wait, `tombstone` true,
+`canTransfer` false, `0x8677c1af`, then `/onchain` showing REVOKED.*
 
-## 8 · Fail closed, and no cleartext personal data — 18s, ~45 words
+## 8 · Close — 10s
 
-> Last, fail closed. An address with no mark fails both policies. And the whole active record is
-> commitments, scoped metadata, wallet and issuer addresses. No name, no date of birth, no account
-> number. Those public values are linkable, so this is pseudonymisation, not anonymity.
+> Proofmark. Verified once. Enforced by every asset. Revoked everywhere. Live on Creditcoin and
+> Ethereum testnets. Run it yourself at attest-kyc dot stabled dot ai.
 
-*On screen: the unissued control false under both policies, then the full active `getMark` dump.*
+*On screen: the title card and the URL.*
 
 ---
 
+## Numbers this narration may use
+
+| Number | Provenance |
+|---|---|
+| 26,566 entries | OFAC SDN 19,321 + UN 1,011 + EU 6,234, the built index the hosted deployment serves |
+| risk band five | `POST /api/screen` for the preset, verified 2026-09-07 |
+| "about nine minutes" | measured propagation 7m 55s to 10m 48s across two issuance runs; 8m 43s for the one recorded revocation; epoch 1 in 8m 00s (`docs/16-propagation-observations.md`) |
+| "N minutes" in the scene-7 caption | the elapsed time `commands.sh` prints when the tombstone lands in that take |
+
+If a scene needs a figure that is not in this table, cut the claim, not the provenance.
+
 ## Things not to say
 
-- **Never “anonymous.”** Wallet and issuer addresses plus commitments remain linkable. The accurate
-  claim is that no cleartext identity or bank fields are written on chain.
-- **Never a number that is not in this file.** The current measured set is fixed: about nine minutes
-  for the two-subject issuance to apply on CC3; 438,623 gas for that CC3 application; 26,566 list entries, being OFAC SDN
-  19,321, UN 1,011 and EU 6,234; recall 100% over n=200; 0 false positives over n=610; evasion 7 of
-  7. If a scene needs a figure that is not on that list, cut the claim, not the provenance.
-- **Never describe the demo vendors as anything but demo vendors.** They label themselves in the
-  vendor name, the evidence references, the mark's regime field and the user interface, and scene 3
-  says so on camera.
+- **Never "anonymous"** or "zero data". Wallet and issuer addresses plus commitments are linkable.
+  The accurate claim is that no cleartext identity or bank field is written on chain.
+- **Never "instant"**, "real-time" or "under nine minutes".
+- **Never "sanctioned"** for scene 7 unless a `deny` was sent. The scene sends a `revoke`.
+- **Never describe the demo vendors as anything but demo vendors.** Scene 3 says the word on camera.
 - **Never a second product name.** The product is Proofmark.

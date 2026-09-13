@@ -28,7 +28,7 @@ Error: Failed to fetch attested height: AxiosError: timeout of 10000ms exceeded
 
 `waitUntilHeightAttested()` polls every 15 seconds, but the HTTP call inside that loop carries a 10-second timeout and no retry. When it fails the exception escapes the loop and the wait is gone.
 
-> **Attestation is a property of the chain, not of our process.** The source transaction stays valid, so retrying is always safe and there is never a reason to give up. `AttestationWatcher.waitFor()` absorbs individual poll failures and keeps waiting.
+`AttestationWatcher.waitFor()` absorbs individual poll failures and keeps waiting. This does not establish that the original source coordinates remain canonical. The working tree checks source hash/finality around the wait and stops on a conflicting observation; see [source checkpoints](26-source-checkpoints.md).
 
 ---
 
@@ -42,6 +42,7 @@ worker/
   store.ts        file-backed state, atomic writes
   attestation.ts  attestation wait, replacing the SDK path
   proof.ts        proof retrieval and queryId computation
+  proof-http.ts   cancellable, byte/deadline-bounded proof/attestation HTTP
   abi.ts          ABIs read from the forge build output
   worker.ts       scan and process loops
   index.ts        entry point and graceful shutdown
@@ -53,21 +54,20 @@ worker/
 discovered ──(wait for attestation)──▶ attested ──(proof)──▶ submitted ──▶ done
      │                                                            │
      └──────────── skipped (query already processed) ◀────────────┘
-     └──────────── dead (past maxAttempts, or a C1 violation)
+     └──────────── dead (past maxAttempts)
 ```
 
 **One job is one source transaction.** `queryId` is per transaction, so `execute()` runs once per transaction and the ASC walks all N logs inside it.
 
 ## 4. The guards that matter
 
-### 4.1 Cursor advances last
+### 4.1 Atomic range checkpoints
 
 ```ts
-const found = await this.scanRange(from, to);
-this.store.setCursor(to);   // only after every job in the range is persisted
+this.store.commitSourceRange(from, { height: to, hash: end.hash }, jobs);
 ```
 
-Advance it first and a crash loses that range forever. The cursor also never moves backwards.
+The working tree commits jobs, cursor and the range-end hash together after consistency checks. The cursor advances normally, but can rewind to a verified retained ancestor for an unsigned fork. Signed or consumed outcomes are preserved under a persistent hold. See [source checkpoint recovery](26-source-checkpoints.md).
 
 ### 4.2 Idempotence, so no gas is wasted
 
@@ -102,15 +102,33 @@ If the source the ASC trusts differs from the source the worker watches, every p
 
 ### 4.4 Reorg headroom
 
-Blocks are treated as final only once they are `WORKER_CONFIRMATIONS` behind head, default 4. Attestation already requires finality, so a larger value buys nothing.
+The scan ceiling is the lower of the RPC's `finalized` height and `head - WORKER_CONFIRMATIONS` (margin default 4). Missing finality fails closed; confirmations are not a substitute. Checkpoint and per-job source hash checks guard restart, attestation and relay boundaries. These rely on the source RPC and do not guarantee safety against a finality violation or a dishonest/incomplete RPC.
 
-### 4.5 C1 violation detection
+### 4.5 Atomic receipt version gate
 
-Mixed ASC event kinds in one transaction mean one gets processed and the rest are sealed permanently ([`04-event-schema.md`](04-event-schema.md) section 0). Our `ComplianceSource` never produces such a transaction, so seeing one means something upstream is wrong. The worker marks the job `dead` and logs an error rather than passing over it.
+Working-tree startup requires `TRANSACTION_PROCESSING_VERSION() == 2` before dispatch. A missing/unknown version fails closed. The scanner groups all recognized source logs per transaction, including mixed kinds and duplicate subjects, into one executable job. The first recognized event supplies an action hint; ASC v2 processes the entire trusted receipt regardless of that hint. This replaces the old mixed-event `dead` quarantine, which incorrectly assumed source function separation prevented issuer-contract composition. Old dead jobs and consumed v1 queries need explicit migration/reconciliation, not automatic erasure. See [atomic receipts](23-atomic-receipts.md).
 
 ### 4.6 Failure isolation
 
-One failing job does not stop the queue. Past `maxAttempts` it becomes `dead` and waits for a human.
+Working-tree startup also requires `ISSUER_KEY_PROVENANCE_VERSION() == 1` on both source and ASC. The scanner treats `KeyedMarkIssued` as action 0 and `IssuerKeyCompromised` as action 4. Thus a cutoff declaration is a durable transaction job subject to the same finalized scan, proof, relay journal and restart behavior as other lifecycle receipts; merely changing a source role is not substituted for that event.
+
+Startup additionally requires `DENIAL_CORRECTION_VERSION() == 1` on Source and ASC. `SanctionDenialCorrected` is action 5; its paired replacement issuance stays in the same transaction job and is applied atomically. An old worker that does not watch action 5 must not operate a correction-capable release.
+
+Ordinary job failures retry and eventually become `dead`. Source safety, state integrity and ownership failures stop the worker. An unresolved signed relay retains its nonce gate rather than being discarded after retry exhaustion.
+
+### 4.7 Bounded execution reservations (working tree, 2026-09-07)
+
+`worker/pool.ts` reserves a job ID synchronously before its first asynchronous step. Capacity and duplicate checks share that reservation. When no slot is available, the caller returns immediately; the job remains in the persisted Store backlog for a later poll. There is no per-job capacity sleep or second queue of waiting promises. At most `WORKER_CONCURRENCY` task reservations exist, including callbacks not yet entered. The file-backed Store still loads its entire backlog into memory; this does not claim bounded total backlog memory or a managed queue.
+
+The worker reloads a reserved job immediately before processing and skips a missing/terminal job or a stopped worker. Completion and failure release the reservation. Stop refuses new reservations; drain waits for actual tasks only. It does not impose a new RPC deadline or solve an indefinitely stalled existing dependency call.
+
+Concurrency, scan span, retry count, poll interval and confirmations must be positive safe integers. Cold-start now requires a positive explicit source deployment/replay block; there is no head-default fallback.
+
+`worker/pool.test.ts` exercises 100 polling bursts over 1,000 IDs at capacity 3, 120 file-backed jobs across repeated polling cycles, execution/reporting failure cleanup, stop/drain and malformed settings. The tests verify the production pool and backlog selector with synthetic work. They do not submit proofs or establish nonce safety.
+
+The subsequent [relay journal change](25-relay-recovery.md) adds durable signed transactions, signer serialization and single-host process ownership. The pool alone does not guarantee exactly-once sends. [Source checkpoint recovery](26-source-checkpoints.md) now covers unsigned reorg replay; signed-fork remediation, managed HA and actual proof-service E2E remain separate gates.
+
+[Cooperative shutdown](61-worker-cancellation.md) subsequently connects worker cancellation to polling/backoff and actual proof/attestation HTTP. It preserves pending/signed recovery state and does not impose a global shutdown deadline on source/hub RPC or synchronous work.
 
 ---
 
@@ -118,8 +136,11 @@ One failing job does not stop the queue. Past `maxAttempts` it becomes `dead` an
 
 ```sh
 forge build                 # produces the ABIs the worker reads from out/
+npm run worker:init-state   # one-time authorized zero-nonce dedicated signer bootstrap
 npm run worker
-npm run worker:test         # 11 unit tests
+npm run worker:test         # worker unit/fault-injection tests
+npm run test:source-reorg   # isolated Anvil source relocation test
+npm run test:t16-recovery   # isolated Anvil loss/backup/deep-hub-reorg fence
 npm run typecheck
 ```
 
@@ -187,14 +208,15 @@ evidenceHash 0x3f976d2f…47d7   matches what was issued
 
 ## 7. Two operational traps
 
-### 7.1 Start the worker before issuing
+### 7.1 Pin the start block and preserve signer state
 
-With `WORKER_START_BLOCK=0` the cursor begins at the current head. Issue first and the worker never sees the event.
+The historical worker used `WORKER_START_BLOCK=0` to start at the current head, missing earlier issuance. The working tree requires a positive explicit deployment/replay start block and pins it with chain/source/ASC/signer identity in the state file.
 
-- Start the worker, then issue.
-- If you already issued, set `WORKER_START_BLOCK=<block before issuance>` and `rm -f state/worker.json`.
+- For a new authorized deployment, use its verified source creation/replay block and an unused dedicated relay key, then run `npm run worker:init-state` exactly once before the service. The initializer requires latest and pending nonce zero and sends no transaction.
+- Preserve old state. An unscoped legacy file requires reconciliation; it is not automatically rebound.
+- Never delete a state file to rescan: it may contain the only association between an unresolved signed transaction and its job. Use the [recovery runbook](25-relay-recovery.md).
 
-This is the easiest thing to get wrong in a demo rehearsal.
+New starts and migrations must inventory outstanding transactions before the worker can safely allocate a nonce.
 
 ### 7.2 `origin` is the second field of `getMark`
 
@@ -212,13 +234,13 @@ cast call $ASC \
 
 ---
 
-## 8. Verification status
+## 8. Historical verification status (2026-08-30)
 
 | | |
 |---|---|
 | Worker unit tests | **11 passed** (queryId 3, txIndex 2, Store 5, Backoff 1) |
 | Typecheck | clean |
-| Contract tests | **45 passed** |
+| Contract tests | **57 passed** |
 
 > The typecheck caught a real bug along the way: `this.src` (provider) confused with `this.source` (contract). Log scanning would not have worked at all.
 
@@ -227,29 +249,29 @@ cast call $ASC \
 - [x] ~~One E2E against the deployed addresses~~ done twice, section 6
 - [ ] Dead-letter reprocessing CLI (`--retry-dead`)
 - [ ] Metrics for processing latency, p50 and p95, feeding the KPIs in the plan
-- [ ] Mode B is already wired on the source side as action 3, `RosterEpochPublished`. The ASC handler is P1.
+- [x] Historical Mode B epoch-1 handler exercised on the old deployment. This is **not** evidence for working-tree epoch schema v2; the new worker requires schema 2 on source and ASC. See [epoch migration](32-epoch-freshness.md).
 
 ---
 
 ## 10. Deployment topology and HA
 
-The worker runs as a single instance. Its state is one local JSON file (`state/worker.json`, overridable through `WORKER_STATE_PATH` in `worker/config.ts`), there is no leader election and no lock, and nothing coordinates a second copy if one is started by hand. While the instance is down, propagation stops; on restart it resumes from the persisted cursor and works through the backlog. That is a delay, never a loss and never a corruption: attestation is a property of the chain, the source transaction stays valid however long it waits, and the cursor never rewinds, so a restart can neither skip an event nor overwrite what was already applied.
+The working-tree worker is a single-host service with a local JSON state file, process leases and a durable signed relay envelope. While the instance is down, propagation stops. Restart validates source checkpoints before dispatch, checks the original pending receipt before proof preparation, and reconciles all retained terminal/skip hub observations plus contiguous signer nonces. Unsigned source forks within retained history can be replayed; signed/consumed source forks, stale backups, missing baselines and removed released receipts are held. Detection and signing fences are local; authorized state repair after loss/finality violation, archive RPC loss or a corrupted/mismatched deployment remain T-16/T-17/T-21 gates. See [relay recovery](25-relay-recovery.md) and [source checkpoints](26-source-checkpoints.md).
 
-That is the state today. What follows is why closing it is a deployment change rather than a protocol change.
+There is no managed HA or shared distributed lease implementation today. Contract replay protection and relay operational correctness are separate concerns.
 
-### 10.1 Redundancy is already safe
+### 10.1 What contract replay protection does and does not guarantee
 
-The contracts, not the worker, are what make duplicate submissions harmless.
+The contracts reject duplicate queries; they do not coordinate the nonce of workers sharing a key or restore lost signed transaction associations.
 
 | Guarantee | Where | What it gives us |
 |---|---|---|
 | `execute()` is permissionless and idempotent | `src/ASCBaseX.sol` | "Permissionless by design: anyone may call it", and the replay guard `require(!processedQueries[queryId], "Query already processed")` lets exactly one submission land |
-| Ordering per subject | `src/ProofmarkASC.sol` | the `(lastAppliedHeight, lastAppliedTxIndex)` cursor skips any older proof, including reversed events inside one source block |
+| Ordering per subject | `src/ProofmarkASC.sol` | one `(height, tx, log)` cursor orders ordinary events and a separate cursor orders denial/correction decisions |
 | Pre-submission check | `worker/worker.ts`, step 3 | The worker reads `processedQueries(queryId)` before submitting and marks the job `skipped`, so a worker that loses the race usually spends no gas at all |
 
 `queryId` is `keccak256(chainKey, blockHeight, txIndex)`, derived from the source transaction and independent of who submits it. Two workers proving the same source transaction therefore compute the same `queryId` and collide on it: one `execute()` lands, the other reverts with `Query already processed`.
 
-Arrival order does not matter either. `_onIssued` and `_onTombstone` compare the lexicographic pair `(blockHeight, txIndex)` with the subject's stored cursor. An older source block or an earlier transaction in the same block is skipped with `StaleProofSkipped`, so a late submission cannot resurrect a revoked mark or overwrite a newer one. `_onEpoch` independently requires a monotonic epoch.
+For credential state, ordinary events use the lexicographic triple including receipt log position; stale ordinary events are skipped while denial remains fail-closed until a newer governed correction. The ASC visits all lifecycle logs in a mixed receipt and skips stale epochs without suppressing other events. These controls do not make two independent same-key relay processes safe.
 
 The cost of full redundancy is bounded, and it is gas rather than correctness. The `processedQueries` read makes the common duplicate free; only inside the window between that read and the winner's inclusion does the loser pay for one reverted transaction.
 
@@ -257,10 +279,10 @@ The cost of full redundancy is bounded, and it is gas rather than correctness. T
 
 | Step | What it is | Why it works |
 |---|---|---|
-| N stateless workers | The same worker running in more than one place, each with its own cursor | Section 7.1 already rebuilds state by setting `WORKER_START_BLOCK` and deleting `state/worker.json`. The chain is the source of truth and the state file is a rebuildable cursor cache, so shared state is optional rather than a prerequisite |
-| Leader election | One worker submits while the others stand by | A cost optimization. It removes duplicate gas and nothing else, and it is explicitly not a correctness requirement, because the guarantees in 10.1 hold without it |
-| Dead-letter alerting | A job reaching `dead` pages a human | `dead` means maxAttempts exhausted or a C1 violation (sections 4.5 and 4.6), which is the one class of failure that redundancy cannot fix |
+| Multiple workers | Requires an explicit managed ownership/state design or strictly separate signer keys | Local state now holds unresolved signed transactions, not only a rebuildable cursor. Sharing a signer across independent stores is unsupported |
+| Leader election | One owner per signer with durable fencing and recovery | Required for a shared signer in HA; permissionless query replay protection alone does not prevent nonce replacement or unknown transaction outcomes |
+| Dead-letter alerting | A job reaching `dead` should page a human | `dead` means maxAttempts exhausted; historical C1 quarantines require explicit reconciliation. Alert delivery is still an operational gate |
 
-Fleet-wide ordering needs no coordination: every worker is ordered per subject by `(blockHeight, txIndex)`, so an instance replaying old blocks cannot damage a subject another instance has already moved forward.
+ASC v2 orders ordinary events by `(blockHeight, txIndex, receiptLogIndex)` and accumulates permanent denial independently. That protects credential ordering, not the wallet nonce or storage coordination of a relay fleet.
 
 > None of this topology is implemented today; every run in section 6 used one instance.

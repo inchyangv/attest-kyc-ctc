@@ -2,6 +2,7 @@
 pragma solidity ^0.8.30;
 
 import {Test} from "forge-std/Test.sol";
+import {Vm} from "forge-std/Vm.sol";
 import {EvmV1Decoder} from "@gluwa/usc-contracts/contracts/decoding/EvmV1Decoder.sol";
 
 import {ProofmarkASC} from "../src/ProofmarkASC.sol";
@@ -11,6 +12,7 @@ import {MarkAttrs} from "../src/lib/MarkAttrs.sol";
 import {Action, Mark, MarkStatus, Methods} from "../src/lib/ProofmarkTypes.sol";
 import {MockBlockProver, MockBlockProverFailing} from "./mocks/MockBlockProver.sol";
 import {ReceiptFixture} from "./ReceiptFixture.sol";
+import {SchemaVectors} from "./SchemaVectors.sol";
 
 /// @notice Local mock harness. Exercises every ASC guard without the eight-minute attestation wait.
 /// @dev Exists to prove the findings in docs/05-asc-integration-review.md, not to assert them.
@@ -31,6 +33,7 @@ contract ProofmarkASCTest is Test {
     address evilSrc = address(0xBAD);
 
     function setUp() public {
+        vm.warp(1_700_000_000 + 1 days);
         vm.etch(PRECOMPILE, address(new MockBlockProver()).code);
 
         fx = new ReceiptFixture();
@@ -47,7 +50,7 @@ contract ProofmarkASCTest is Test {
     // Helpers
 
     function _attrs(uint32 methods_, uint40 expiry_) internal pure returns (bytes32) {
-        return MarkAttrs.pack(1, 3, 410, 410, methods_, 1_700_000_000, expiry_, 1);
+        return MarkAttrs.pack(1, 3, 1, 410, methods_, 1_700_000_000, expiry_, 1);
     }
 
     function _issuedLog(address emitter, address subject, bytes32 attrs)
@@ -110,8 +113,8 @@ contract ProofmarkASCTest is Test {
             0x4e68a53405a08cc0e2bb7cd374ad540457f069bcf32e0830ea2e851815d6f5ae
         );
         assertEq(
-            keccak256("RosterEpochPublished(uint32,bytes32,uint32,uint40)"),
-            0x984d6a4d0b5705f143158aad863f7a4f77abd36d272098cda48adbcbd40b0dc3
+            keccak256("RosterEpochPublished(uint32,bytes32,uint32,uint40,uint40,uint40,bytes32)"),
+            0x9c17b3d0d930980ffef5e671b9390a26d8f8b5f801f0ce3636909c95c69eb908
         );
     }
 
@@ -176,7 +179,7 @@ contract ProofmarkASCTest is Test {
         // The attacker emits the same event from their own contract. The proof itself is valid.
         bytes memory encTx = fx.tx2(_one(_issuedLog(evilSrc, alice, a)));
 
-        vm.expectRevert(abi.encodeWithSelector(ProofmarkASC.UntrustedEmitter.selector, evilSrc, address(src)));
+        vm.expectRevert(ProofmarkASC.NoMatchingEvent.selector);
         _exec(uint8(Action.MarkIssued), SEPOLIA_KEY, 100, encTx, 3);
     }
 
@@ -255,6 +258,57 @@ contract ProofmarkASCTest is Test {
         _exec(uint8(Action.SanctionDenied), SEPOLIA_KEY, 200, fx.tx2(_one(_deniedLog(alice))), 2);
         _exec(uint8(Action.MarkRevoked), SEPOLIA_KEY, 300, fx.tx2(_one(_revokedLog(alice))), 3);
         assertEq(asc.getMark(alice).status, uint8(MarkStatus.Denied));
+    }
+
+    /// @dev Every permutation of issue, permanent deny, ordinary revoke and reissue must deny.
+    function test_DenialSurvivesEveryDeliveryOrder() public {
+        uint256 base = vm.snapshotState();
+        for (uint256 a; a < 4; ++a) {
+            for (uint256 b; b < 4; ++b) {
+                if (b == a) continue;
+                for (uint256 c; c < 4; ++c) {
+                    if (c == a || c == b) continue;
+                    uint256 d = 6 - a - b - c;
+                    uint256[4] memory order = [a, b, c, d];
+                    for (uint256 i; i < 4; ++i) {
+                        _deliverLifecycleEvent(order[i], false);
+                    }
+                    assertTrue(asc.permanentDenial(alice));
+                    assertTrue(asc.tombstone(alice));
+                    assertEq(asc.getMark(alice).status, uint8(MarkStatus.Denied));
+                    assertEq(asc.lastAppliedHeight(alice), 400);
+                    assertTrue(vm.revertToState(base));
+                }
+            }
+        }
+    }
+
+    function test_OlderSameBlockDenialAppliesWithoutRewindingCursor() public {
+        _deliverLifecycleEvent(3, true);
+        _deliverLifecycleEvent(1, true);
+        _deliverLifecycleEvent(2, true);
+        assertTrue(asc.permanentDenial(alice));
+        assertTrue(asc.tombstone(alice));
+        assertEq(asc.getMark(alice).status, uint8(MarkStatus.Denied));
+        assertEq(asc.lastAppliedHeight(alice), 100);
+        assertEq(asc.lastAppliedTxIndex(alice), 4);
+    }
+
+    function _deliverLifecycleEvent(uint256 eventIndex, bool sameBlock) private {
+        uint64 height = sameBlock ? 100 : uint64((eventIndex + 1) * 100);
+        if (eventIndex == 1) {
+            _exec(uint8(Action.SanctionDenied), SEPOLIA_KEY, height, fx.tx2(_one(_deniedLog(alice))), eventIndex + 1);
+        } else if (eventIndex == 2) {
+            _exec(uint8(Action.MarkRevoked), SEPOLIA_KEY, height, fx.tx2(_one(_revokedLog(alice))), eventIndex + 1);
+        } else {
+            _exec(
+                uint8(Action.MarkIssued),
+                SEPOLIA_KEY,
+                height,
+                fx.tx2(_one(_issuedLog(address(src), alice, _attrs(Methods.BANK_ACCOUNT, 2_000_000_000)))),
+                eventIndex + 1
+            );
+        }
     }
 
     // 8. Finding 3: batching through multiple logs in one tx
@@ -340,18 +394,252 @@ contract ProofmarkASCTest is Test {
     function test_SourceIssueOnceRejectsReplay() public {
         bytes32 requestId = keccak256("flow-1");
         vm.startPrank(issuer);
-        src.issueOnce(requestId, alice, bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)));
+        src.issueOnce(
+            requestId, alice, _attrs(Methods.BANK_ACCOUNT, 2_000_000_000), bytes32(uint256(2)), bytes32(uint256(3))
+        );
         vm.expectRevert(abi.encodeWithSelector(ComplianceSource.RequestAlreadyProcessed.selector, requestId));
-        src.issueOnce(requestId, alice, bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)));
+        src.issueOnce(
+            requestId, alice, _attrs(Methods.BANK_ACCOUNT, 2_000_000_000), bytes32(uint256(2)), bytes32(uint256(3))
+        );
         vm.stopPrank();
         assertTrue(src.processedRequest(requestId));
     }
 
     function test_SourceEpochMustBeMonotonic() public {
         vm.startPrank(issuer);
-        src.publishEpoch(1, bytes32(uint256(0xAA)), 100, uint40(block.timestamp + 1 days));
+        src.publishEpoch(
+            1,
+            bytes32(uint256(0xAA)),
+            100,
+            uint40(block.timestamp + 1 days),
+            uint40(block.timestamp),
+            bytes32(uint256(1))
+        );
         vm.expectRevert(abi.encodeWithSelector(ComplianceSource.EpochNotMonotonic.selector, uint32(1), uint32(1)));
-        src.publishEpoch(1, bytes32(uint256(0xBB)), 100, uint40(block.timestamp + 1 days));
+        src.publishEpoch(
+            1,
+            bytes32(uint256(0xBB)),
+            100,
+            uint40(block.timestamp + 1 days),
+            uint40(block.timestamp),
+            bytes32(uint256(1))
+        );
         vm.stopPrank();
+    }
+
+    function _freshASC() private {
+        vm.startPrank(owner);
+        asc = new ProofmarkASC(owner);
+        asc.configureSource(SEPOLIA_KEY, address(src));
+        vm.stopPrank();
+    }
+
+    function test_SourceRejectsUnsupportedAttrsBeforeConsumingRequest() public {
+        bytes32[] memory bad = SchemaVectors.invalid();
+        vm.startPrank(issuer);
+        for (uint256 i; i < bad.length; i++) {
+            bytes32 id = bytes32(i);
+            vm.expectRevert(ComplianceSource.InvalidAttrs.selector);
+            src.issueOnce(id, alice, bad[i], bytes32(0), bytes32(0));
+            assertFalse(src.processedRequest(id));
+            vm.expectRevert(ComplianceSource.InvalidAttrs.selector);
+            src.issue(alice, bad[i], bytes32(0), bytes32(0));
+            ComplianceSource.Issuance[] memory items = new ComplianceSource.Issuance[](2);
+            items[0] = ComplianceSource.Issuance(alice, SchemaVectors.VALID, bytes32(0), bytes32(0));
+            items[1] = ComplianceSource.Issuance(bob, bad[i], bytes32(0), bytes32(0));
+            vm.expectRevert(ComplianceSource.InvalidAttrs.selector);
+            src.issueBatch(items);
+        }
+        vm.stopPrank();
+    }
+
+    function test_SourceRejectsFutureAndExpiredIssuance() public {
+        bytes32 future = SchemaVectors.field(SchemaVectors.VALID, 136, 40, block.timestamp + 1);
+        bytes32 expired = SchemaVectors.field(SchemaVectors.VALID, 96, 40, block.timestamp);
+        vm.startPrank(issuer);
+        vm.expectRevert(ComplianceSource.InvalidAttrs.selector);
+        src.issue(alice, future, bytes32(0), bytes32(0));
+        vm.expectRevert(ComplianceSource.InvalidAttrs.selector);
+        src.issue(alice, expired, bytes32(0), bytes32(0));
+        src.issue(alice, SchemaVectors.VALID, bytes32(0), bytes32(0));
+        vm.stopPrank();
+    }
+
+    function test_UnsupportedAttrsCannotPoisonDenialInMixedHistoricalReceipt() public {
+        EvmV1Decoder.LogEntryTuple[] memory logs = new EvmV1Decoder.LogEntryTuple[](2);
+        logs[0] = _issuedLog(address(src), alice, bytes32(uint256(SchemaVectors.VALID) | 1));
+        logs[1] = _deniedLog(alice);
+        _exec(0, SEPOLIA_KEY, 100, fx.tx2(logs), 1);
+        assertTrue(asc.permanentDenial(alice));
+        assertEq(asc.getMark(alice).status, uint8(MarkStatus.Denied));
+    }
+
+    /// @dev Real source calls from a contract issuer (the same composition available to a Safe).
+    function _composedReceipt(uint8 mode) private returns (bytes memory) {
+        ComposingIssuer batcher = new ComposingIssuer();
+        vm.startPrank(owner);
+        src.setIssuer(address(batcher), true);
+        src.setEpochPublisher(address(batcher), true);
+        vm.stopPrank();
+        vm.recordLogs();
+        batcher.run(src, alice, mode, _attrs(Methods.BANK_ACCOUNT, 2_000_000_000));
+        Vm.Log[] memory recorded = vm.getRecordedLogs();
+        EvmV1Decoder.LogEntryTuple[] memory logs = new EvmV1Decoder.LogEntryTuple[](recorded.length);
+        for (uint256 i; i < recorded.length; i++) {
+            logs[i] = fx.log(recorded[i].emitter, recorded[i].topics, recorded[i].data);
+        }
+        return fx.tx2(logs);
+    }
+
+    function test_MixedIssueRevokeAppliesBothRegardlessOfCallerAction() public {
+        bytes memory receipt = _composedReceipt(0);
+        for (uint8 action; action < 2; action++) {
+            _freshASC();
+            _exec(action, SEPOLIA_KEY, 100, receipt, 1);
+            assertEq(asc.getMark(alice).status, uint8(MarkStatus.Revoked));
+            assertTrue(asc.tombstone(alice));
+            assertEq(asc.lastAppliedLogIndex(alice), 1);
+            vm.expectRevert("Query already processed");
+            _exec(1 - action, SEPOLIA_KEY, 100, receipt, 1);
+        }
+    }
+
+    function test_MixedRevokeIssueReactivatesAtLaterLog() public {
+        bytes memory receipt = _composedReceipt(1);
+        for (uint8 action; action < 2; action++) {
+            _freshASC();
+            _exec(action, SEPOLIA_KEY, 100, receipt, 1);
+            assertEq(asc.getMark(alice).status, uint8(MarkStatus.Active));
+            assertFalse(asc.tombstone(alice));
+            assertEq(asc.lastAppliedLogIndex(alice), 1);
+        }
+    }
+
+    function test_MixedDenialCannotBeHiddenByIssuanceAction() public {
+        bytes memory receipt = _composedReceipt(2);
+        for (uint8 action; action <= 2; action += 2) {
+            _freshASC();
+            _exec(action, SEPOLIA_KEY, 100, receipt, 1);
+            assertTrue(asc.permanentDenial(alice));
+            assertEq(asc.getMark(alice).status, uint8(MarkStatus.Denied));
+            assertEq(asc.lastAppliedLogIndex(alice), 2);
+        }
+    }
+
+    function test_DuplicateBatchAndRepeatedCallsUseLastReceiptLog() public {
+        bytes memory receipt = _composedReceipt(3);
+        _exec(0, SEPOLIA_KEY, 100, receipt, 1);
+        assertEq(asc.getMark(alice).claimsRoot, bytes32(uint256(3)));
+        assertEq(asc.lastAppliedLogIndex(alice), 2);
+        // More logs in an older source transaction cannot overwrite the newer transaction.
+        _exec(1, SEPOLIA_KEY, 101, fx.tx2(_one(_revokedLog(alice))), 0);
+        assertEq(asc.lastAppliedLogIndex(alice), 0);
+        assertTrue(asc.tombstone(alice));
+        _exec(0, SEPOLIA_KEY, 100, receipt, 2);
+        assertEq(asc.lastAppliedHeight(alice), 101);
+        assertEq(asc.lastAppliedLogIndex(alice), 0);
+        assertTrue(asc.tombstone(alice));
+    }
+
+    function test_AllEpochsAndIssuanceProcessedWithEitherAction() public {
+        bytes memory receipt = _composedReceipt(4);
+        for (uint8 action; action <= 3; action += 3) {
+            _freshASC();
+            _exec(action, SEPOLIA_KEY, 100, receipt, 1);
+            assertEq(asc.latestEpoch(), 2);
+            assertEq(asc.epochRoots(1), bytes32(uint256(1)));
+            assertEq(asc.epochRoots(2), bytes32(uint256(2)));
+            assertEq(asc.getMark(alice).status, uint8(MarkStatus.Active));
+        }
+    }
+
+    function test_StaleEpochInMixedReceiptCannotSuppressDenial() public {
+        bytes memory oldReceipt = _composedReceipt(5);
+        bytes memory newerReceipt = _composedReceipt(4);
+        _exec(3, SEPOLIA_KEY, 200, newerReceipt, 1);
+        _exec(3, SEPOLIA_KEY, 100, oldReceipt, 1);
+        assertEq(asc.latestEpoch(), 3);
+        assertTrue(asc.permanentDenial(alice));
+        assertEq(asc.lastAppliedHeight(alice), 200);
+    }
+
+    function test_ForeignLookalikeCannotAlterOrSuppressTrustedLogs() public {
+        EvmV1Decoder.LogEntryTuple[] memory logs = new EvmV1Decoder.LogEntryTuple[](3);
+        logs[0] = _issuedLog(evilSrc, bob, bytes32(0));
+        logs[1] = _issuedLog(address(src), alice, _attrs(Methods.BANK_ACCOUNT, 2_000_000_000));
+        logs[2] = _deniedLog(alice);
+        logs[2].address_ = evilSrc;
+        _exec(0, SEPOLIA_KEY, 100, fx.tx2(logs), 1);
+        assertEq(asc.getMark(bob).status, uint8(MarkStatus.None));
+        assertEq(asc.getMark(alice).status, uint8(MarkStatus.Active));
+        assertFalse(asc.permanentDenial(alice));
+        assertEq(asc.lastAppliedLogIndex(alice), 1);
+    }
+
+    function test_MalformedTrustedLogRollsBackWholeReceiptAndReplayGuard() public {
+        EvmV1Decoder.LogEntryTuple[] memory logs = new EvmV1Decoder.LogEntryTuple[](2);
+        logs[0] = _issuedLog(address(src), alice, _attrs(Methods.BANK_ACCOUNT, 2_000_000_000));
+        logs[1] = _revokedLog(alice);
+        bytes32[] memory broken = new bytes32[](1);
+        broken[0] = logs[1].topics[0];
+        logs[1].topics = broken;
+        bytes memory brokenReceipt = fx.tx2(logs);
+        vm.expectRevert(ProofmarkASC.BadTopics.selector);
+        _exec(0, SEPOLIA_KEY, 100, brokenReceipt, 1);
+        assertEq(asc.getMark(alice).status, uint8(MarkStatus.None));
+        logs[1] = _revokedLog(alice);
+        _exec(0, SEPOLIA_KEY, 100, fx.tx2(logs), 1);
+        assertTrue(asc.tombstone(alice));
+    }
+}
+
+contract ComposingIssuer {
+    function run(ComplianceSource source, address subject, uint8 mode, bytes32 attrs) external {
+        if (mode == 0) {
+            source.issue(subject, attrs, bytes32(0), bytes32(0));
+            source.revoke(subject, 2, 0);
+        } else if (mode == 1) {
+            source.revoke(subject, 2, 0);
+            source.issue(subject, attrs, bytes32(0), bytes32(0));
+        } else if (mode == 2) {
+            source.issue(subject, attrs, bytes32(0), bytes32(0));
+            source.deny(subject, 1, 0);
+            source.issue(subject, attrs, bytes32(0), bytes32(0));
+        } else if (mode == 3) {
+            ComplianceSource.Issuance[] memory items = new ComplianceSource.Issuance[](2);
+            items[0] = ComplianceSource.Issuance(subject, attrs, bytes32(uint256(1)), bytes32(0));
+            items[1] = ComplianceSource.Issuance(subject, attrs, bytes32(uint256(2)), bytes32(0));
+            source.issueBatch(items);
+            source.issue(subject, attrs, bytes32(uint256(3)), bytes32(0));
+        } else if (mode == 4) {
+            uint32 next = source.lastEpoch() + 1;
+            source.publishEpoch(
+                next,
+                bytes32(uint256(next)),
+                1,
+                uint40(block.timestamp + 1 days),
+                uint40(block.timestamp),
+                bytes32(uint256(1))
+            );
+            source.issue(subject, attrs, bytes32(0), bytes32(0));
+            source.publishEpoch(
+                next + 1,
+                bytes32(uint256(next + 1)),
+                1,
+                uint40(block.timestamp + 1 days),
+                uint40(block.timestamp),
+                bytes32(uint256(1))
+            );
+        } else {
+            source.publishEpoch(
+                source.lastEpoch() + 1,
+                bytes32(uint256(1)),
+                1,
+                uint40(block.timestamp + 1 days),
+                uint40(block.timestamp),
+                bytes32(uint256(1))
+            );
+            source.deny(subject, 1, 0);
+        }
     }
 }

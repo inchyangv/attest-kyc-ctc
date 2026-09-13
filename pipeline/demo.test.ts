@@ -7,6 +7,7 @@ import { Methods } from './methods.js';
 import { MockAmlEngine } from './aml.js';
 import { runIssuance } from './issue.js';
 import { findPii } from './pii-guard.js';
+import { SYNTHETIC_INDIVIDUAL_NONFACE_POLICY } from './identity-policy.js';
 
 /**
  * The demo vendors and the sandboxBits switch. What matters: a demo result is never live, the
@@ -98,7 +99,8 @@ describe('sandboxBits', () => {
     const out = await runIssuance({
       wallet: '0x' + 'ab'.repeat(20),
       declared: { fullName: '\uD64D\uAE38\uB3D9', dateOfBirth: '1990-01-01', nationality: 'KR', residence: 'KR' },
-      idDocument: idOk, bankAccount: bankOk, walletControlProven: true, jurisdiction: 410, assurance: 2,
+      idDocument: idOk, bankAccount: bankOk, walletControlProven: true, jurisdiction: 410, assurance: 3,
+      identityPolicy: SYNTHETIC_INDIVIDUAL_NONFACE_POLICY,
     }, a, new MockAmlEngine({ evidenceKey: 'test-only-evidence-key-at-least-32-chars-long' }), 1_700_000_000_000);
     assert.equal(out.status, 'ISSUED');
     if (out.status !== 'ISSUED') return;

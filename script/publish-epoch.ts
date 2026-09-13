@@ -4,8 +4,8 @@
  * Mode A carries one mark at a time: an individual proof that subject X was issued at source
  * block N. It proves issuance and says nothing about a revocation nobody submitted.
  * Mode B publishes the whole active set as one sorted-key Merkle root. Membership is the mark;
- * falling OUT of the root is the revocation. That is the only shape in which a verifier can be
- * handed positive evidence of absence, which is why `Policy.requireRoster` exists.
+ * absence from that asserted set can be proved, but its reason cannot. It does not establish a
+ * legal sanction or guarantee publisher completeness, which remains an explicit trust assumption.
  *
  * The tree itself is `pipeline/roster.ts` and its Solidity twin `src/lib/RosterProof.sol`. This
  * script does not reimplement either; it imports the TypeScript side and then asks the deployed
@@ -15,22 +15,23 @@
  *
  *     npx tsx script/publish-epoch.ts             # same as --dry-run
  *     npx tsx script/publish-epoch.ts --dry-run   # build the roster, print the plan, send nothing
- *     npx tsx script/publish-epoch.ts --publish    # one setEpochPublisher tx (if needed) + one publishEpoch tx
+ *     npx tsx script/publish-epoch.ts --publish    # one epoch transaction; never grants roles
+ *     npx tsx script/publish-epoch.ts --resume-publication # recover stored source tx; no new epoch
+ *     npx tsx script/publish-epoch.ts --check-publication # original journal source/carry/current check; no private key
+ *     npx tsx script/publish-epoch.ts --cancel-unsigned-publication # explicit local unsigned cancellation
  *     npx tsx script/publish-epoch.ts --check      # view calls only: is the on-chain root ours, do the proofs verify
  *     npx tsx script/publish-epoch.ts --help
  *
- * Only `--publish` reads a private key, and only `--publish` loads `.env`. Every other mode runs
- * with no key and no configuration at all: the RPC URLs fall back to the public endpoints, so a
- * dry run works from an empty directory.
+ * Publication lifecycle modes (--publish, --resume-publication, --cancel-unsigned-publication)
+ * load .env and the dedicated key/journal. Other modes run with no key. New sends require a fresh v3 sanctions snapshot and compatible epoch-v2
+ * contracts; public RPC defaults do not imply the historical deployment is compatible.
  *
- * One transaction emits one kind of ASC event. `publishEpoch` is therefore always sent on its own,
- * never batched with issuance or role changes: ASCBase derives queryId from
- * (chainKey, blockHeight, txIndex) and carries neither the action nor the log index, so a source
- * transaction gets exactly one execute(). Mixing event kinds lets an attacker land the cheap
- * action first, consume the queryId, and seal the rest of that transaction forever.
+ * This script keeps publication standalone. The historical ASC v1 cannot safely process mixed
+ * receipts; ASC v2 processes every trusted lifecycle log atomically. Do not infer that the old
+ * deployment supports batching merely because the working-tree implementation now does.
  */
 import { ethers } from 'ethers';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -39,21 +40,39 @@ import {
   verifyInclusion, verifyNonInclusion,
   type RosterEntry, type RosterTree,
 } from '../pipeline/roster.js';
-import { packAttrs } from '../pipeline/attrs.js';
+import { ROSTER_REGISTRY_ABI, ROSTER_SELECTORS, requireRosterV2 } from '../pipeline/roster-format.js';
+import { buildSourceRoster, assertSourceSnapshot, type SourceSnapshotManifest } from '../pipeline/roster-source.js';
+import { SourceCheckpointStore } from '../pipeline/roster-source-checkpoint.js';
+import { loadLists } from '../aml/loader.js';
+import type { ListProvenance } from '../aml/provenance.js';
+import { boundedEpochParams, EPOCH_SOURCE_ABI, requireEpochV2 } from '../pipeline/epoch.js';
+import { ROSTER_AUTH_ABI, requireRosterAuthorization, rosterApprovalData, readRootApprovals, type RosterApprovalMessage } from '../pipeline/roster-authorization.js';
+import { EpochPublicationJournal, PublicationJournalError, type PublicationEntry, type PublicationConfirmation } from '../pipeline/epoch-publication-journal.js';
+import { PUBLICATION_ABI, advancePublication, evmPublicationTransport, reobservePublication, type PublicationTransport } from '../pipeline/epoch-publication-delivery.js';
+import { sourceEpochRecord, writeEpochRecord } from '../pipeline/epoch-record.js';
+import { writeVaultEnvelope } from '../pipeline/vault-atomic.js';
+import { captureEpochHub, assertEpochHub, type EpochHubObservation } from '../pipeline/epoch-observation.js';
+import { expectedDemoIssuer, checkEpochPolicies } from '../pipeline/epoch-policy.js';
+import { epochRuntimePins, checkEpochRuntimes } from '../pipeline/epoch-runtime.js';
+import { observeEpochCarry, requireCurrentPublishedEpoch } from '../pipeline/epoch-carry.js';
+import { finalizeRosterBundleReplicas, stageRosterBundleReplicas, type PrepublicationRosterRecord, type StagedRosterBundleReplicas } from '../pipeline/roster-bundle-availability.js';
+import type { RosterBundle, RosterScope } from '../pipeline/roster-bundle.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HERE, '..');
 const deployment = JSON.parse(readFileSync(join(REPO, 'deployments', 'cc3-testnet.json'), 'utf8')) as {
   contracts: { ComplianceSource: string; ProofmarkASC: string; ProofmarkRegistry: string };
+  sourceDeployment?: { transactionHash: string };
 };
 
 // ── Address book. The checked-in deployment is the default; shell env can override it. ──
 
-const SOURCE_ADDRESS   = process.env.SOURCE_CONTRACT_ADDRESS ?? deployment.contracts.ComplianceSource;
-const ASC_ADDRESS      = process.env.ASC_CONTRACT_ADDRESS ?? deployment.contracts.ProofmarkASC;
-const REGISTRY_ADDRESS = process.env.REGISTRY_CONTRACT_ADDRESS ?? deployment.contracts.ProofmarkRegistry;
+let SOURCE_ADDRESS   = process.env.SOURCE_CONTRACT_ADDRESS ?? deployment.contracts.ComplianceSource;
+let ASC_ADDRESS      = process.env.ASC_CONTRACT_ADDRESS ?? deployment.contracts.ProofmarkASC;
+let REGISTRY_ADDRESS = process.env.REGISTRY_CONTRACT_ADDRESS ?? deployment.contracts.ProofmarkRegistry;
 
 const DEFAULT_SOURCE_RPC = 'https://ethereum-sepolia-rpc.publicnode.com';
+const DEFAULT_SOURCE_HEADER_RPC = 'https://rpc.sepolia.org';
 const DEFAULT_HUB_RPC    = 'https://rpc.cc3-testnet.creditcoin.network';
 
 /** The current demo holder: passes frozen sandbox policy 2, fails production policy 1. */
@@ -66,23 +85,26 @@ const POLICY_PRODUCTION = 1n;   // KR production, requireAll 0x10024, regime 1
 
 // ── ABIs. Hand-written fragments, so the script runs without `forge build`. ──
 
-/** ComplianceSource.MarkIssued(address,bytes32,address,bytes32,bytes32), docs/04 section 8. */
-const MARK_ISSUED_TOPIC = '0xffac883eea6676651044a7e28ee0527defa8e3fce7558142c598e6569ef5a5f3';
-/** ProofmarkASC events. Compute these from the signature so a schema change cannot leave stale topics. */
-const MARK_MATERIALIZED_TOPIC = ethers.id('MarkMaterialized(address,bytes32,uint64,uint64)');
-const MARK_TOMBSTONED_TOPIC = ethers.id('MarkTombstoned(address,uint8,uint64,uint64)');
-/** ProofmarkASC.EpochAccepted(uint32,bytes32,uint40) */
-const EPOCH_ACCEPTED_TOPIC = ethers.id('EpochAccepted(uint32,bytes32,uint40)');
 
 const SOURCE_ABI = [
   'function lastEpoch() view returns (uint32)',
   'function owner() view returns (address)',
   'function isEpochPublisher(address) view returns (bool)',
-  'function setEpochPublisher(address account, bool allowed)',
-  'function publishEpoch(uint32 epoch, bytes32 root, uint32 listVersion, uint40 validUntil)',
+  'function isIssuer(address) view returns (bool)',
+  ...EPOCH_SOURCE_ABI,
+  ...ROSTER_AUTH_ABI,
 ];
 
 const ASC_ABI = [
+  'function sourceContract() view returns (address)',
+  'function expectedChainKey() view returns (uint64)',
+  'function ROSTER_AUTH_VERSION() view returns (uint256)',
+  'function epochIssuerApproved(uint32,address) view returns (bool)',
+  'function EPOCH_SCHEMA_VERSION() view returns (uint256)',
+  'function epochListVersion() view returns (uint32)',
+  'function epochSourceCutoff() view returns (uint40)',
+  'function epochPublishedAt() view returns (uint40)',
+  'function epochSnapshotId() view returns (bytes32)',
   'function tombstone(address) view returns (bool)',
   'function latestEpoch() view returns (uint32)',
   'function epochValidUntil() view returns (uint40)',
@@ -91,10 +113,7 @@ const ASC_ABI = [
   'function getMark(address) view returns (tuple(uint8 status, uint8 origin, uint8 kind, uint8 assurance, uint16 regime, uint16 jurisdiction, uint32 methods, uint40 issuedAt, uint40 expiry, uint32 epoch, bytes32 claimsRoot, bytes32 evidenceHash, address issuer))',
 ];
 
-const REGISTRY_ABI = [
-  'function verifyWithRoster(address subject, uint256 policyId, tuple(bytes32 attrs, bytes32 claimsRoot, bytes32 evidenceHash, address issuer) mark, tuple(uint256 index, bytes32[] siblings) inclusion) view returns (bool)',
-  'function proveNotInRoster(address subject, tuple(tuple(uint256 index, bytes32[] siblings) left, bytes32 leftKey, bytes32 leftMark, tuple(uint256 index, bytes32[] siblings) right, bytes32 rightKey, bytes32 rightMark) proof) view returns (bool)',
-];
+const REGISTRY_ABI = [...ROSTER_REGISTRY_ABI, 'function ASC() view returns (address)'];
 
 // ── Small helpers ──
 
@@ -142,325 +161,47 @@ async function retry<T>(label: string, fn: () => Promise<T>, attempts = num('RPC
 
 // ── 1. Roster construction ─────────────────────────────────────────────────────
 
-/**
- * Oldest ComplianceSource log this repository has observed on Sepolia: the `setIssuer` call made
- * immediately after deployment (block 11597760, 2026-08-31). Used only as a floor for the source
- * scan, so a public endpoint that answers a wide `eth_getLogs` incompletely cannot shorten the
- * range. Discovery still runs; this is the backstop, and `SOURCE_FROM_BLOCK` overrides both.
- */
-const SOURCE_EARLIEST_KNOWN_BLOCK = 11_597_760;
-
-interface Candidate {
-  subject: string;
-  entry: RosterEntry;
-  blockNumber: number;
-  logIndex: number;
-  txHash: string;
-}
-
 interface Excluded { subject: string; reason: string }
-
 interface Roster {
-  tree: RosterTree;
-  excluded: Excluded[];
-  scannedFrom: number;
-  scannedTo: number;
-  startMethod: string;
+  tree: RosterTree; excluded: Excluded[]; scannedFrom: number; scannedTo: number; startMethod: string;
+  sourceSnapshot: SourceSnapshotManifest;
 }
 
-/**
- * Smallest block at which the contract already has code.
- *
- * Cheap — about 24 calls for an 11.6M-block chain — but it needs historical state, which the
- * public Sepolia endpoint prunes ("state at block #N is pruned"). The caller falls back when this
- * throws, so an archive endpoint gets the exact answer and a pruned one still works.
- */
-async function creationBlockByCode(src: ethers.JsonRpcProvider, address: string, head: number): Promise<number> {
-  if ((await src.getCode(address, head)) === '0x') throw new Error(`no code at ${address} on the source chain`);
-  let lo = 0, hi = head;
-  while (lo < hi) {
-    const mid = Math.floor((lo + hi) / 2);
-    const code = await src.getCode(address, mid);   // throws on a pruned node
-    if (code === '0x') lo = mid + 1; else hi = mid;
-  }
-  return lo;
-}
-
-/**
- * Oldest block carrying a log from `address`, found by walking backwards in windows.
- *
- * Works on a pruned node, because the log index survives state pruning. Two consecutive empty
- * windows are required before stopping: one endpoint behind this URL answered a 15,000-block range
- * with one of the four logs it returned for a 1,000-block sub-range, so a single empty answer is
- * not evidence that history ended.
- */
-async function earliestLogBlock(
-  provider: ethers.JsonRpcProvider, address: string, head: number, window: number, maxWindows: number,
-): Promise<number | null> {
-  let earliest: number | null = null;
-  let emptyRun = 0;
-  let to = head;
-  for (let i = 0; i < maxWindows && to >= 0; i++) {
-    const from = Math.max(0, to - window + 1);
-    const logs = await retry(`getLogs ${from}-${to}`, () => provider.getLogs({ address, fromBlock: from, toBlock: to }));
-    if (logs.length > 0) {
-      const min = Math.min(...logs.map((l) => l.blockNumber));
-      earliest = earliest === null ? min : Math.min(earliest, min);
-      emptyRun = 0;
-    } else if (++emptyRun >= 2 && earliest !== null) {
-      return earliest;
-    }
-    if (from === 0) break;
-    to = from - 1;
-  }
-  return earliest;
-}
-
-/**
- * What the chain of record has ever materialised, read from the ASC's own events on CC3.
- *
- * This is the completeness anchor for the source scan. `MarkMaterialized` and `MarkTombstoned`
- * carry the SOURCE block height they were applied from, so CC3 states, independently of any
- * Sepolia log query, both which subjects exist and how far back the source scan has to reach.
- * Without it a public endpoint that drops a `MarkIssued` from its answer would silently produce a
- * roster missing an active mark — and absence from a roster is exactly how revocation is expressed.
- */
-async function hubKnownSubjects(
-  hub: ethers.JsonRpcProvider, head: number, window: number, maxWindows: number,
-): Promise<{ subjects: Set<string>; minSourceHeight: number | null }> {
-  const coder = ethers.AbiCoder.defaultAbiCoder();
-  const subjects = new Set<string>();
-  let minSourceHeight: number | null = null;
-  let emptyRun = 0;
-  let to = head;
-
-  for (let i = 0; i < maxWindows && to >= 0; i++) {
-    const from = Math.max(0, to - window + 1);
-    // No topic filter, matching the worker: an event added later is not silently missed.
-    const logs = await retry(`CC3 getLogs ${from}-${to}`, () => hub.getLogs({ address: ASC_ADDRESS, fromBlock: from, toBlock: to }));
-    let hits = 0;
-    for (const l of logs) {
-      if (l.topics[0] !== MARK_MATERIALIZED_TOPIC && l.topics[0] !== MARK_TOMBSTONED_TOPIC) continue;
-      hits++;
-      subjects.add(ethers.getAddress(ethers.dataSlice(l.topics[1], 12)));
-      // data: MarkMaterialized (bytes32 attrs, uint64 blockHeight, uint64 txIndex)
-      //    or MarkTombstoned (uint8 status, uint64 blockHeight, uint64 txIndex).
-      const shape = l.topics[0] === MARK_MATERIALIZED_TOPIC
-        ? ['bytes32', 'uint64', 'uint64'] : ['uint8', 'uint64', 'uint64'];
-      const srcHeight = Number(coder.decode(shape, l.data)[1]);
-      if (srcHeight > 0) minSourceHeight = minSourceHeight === null ? srcHeight : Math.min(minSourceHeight, srcHeight);
-    }
-    if (logs.length > 0) emptyRun = 0; else if (++emptyRun >= 2 && hits === 0 && subjects.size > 0) break;
-    if (from === 0) break;
-    to = from - 1;
-  }
-  return { subjects, minSourceHeight };
-}
-
-async function findScanStart(
-  src: ethers.JsonRpcProvider, head: number, hubMinSourceHeight: number | null,
-): Promise<{ block: number; method: string }> {
-  if (process.env.SOURCE_FROM_BLOCK) {
-    return { block: num('SOURCE_FROM_BLOCK', 0), method: 'SOURCE_FROM_BLOCK' };
-  }
-
-  const floors: string[] = [];
-  let block = SOURCE_EARLIEST_KNOWN_BLOCK;
-  floors.push('oldest observed contract log');
-
-  if (hubMinSourceHeight !== null && hubMinSourceHeight < block) {
-    block = hubMinSourceHeight;
-    floors.unshift('oldest source height in the ASC events on CC3');
-  }
-
-  try {
-    const created = await creationBlockByCode(src, SOURCE_ADDRESS, head);
-    if (created < block) { block = created; floors.unshift('contract creation block (eth_getCode binary search)'); }
-    else floors.push('contract creation block (eth_getCode binary search)');
-  } catch (e: any) {
-    say(`  note: eth_getCode over history is unavailable here (${e?.shortMessage ?? e?.message ?? e}); using the log-index floors instead`);
-    const walked = await earliestLogBlock(src, SOURCE_ADDRESS, head, num('SOURCE_LOG_WINDOW', 50_000), num('SOURCE_LOG_WINDOWS', 40));
-    if (walked !== null && walked < block) { block = walked; floors.unshift('oldest contract log (eth_getLogs backward walk)'); }
-  }
-
-  return { block, method: `lowest of: ${floors.join(', ')}` };
-}
-
-/**
- * One `eth_getLogs` pass over [from, to], stepping by `span`, unioned into `into`.
- *
- * Filtered by address only and matched on topic0 here, the way the worker does it: the same
- * endpoint answered an address-and-topic query for a range with none of the logs it returned for
- * the identical address-only query, so the topic filter is not something to rely on. Client-side
- * matching costs one comparison per log and cannot lose one.
- */
-async function issuancePass(
-  src: ethers.JsonRpcProvider, from: number, to: number, span: number, into: Map<string, Candidate>,
-): Promise<number> {
-  const coder = ethers.AbiCoder.defaultAbiCoder();
-  let seen = 0;
-
-  for (let start = from; start <= to; start += span) {
-    const end = Math.min(start + span - 1, to);
-    const logs = await retry(`getLogs ${start}-${end}`, () => src.getLogs({ address: SOURCE_ADDRESS, fromBlock: start, toBlock: end }));
-    for (const l of logs) {
-      if (l.topics[0] !== MARK_ISSUED_TOPIC) continue;
-      seen++;
-      // topics: sig, subject, attrs, issuer. data: claimsRoot, evidenceHash.
-      const subject = ethers.getAddress(ethers.dataSlice(l.topics[1], 12));
-      const issuer = ethers.getAddress(ethers.dataSlice(l.topics[3], 12));
-      const [claimsRoot, evidenceHash] = coder.decode(['bytes32', 'bytes32'], l.data);
-      into.set(`${l.transactionHash}:${l.index}`, {
-        subject,
-        entry: { subject, attrs: l.topics[2], claimsRoot, evidenceHash, issuer },
-        blockNumber: l.blockNumber, logIndex: l.index, txHash: l.transactionHash,
-      });
-    }
-  }
-  return seen;
-}
-
-/** Newest MarkIssued per subject out of everything collected so far. */
-function newestPerSubject(all: Map<string, Candidate>): Map<string, Candidate> {
-  const latest = new Map<string, Candidate>();
-  for (const c of all.values()) {
-    const prev = latest.get(c.subject);
-    const newer = !prev || c.blockNumber > prev.blockNumber
-      || (c.blockNumber === prev.blockNumber && c.logIndex > prev.logIndex);
-    if (newer) latest.set(c.subject, c);
-  }
-  return latest;
-}
-
-/**
- * Every MarkIssued in the range, collected until the ASC's own subject set is covered.
- *
- * Each attempt sweeps the range twice, once in small chunks and once in wide windows, and unions
- * the results. Two widths because the endpoint's answers disagree by width, and a union because it
- * can only ever be too complete — a surplus candidate is thrown out by the ASC filters afterwards,
- * whereas a missing one silently becomes a revocation. The loop stops as soon as the union covers
- * every subject CC3 knows about; the caller fails closed if it never does.
- */
-async function collectIssuances(
-  src: ethers.JsonRpcProvider, from: number, to: number,
-  chunk: number, window: number, attempts: number, hubSubjects: Set<string>,
-): Promise<{ latest: Map<string, Candidate>; all: Map<string, Candidate>; attemptsUsed: number }> {
-  const all = new Map<string, Candidate>();
-  let latest = new Map<string, Candidate>();
-
-  for (let attempt = 1; attempt <= Math.max(1, attempts); attempt++) {
-    const before = all.size;
-    const chunked = await issuancePass(src, from, to, chunk, all);
-    const windowed = await issuancePass(src, from, to, window, all);
-    latest = newestPerSubject(all);
-    const missing = [...hubSubjects].filter((s) => !latest.has(s)).length;
-    say(`               pass ${attempt}: ${chunked} in chunks of ${chunk}, ${windowed} in windows of ${window}, `
-      + `${all.size} unioned (+${all.size - before}) → ${latest.size} subject(s), ${missing} known to CC3 still missing`);
-    if (missing === 0) return { latest, all, attemptsUsed: attempt };
-  }
-  return { latest, all, attemptsUsed: Math.max(1, attempts) };
-}
-
-/**
- * The active set as the chain of record sees it.
- *
- * Sepolia says what was issued; CC3 says what survived. A subject enters the roster only if the
- * ASC holds it Active, untombstoned and unexpired — the same three conditions `isVerified`
- * applies — and only if the ASC's stored attributes are the ones the source event carries. Every
- * other subject is named with its reason: a roster that quietly drops a subject is
- * indistinguishable from one that quietly keeps a revoked one.
- */
-async function buildFromChain(src: ethers.JsonRpcProvider, hub: ethers.JsonRpcProvider): Promise<Roster> {
+/** Source lifecycle, not the hub's possibly delayed view, defines the cutoff set. */
+async function buildFromChain(src: ethers.JsonRpcProvider, headers: ethers.JsonRpcProvider, hub: ethers.JsonRpcProvider, cutoffBlock?: number, cutoffHash?: string, hubBlockNumber?: number): Promise<Roster> {
+  if (process.env.SOURCE_FROM_BLOCK) throw new Error('SOURCE_FROM_BLOCK is not a completeness anchor; supply verified SOURCE_DEPLOYMENT_TX');
+  const deploymentTx = process.env.SOURCE_DEPLOYMENT_TX ||
+    (SOURCE_ADDRESS.toLowerCase() === deployment.contracts.ComplianceSource.toLowerCase() ? deployment.sourceDeployment?.transactionHash : undefined);
+  if (!deploymentTx) throw new Error('SOURCE_DEPLOYMENT_TX or matching deployment.sourceDeployment.transactionHash is required; no historical floor fallback');
+  const hubBlock = await hub.getBlock(hubBlockNumber ?? 'latest');
+  if (!hubBlock?.hash) throw new Error('hub binding block unavailable');
+  if (hubBlockNumber !== undefined && hubBlock.number !== hubBlockNumber) throw new Error('hub binding block number mismatch');
   const asc = new ethers.Contract(ASC_ADDRESS, ASC_ABI, hub);
-  const [srcHead, hubHead] = await Promise.all([
-    retry('Sepolia getBlockNumber', () => src.getBlockNumber()),
-    retry('CC3 getBlockNumber', () => hub.getBlockNumber()),
+  const [sourceAddress, chainKey] = await Promise.all([
+    asc.sourceContract({ blockTag: hubBlock.number }), asc.expectedChainKey({ blockTag: hubBlock.number }),
   ]);
-
-  const hubKnown = await hubKnownSubjects(hub, hubHead, num('HUB_LOG_WINDOW', 20_000), num('HUB_LOG_WINDOWS', 20));
-  say(`  hub scan     ProofmarkASC ${ASC_ADDRESS} on CC3`);
-  say(`               ${hubKnown.subjects.size} subject(s) ever materialised or tombstoned, oldest source height ${hubKnown.minSourceHeight ?? 'unknown'}`);
-
-  const { block: startBlock, method: startMethod } = await findScanStart(src, srcHead, hubKnown.minSourceHeight);
-  const chunk = num('SOURCE_SCAN_CHUNK', 500);
-  const window = num('SOURCE_LOG_WINDOW', 50_000);
-
-  say(`  source scan  ComplianceSource ${SOURCE_ADDRESS} on Sepolia`);
-  say(`               blocks ${startBlock}..${srcHead}, chunks of ${chunk} unioned with windows of ${window}`);
-  say(`               start = ${startMethod}`);
-
-  const scan = await collectIssuances(
-    src, startBlock, srcHead, chunk, window, num('SOURCE_SCAN_ATTEMPTS', 4), hubKnown.subjects,
-  );
-
-  // Fail closed on an incomplete source scan. The ASC cannot know a subject that was never issued
-  // on the source chain, so anything it knows and the scan never saw means the log query lost it.
-  const missing = [...hubKnown.subjects].filter((s) => !scan.latest.has(s));
-  if (missing.length) {
-    bad(`the source scan is still incomplete after ${scan.attemptsUsed} pass(es): the ASC on CC3 knows`);
-    bad('subjects with no MarkIssued event anywhere in the scanned range');
-    for (const s of missing) bad(`  ${s}`);
-    bad('Refusing to build a roster from a partial view — a missing active mark reads as a revocation.');
-    bad('Widen the range with SOURCE_FROM_BLOCK, raise SOURCE_SCAN_ATTEMPTS, or point');
-    bad('SOURCE_CHAIN_RPC_URL at an endpoint whose log index answers the whole range.');
-    process.exit(1);
-  }
-
-  const now = Math.floor(Date.now() / 1000);
-  const entries: RosterEntry[] = [];
-  const excluded: Excluded[] = [];
-
-  for (const c of [...scan.latest.values()].sort((a, b) => a.blockNumber - b.blockNumber || a.logIndex - b.logIndex)) {
-    const [tomb, mark] = await Promise.all([
-      retry(`tombstone(${c.subject})`, () => asc.tombstone(c.subject) as Promise<boolean>),
-      retry(`getMark(${c.subject})`, () => asc.getMark(c.subject) as Promise<any>),
-    ]);
-    const status = Number(mark.status);
-    const expiry = Number(mark.expiry);
-
-    if (tomb) { excluded.push({ subject: c.subject, reason: 'tombstoned on CC3 (revoked or sanctioned), so it is out of the roster — absence is the revocation' }); continue; }
-    if (status !== 1) { excluded.push({ subject: c.subject, reason: `ASC status ${status}, not Active (1)` }); continue; }
-    if (expiry <= now) { excluded.push({ subject: c.subject, reason: `mark expired at ${iso(expiry)}` }); continue; }
-
-    // The roster entry has to be the mark the chain of record actually holds. If the ASC's stored
-    // attributes repack to something else, the newest issuance has not been carried across yet,
-    // and publishing the source's version would put a mark in the root that no verifier can
-    // reconcile with ASC state.
-    const repacked = packAttrs({
-      kind: Number(mark.kind), assurance: Number(mark.assurance), regime: Number(mark.regime),
-      jurisdiction: Number(mark.jurisdiction), methods: Number(mark.methods),
-      issuedAt: Number(mark.issuedAt), expiry, epoch: Number(mark.epoch),
-    });
-    if (repacked.toLowerCase() !== c.entry.attrs.toLowerCase()) {
-      excluded.push({ subject: c.subject, reason: `CC3 holds attrs ${repacked}, the source event carries ${c.entry.attrs} — the latest issuance has not been carried across yet` });
-      continue;
-    }
-    if (mark.issuer.toLowerCase() !== c.entry.issuer.toLowerCase()
-      || mark.claimsRoot.toLowerCase() !== c.entry.claimsRoot.toLowerCase()
-      || mark.evidenceHash.toLowerCase() !== c.entry.evidenceHash.toLowerCase()) {
-      excluded.push({ subject: c.subject, reason: 'CC3 holds a different issuer, claims root or evidence hash than the source event' });
-      continue;
-    }
-
-    entries.push(c.entry);
-  }
-
-  const tree = buildRoster(entries);
-
-  // Fail closed. Re-read the two conditions that must never hold for an included subject, rather
-  // than trusting the loop above to have been written correctly.
-  for (const e of tree.entries) {
-    const [tomb, mark] = await Promise.all([
-      retry(`tombstone(${e.subject})`, () => asc.tombstone(e.subject) as Promise<boolean>),
-      retry(`getMark(${e.subject})`, () => asc.getMark(e.subject) as Promise<any>),
-    ]);
-    if (tomb || Number(mark.status) !== 1) {
-      bad(`refusing to publish: ${e.subject} is tombstoned=${tomb} status=${Number(mark.status)} yet sits in the roster`);
-      process.exit(1);
-    }
-  }
-
-  return { tree, excluded, scannedFrom: startBlock, scannedTo: srcHead, startMethod };
+  if (sourceAddress.toLowerCase() !== SOURCE_ADDRESS.toLowerCase() || chainKey !== 1n ||
+      (await hub.getBlock(hubBlock.number))?.hash !== hubBlock.hash) throw new Error('ASC source binding changed or mismatched');
+  const checkpointPath = process.env.SOURCE_SNAPSHOT_CHECKPOINT_PATH, checkpointKey = process.env.SOURCE_SNAPSHOT_CHECKPOINT_KEY;
+  if (Boolean(checkpointPath) !== Boolean(checkpointKey)) throw new Error('SOURCE_SNAPSHOT_CHECKPOINT_PATH and SOURCE_SNAPSHOT_CHECKPOINT_KEY must be configured together');
+  const store = checkpointPath && checkpointKey ? new SourceCheckpointStore(checkpointPath, checkpointKey,
+    { chainId: 11155111n, source: SOURCE_ADDRESS, deploymentTx }) : undefined;
+  let snapshot: Awaited<ReturnType<typeof buildSourceRoster>>;
+  try {
+    const saved = store?.load();
+    const checkpoint = saved && (cutoffBlock === undefined || saved.blockNumber < cutoffBlock) ? saved : undefined;
+    snapshot = await buildSourceRoster(src, { source: SOURCE_ADDRESS, chainId: 11155111n, deploymentTx,
+      confirmations: num('SOURCE_CONFIRMATIONS', 12), headerReader: headers, checkpoint, cutoffBlock, expectedCutoffHash: cutoffHash,
+      checkpointSink: store && (!saved || cutoffBlock === undefined || cutoffBlock > saved.blockNumber)
+        ? value => store.save(value) : undefined,
+      logChunk: num('SOURCE_SCAN_CHUNK', 100), maxBlocks: num('SOURCE_SNAPSHOT_MAX_BLOCKS', 20_000),
+      maxReceipts: num('SOURCE_SNAPSHOT_MAX_RECEIPTS', 200_000) });
+  } finally { store?.close(); }
+  const m = snapshot.manifest;
+  say(`  source snapshot blocks ${m.deploymentBlock}..${m.cutoffBlock}, ${m.receipts} receipts, ${m.sourceLogs} source logs`);
+  say(`  cutoff hash ${m.cutoffBlockHash}; transcript ${m.blocksDigest}`);
+  return { ...snapshot, scannedFrom: m.deploymentBlock, scannedTo: m.cutoffBlock,
+    startMethod: 'verified source deployment transaction', sourceSnapshot: m };
 }
 
 function printRoster(r: Roster): void {
@@ -484,7 +225,7 @@ function selfCheck(tree: RosterTree): void {
       bad(`inclusion failed for ${e.subject} at leaf ${idx}`);
     }
   });
-  if (!inclusionOk) process.exit(1);
+  if (!inclusionOk) throw new Error('EPOCH_VERIFICATION_FAILED');
   say('  self-check inclusion: ok');
 
   let nonInclusionOk = true;
@@ -499,37 +240,47 @@ function selfCheck(tree: RosterTree): void {
       bad(`non-inclusion proof unavailable for ${target}: ${e?.message ?? e}`);
     }
   }
-  if (!nonInclusionOk) process.exit(1);
+  if (!nonInclusionOk) throw new Error('EPOCH_VERIFICATION_FAILED');
   say('  self-check non-inclusion: ok');
 }
 
 // ── 2. Epoch parameters ────────────────────────────────────────────────────────
 
-interface EpochParams { listVersion: number; validDays: number; validUntil: number }
+interface EpochParams { listVersion: number; validDays: number; validUntil: number; sourceCutoff: number; snapshotId: string; provenance: ListProvenance }
 
-function epochParams(): EpochParams {
-  const listVersion = num('EPOCH_LIST_VERSION', 1);
-  const validDays = num('EPOCH_VALID_DAYS', 60);
-  const validUntil = Math.floor(Date.now() / 1000) + validDays * 86_400;
-  if (validUntil >= 2 ** 40) throw new Error('validUntil does not fit in uint40');
-  return { listVersion, validDays, validUntil };
+async function epochParams(src: ethers.JsonRpcProvider, roster: Roster, frozen?: ApprovalBundle): Promise<EpochParams> {
+  if (process.env.EPOCH_LIST_VERSION || process.env.EPOCH_VALID_DAYS) throw new Error('legacy epoch overrides are unsupported; use a fresh snapshot and EPOCH_VALID_HOURS <=24');
+  const [block, lists] = await Promise.all([src.getBlock(roster.scannedTo), loadLists(join(REPO, 'data/raw'), 'epoch')]);
+  if (!block) throw new Error('source cutoff block unavailable');
+  if (block.hash !== roster.sourceSnapshot.cutoffBlockHash || block.timestamp !== roster.sourceSnapshot.cutoffTimestamp) throw new Error('source cutoff changed after snapshot replay');
+  if (frozen && (block.hash !== frozen.sourceCutoffBlockHash || block.timestamp !== frozen.value.sourceCutoff)) throw new Error('signed source cutoff changed; rebuild and obtain new approvals');
+  const hours = frozen ? String((frozen.value.validUntil - frozen.value.sourceCutoff) / 3600) : process.env.EPOCH_VALID_HOURS ?? '24';
+  return { ...boundedEpochParams(block.timestamp, lists.provenance, Date.now(), hours), provenance: lists.provenance };
+}
+
+interface ApprovalBundle { version: number; digest: string; sourceCutoffBlock: number; sourceCutoffBlockHash: string; sourceSnapshot: SourceSnapshotManifest; value: RosterApprovalMessage; approvals: unknown[] }
+function approvalBundle(): ApprovalBundle | undefined {
+  const path = process.env.EPOCH_APPROVALS_FILE;
+  if (!path) return;
+  if (statSync(path).size > 256 * 1024) throw new Error('approval file exceeds 256 KiB');
+  const b = JSON.parse(readFileSync(path, 'utf8')) as ApprovalBundle;
+  if (b.version !== 1 || !Number.isSafeInteger(b.sourceCutoffBlock) || b.sourceCutoffBlock <= 0 || !ethers.isHexString(b.sourceCutoffBlockHash, 32) ||
+    rosterApprovalData(11155111n, SOURCE_ADDRESS, b.value).digest.toLowerCase() !== b.digest?.toLowerCase()) throw new Error('invalid approval plan or source/chain binding');
+  return b;
 }
 
 /**
  * The freshness trade-off, stated with the numbers of this run.
  *
- * `validUntil` is a demo parameter, not a claim about how often we would publish. Once it passes,
- * `ASC.isRosterFresh()` is false and `verifyWithRoster` fails closed for everyone — there is no
- * "unknown means allowed" path. In production the epoch cadence would be daily so the roster
- * window matches the revocation SLA; here it is stretched so the roster is still fresh for anyone
- * reading the submission.
+ * Both positive and negative current-roster proofs use the source-cutoff lifetime.
+ * Relaying an old event cannot restart that lifetime. Completeness remains a publisher assertion.
  */
 function freshnessNote(p: EpochParams): string[] {
   return [
-    `  validUntil ${p.validUntil} (${iso(p.validUntil)}), ${p.validDays} days from now`,
-    '  That window is a demo parameter chosen so the roster stays fresh for anyone reading the',
-    '  submission after the 2026-09-13 judging deadline. In production the epoch cadence would be',
-    '  daily, so the roster window matches the revocation SLA rather than a review period.',
+    `  source cutoff ${p.sourceCutoff} (${iso(p.sourceCutoff)}), snapshot ${p.snapshotId}`,
+    `  validUntil ${p.validUntil} (${iso(p.validUntil)}), ${p.validDays} days from SOURCE CUTOFF, never hub arrival`,
+    '  Maximum duration 24 hours; publish within one hour of cutoff. This is not a regulatory SLA.',
+    '  Snapshot binding does not prove every roster member was rescreened or that the set is complete.',
     '  Once validUntil passes, ASC.isRosterFresh() is false and verifyWithRoster fails closed for',
     '  every subject. An expired roster verifies nobody.',
   ];
@@ -539,10 +290,7 @@ function freshnessNote(p: EpochParams): string[] {
 
 interface Verdict { label: string; expected: boolean; actual: boolean }
 
-/** `verifyWithRoster(address,uint256,(bytes32,bytes32,bytes32,address),(uint256,bytes32[]))` */
-const SEL_VERIFY_WITH_ROSTER = ethers.id('verifyWithRoster(address,uint256,(bytes32,bytes32,bytes32,address),(uint256,bytes32[]))').slice(2, 10);
-/** `proveNotInRoster(address,((uint256,bytes32[]),bytes32,bytes32,(uint256,bytes32[]),bytes32,bytes32))` */
-const SEL_PROVE_NOT_IN_ROSTER = ethers.id('proveNotInRoster(address,((uint256,bytes32[]),bytes32,bytes32,(uint256,bytes32[]),bytes32,bytes32))').slice(2, 10);
+const [SEL_VERIFY_WITH_ROSTER, SEL_PROVE_NOT_IN_ROSTER] = ROSTER_SELECTORS;
 
 /**
  * Does the deployed registry actually carry the proof-mode entry points.
@@ -552,8 +300,8 @@ const SEL_PROVE_NOT_IN_ROSTER = ethers.id('proveNotInRoster(address,((uint256,by
  * Reporting a missing deployment as a failed verdict would be the worst possible answer here.
  * The selector is searched for in the runtime code, which is where solc's dispatch table puts it.
  */
-async function registryHasProofMode(hub: ethers.JsonRpcProvider): Promise<boolean> {
-  const code = (await retry('registry getCode', () => hub.getCode(REGISTRY_ADDRESS))).toLowerCase();
+async function registryHasProofMode(hub: ethers.JsonRpcProvider, blockNumber: number): Promise<boolean> {
+  const code = (await retry('registry getCode', () => hub.getCode(REGISTRY_ADDRESS, blockNumber))).toLowerCase();
   return code.includes(SEL_VERIFY_WITH_ROSTER) && code.includes(SEL_PROVE_NOT_IN_ROSTER);
 }
 
@@ -587,14 +335,15 @@ function offChainVerdicts(tree: RosterTree, onChainRoot: string): Verdict[] {
   return out;
 }
 
-async function rosterVerdicts(hub: ethers.JsonRpcProvider, tree: RosterTree): Promise<Verdict[]> {
+async function rosterVerdicts(hub: ethers.JsonRpcProvider, tree: RosterTree, blockNumber: number): Promise<Verdict[]> {
   const reg = new ethers.Contract(REGISTRY_ADDRESS, REGISTRY_ABI, hub);
+  const at = { blockTag: blockNumber };
   const out: Verdict[] = [];
 
   const i = tree.entries.findIndex((e) => e.subject.toLowerCase() === DEMO_SUBJECT.toLowerCase());
   if (i < 0) {
     bad(`${DEMO_SUBJECT} is not in the roster, so the membership verdicts cannot be produced`);
-    process.exit(1);
+    throw new Error('EPOCH_VERIFICATION_FAILED');
   }
   const e = tree.entries[i];
   const mark = { attrs: e.attrs, claimsRoot: e.claimsRoot, evidenceHash: e.evidenceHash, issuer: e.issuer };
@@ -603,12 +352,12 @@ async function rosterVerdicts(hub: ethers.JsonRpcProvider, tree: RosterTree): Pr
   out.push({
     label: `verifyWithRoster(${short(DEMO_SUBJECT)}, policy ${POLICY_PILOT} KR pilot)`,
     expected: true,
-    actual: await retry('verifyWithRoster(policy 2)', () => reg.verifyWithRoster(DEMO_SUBJECT, POLICY_PILOT, mark, inc)),
+    actual: await retry('verifyWithRoster(policy 2)', () => reg.verifyWithRoster(DEMO_SUBJECT, POLICY_PILOT, mark, inc, at)),
   });
   out.push({
     label: `verifyWithRoster(${short(DEMO_SUBJECT)}, policy ${POLICY_PRODUCTION} KR VASP production)`,
     expected: false,
-    actual: await retry('verifyWithRoster(policy 1)', () => reg.verifyWithRoster(DEMO_SUBJECT, POLICY_PRODUCTION, mark, inc)),
+    actual: await retry('verifyWithRoster(policy 1)', () => reg.verifyWithRoster(DEMO_SUBJECT, POLICY_PRODUCTION, mark, inc, at)),
   });
 
   for (const [target, what] of [[NEVER_ISSUED, 'never issued']] as const) {
@@ -620,7 +369,7 @@ async function rosterVerdicts(hub: ethers.JsonRpcProvider, tree: RosterTree): Pr
     out.push({
       label: `proveNotInRoster(${short(target)}, ${what})`,
       expected: true,
-      actual: await retry(`proveNotInRoster(${target})`, () => reg.proveNotInRoster(target, arg)),
+      actual: await retry(`proveNotInRoster(${target})`, () => reg.proveNotInRoster(target, arg, at)),
     });
   }
   return out;
@@ -640,6 +389,19 @@ function printVerdicts(vs: Verdict[]): boolean {
 // ── 4. Recording ──────────────────────────────────────────────────────────────
 
 interface Record {
+  sourcePublicationObservation?: PublicationConfirmation;
+  hubCarry?: NonNullable<Awaited<ReturnType<typeof observeEpochCarry>>>;
+  runtimeObservation?: Awaited<ReturnType<typeof checkEpochRuntimes>>;
+  policyObservation?: Awaited<ReturnType<typeof checkEpochPolicies>>;
+  hubObservation?: EpochHubObservation;
+  sourceSnapshot?: SourceSnapshotManifest;
+  rosterAuthVersion?: number;
+  approvedIssuers?: string[];
+  epochSchemaVersion?: number;
+  sourceCutoff?: number;
+  publishedAt?: number;
+  snapshotId?: string;
+  rosterFormatVersion?: number;
   epoch: number;
   root: string;
   listVersion: number;
@@ -661,17 +423,76 @@ interface Record {
   offChainChecks?: { label: string; expected: boolean; actual: boolean }[];
   registryProofMode?: boolean;
   checkedAt?: string;
+  proofAvailability?: { version: 1; seedHash: string; contentHash: string; replicaCount: number; prepublicationBound: boolean };
 }
 
-const recordPath = (epoch: number) => join(REPO, 'deployments', `epoch-${epoch}.json`);
+const recordPath = (epoch: number) => join(process.env.EPOCH_RECORD_DIR || join(REPO, 'deployments'), `epoch-v2-${SOURCE_ADDRESS.toLowerCase()}-${ASC_ADDRESS.toLowerCase()}-${epoch}.json`);
 
-/** Merge, so `--check` adds verdicts to what `--publish` measured instead of erasing it. */
+function proofReplicaDirectories(): string[] {
+  if (process.env.EPOCH_BUNDLE_DISCLOSURE_ACK !== 'wallet-linkable-roster-approved') {
+    throw new PublicationJournalError('PUBLICATION_ROSTER_DISCLOSURE_APPROVAL_REQUIRED');
+  }
+  let paths: unknown;
+  try { paths = JSON.parse(process.env.EPOCH_BUNDLE_REPLICA_DIRS ?? ''); }
+  catch { throw new PublicationJournalError('PUBLICATION_ROSTER_REPLICAS_REQUIRED'); }
+  if (!Array.isArray(paths) || paths.some(path => typeof path !== 'string')) {
+    throw new PublicationJournalError('PUBLICATION_ROSTER_REPLICAS_REQUIRED');
+  }
+  return paths;
+}
+
+function replicaScope(): RosterScope {
+  return { sourceChainId: 11155111, sourceChainKey: 1, hubChainId: 102031,
+    source: SOURCE_ADDRESS, asc: ASC_ADDRESS, registry: REGISTRY_ADDRESS };
+}
+
+function stagePublicationAvailability(record: PrepublicationRosterRecord): StagedRosterBundleReplicas {
+  try { return stageRosterBundleReplicas(record, replicaScope(), proofReplicaDirectories()); }
+  catch (error) {
+    if (error instanceof PublicationJournalError) throw error;
+    throw new PublicationJournalError(`PUBLICATION_ROSTER_REPLICAS_UNAVAILABLE: ${(error as Error).message}`);
+  }
+}
+
+function publicationBundleRecord(rec: Record): Omit<RosterBundle, 'bundleVersion' | 'scope'> {
+  if (rec.rosterFormatVersion !== 2 || rec.epochSchemaVersion !== 2 || rec.rosterAuthVersion !== 1 ||
+      rec.sourceCutoff === undefined || rec.publishedAt === undefined || rec.snapshotId === undefined || !rec.approvedIssuers) {
+    throw new PublicationJournalError('PUBLICATION_ROSTER_RECORD_INCOMPLETE');
+  }
+  return { rosterFormatVersion: 2, epochSchemaVersion: 2, rosterAuthVersion: 1,
+    epoch: rec.epoch, root: rec.root, listVersion: rec.listVersion, sourceCutoff: rec.sourceCutoff,
+    publishedAt: rec.publishedAt, validUntil: rec.validUntil, snapshotId: rec.snapshotId,
+    approvedIssuers: rec.approvedIssuers, entries: rec.entries };
+}
+
+function finalizePublicationAvailability(staged: StagedRosterBundleReplicas, publishedAt: number, prepublicationBound: boolean): NonNullable<Record['proofAvailability']> {
+  try {
+    const finalized = finalizeRosterBundleReplicas(staged, publishedAt);
+    return { version: 1, seedHash: finalized.seedHash, contentHash: finalized.contentHash,
+      replicaCount: finalized.replicaCount, prepublicationBound };
+  } catch (error) {
+    throw new PublicationJournalError(`PUBLICATION_ROSTER_REPLICAS_UNAVAILABLE: ${(error as Error).message}`);
+  }
+}
+
+function retainedProofAvailability(rec: Record): Record['proofAvailability'] {
+  try {
+    const prior = JSON.parse(readFileSync(recordPath(rec.epoch), 'utf8')) as Record;
+    const value = prior.proofAvailability;
+    if (prior.root !== rec.root || prior.sourceCutoff !== rec.sourceCutoff || prior.snapshotId !== rec.snapshotId ||
+        !value || value.version !== 1 || value.replicaCount < 2 || typeof value.prepublicationBound !== 'boolean' || !/^[0-9a-f]{64}$/.test(value.seedHash) ||
+        !/^[0-9a-f]{64}$/.test(value.contentHash)) throw new Error('invalid retained proof availability');
+    return value;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw new PublicationJournalError('PUBLICATION_ROSTER_EVIDENCE_UNAVAILABLE');
+  }
+}
+
+/** Complete current evidence only; previous hub observations are never implicitly merged. */
 function writeRecord(patch: Record): string {
   const p = recordPath(patch.epoch);
-  let prev: Partial<Record> = {};
-  try { prev = JSON.parse(readFileSync(p, 'utf8')); } catch { /* first write */ }
-  mkdirSync(dirname(p), { recursive: true });
-  writeFileSync(p, `${JSON.stringify({ ...prev, ...patch }, null, 2)}\n`);
+  writeEpochRecord(p, patch);
   return p;
 }
 
@@ -682,20 +503,20 @@ function writeRecord(patch: Record): string {
  * propagation row is not written. The repo's other measured numbers are not restated.
  */
 function writeSnippet(rec: Record): string {
-  const p = join(REPO, 'deployments', `epoch-${rec.epoch}.md`);
+  const p = recordPath(rec.epoch).replace(/\.json$/, '.md');
   const L: string[] = [];
   const prop = rec.propagationSeconds !== undefined ? mmss(rec.propagationSeconds) : null;
 
   L.push(`# Epoch ${rec.epoch} — measured README snippets`);
   L.push('');
-  L.push(`Generated by \`script/publish-epoch.ts\`. Every number below was measured in the run that wrote this file${rec.checkedAt ? ` (checks ${rec.checkedAt})` : ''}. Paste, do not edit.`);
+  L.push(`Generated by \`script/publish-epoch.ts\`${rec.checkedAt ? ` (checks ${rec.checkedAt})` : ''}. Source publication facts can precede this invocation. Only propagation explicitly measured in this invocation is included. These RPC observations are not independent deployment or submission approval.`);
   L.push('');
   L.push('## Section 8 — replaces the bullet "Epoch rosters (Mode B) are built but not published on chain."');
   L.push('');
 
   const b: string[] = [];
   b.push(`- **Epoch rosters (Mode B) are live: epoch ${rec.epoch} is published on chain.** `);
-  b.push(`The active set of ${rec.entryCount} mark${rec.entryCount === 1 ? '' : 's'} is one sorted-key Merkle root, \`${rec.root}\`, published by \`ComplianceSource.publishEpoch\` on Sepolia (\`${rec.publishEpochTx}\`) and accepted by \`ProofmarkASC\` on CC3`);
+  b.push(`The active set of ${rec.entryCount} mark${rec.entryCount === 1 ? '' : 's'} is one sorted-key Merkle root, \`${rec.root}\`, published through \`ComplianceSource\` on Sepolia (\`${rec.publishEpochTx}\`) and accepted by \`ProofmarkASC\` on CC3`);
   if (prop) b.push(` ${prop} later (one run)`);
   b.push('. ');
   if (rec.checks?.length) {
@@ -727,7 +548,7 @@ function writeSnippet(rec: Record): string {
     L.push('_Not written: this run did not measure propagation (no publish transaction in it)._');
   }
   L.push('');
-  writeFileSync(p, `${L.join('\n')}\n`);
+  writeVaultEnvelope(p, `${L.join('\n')}\n`);
   return p;
 }
 
@@ -736,97 +557,285 @@ function writeSnippet(rec: Record): string {
 function usage(): void {
   say(`Publish an epoch roster (Mode B) and prove it landed.
 
-  npx tsx script/publish-epoch.ts [--dry-run | --publish | --check | --help]
+  npx tsx script/publish-epoch.ts [--dry-run | --publish | --resume-publication | --check-publication | --cancel-unsigned-publication | --check | --help]
 
   --dry-run   default. Rebuild the active set from chain, print the roster, the root and the
               planned calls, self-check the tree. Reads no key and sends nothing.
-  --publish   Send at most two transactions on Sepolia, each on its own: setEpochPublisher (only
-              when the signer is the owner and not yet a publisher), then publishEpoch. Then poll
+  --publish   Persist intent and signed bytes before sending with an authorized publisher. Then poll
               ProofmarkASC.latestEpoch() on CC3 until the worker has carried the event across
               and record the observed propagation time.
   --check     View calls only. Rebuild the roster, compare it with the on-chain root, then ask the
               deployed ProofmarkRegistry for membership and non-membership verdicts.
-  --help      This text.
+  --resume-publication  Reconcile the journal's latest non-abandoned entry, never calculate a new epoch.
+              Confirmed source recovery writes its evidence and exits 2: CC3 is NOT_CHECKED.
+  --check-publication  Shell config only, no dotenv/private key. Observe the latest non-abandoned
+              journal entry's original source receipt, exact hub carry and current policy verdicts.
+              Never signs/sends/updates journal bytes; holds its local lease and writes derived evidence.
+  --cancel-unsigned-publication  Cancel only an unresolved never-signed plan; no RPC or transaction.
+  --help      This text. Select exactly one mode.
 
-Environment (all optional except the key, which only --publish reads):
+Environment (fresh snapshot for new sends; v2 deployments and dedicated journal for publication/resume):
 
   SOURCE_CHAIN_RPC_URL   default ${DEFAULT_SOURCE_RPC}
+  SOURCE_HEADER_RPC_URL  default ${DEFAULT_SOURCE_HEADER_RPC}; must be a different independently operated endpoint
   CREDITCOIN_RPC_URL     default ${DEFAULT_HUB_RPC}
-  SOURCE_FROM_BLOCK      skip creation-block discovery and scan from here
-  SOURCE_SCAN_CHUNK      default 500. Small eth_getLogs span for the source scan
-  SOURCE_LOG_WINDOW      default 50000. Wide span, used for the second sweep and the backward walk
-  SOURCE_LOG_WINDOWS     default 40. How many wide windows to walk before giving up
-  SOURCE_SCAN_ATTEMPTS   default 4. Sweeps of the source range before an incomplete scan is fatal
-  HUB_LOG_WINDOW         default 20000. CC3 eth_getLogs span (10s server-side query timeout)
-  HUB_LOG_WINDOWS        default 20. How many CC3 windows to walk back
-  EPOCH_LIST_VERSION     default 1. Version of the screening list set the roster was built against
-  EPOCH_VALID_DAYS       default 60. Roster validity window in days (uint40 seconds on chain)
+  SOURCE_DEPLOYMENT_TX   verified direct CREATE transaction; otherwise matching deployment manifest
+  SOURCE_CONFIRMATIONS   default 12; cutoff also must be at/below finalized
+  SOURCE_SCAN_CHUNK      default 100, maximum 1000. Receipt/getLogs comparison window
+  SOURCE_SNAPSHOT_MAX_BLOCKS    default 20000. Per-run scan budget; without checkpoint, full history
+  SOURCE_SNAPSHOT_MAX_RECEIPTS  default 200000. Per-run receipt budget; without checkpoint, full history
+  SOURCE_SNAPSHOT_CHECKPOINT_PATH optional encrypted incremental replay checkpoint
+  SOURCE_SNAPSHOT_CHECKPOINT_KEY  independent secret, at least 32 characters; required with checkpoint path
+  EPOCH_VALID_HOURS      default 24, at most 24. Lifetime from source cutoff, not hub arrival
+  SANCTIONS_MAX_AGE_HOURS shared freshness setting; epoch publication further caps list age at 24h
   EPOCH_POLL_SECONDS     default 15. Interval while waiting for CC3 to accept the epoch
   EPOCH_TIMEOUT_MINUTES  default 30. How long to wait before reporting the wait failed
+  EPOCH_HUB_CONFIRMATIONS default 6. Required depth of the exact matching hub acceptance receipt
+  EPOCH_HUB_FROM_BLOCK   --check-publication: required inclusive hub scan start, at/before acceptance.
+                        At most 20000 blocks through current head; no inferred/truncated floor.
   RPC_ATTEMPTS           default 5. Retries per RPC read; public endpoints answer inconsistently
-  DEPLOYER_PRIVATE_KEY   --publish only, read from the root .env. Never printed or persisted
+  EPOCH_PUBLISHER_ADDRESS  dry-run signing plan; required journal scope for --check-publication
+  EPOCH_APPROVALS_FILE     --publish: signed JSON plan produced by --dry-run (at most 256 KiB)
+  EPOCH_PUBLISHER_PRIVATE_KEY  publish/resume/cancel only. Dedicated signer; no deployer-key fallback
+  EPOCH_PUBLICATION_JOURNAL_PATH  required shared persistent path; never use a new path to evade pending state
+  EPOCH_PUBLICATION_JOURNAL_KEY   required independent high-entropy secret, at least 32 characters
+  EPOCH_SOURCE_WAIT_SECONDS      default 30, 1..300; timeout preserves raw/nonce and requires resume
+  EPOCH_RECORD_DIR               optional local evidence directory; defaults to deployments/
+  EPOCH_BUNDLE_REPLICA_DIRS      --publish/resume JSON array of at least two approved durable directories
+  EPOCH_BUNDLE_DISCLOSURE_ACK    exact value wallet-linkable-roster-approved; required before seed export
+  DEMO_EXPECTED_ISSUER           required for --check, --check-publication and --publish; approved nonzero
+                                issuer for exact frozen demo policies 1/2 (no on-chain inference)
+  DEMO_SOURCE_CODEHASH           reviewed nonzero runtime keccak256 pins required for --publish,
+  DEMO_ASC_CODEHASH              --resume-publication, --check-publication and --check. Never copy the checked RPC's
+  DEMO_REGISTRY_CODEHASH         code hash into these settings to make verification pass.
 
-The roster is only ever built from chain state: the latest MarkIssued per subject on Sepolia,
-filtered by what ProofmarkASC on CC3 still holds Active, untombstoned and unexpired.`);
+The roster replays every source issue/revoke/deny through a finalized cutoff, independently of
+hub relay delay. Full block receipts are reconstructed into the header receiptsRoot, getLogs must
+agree, and a separate finalized-header RPC must report the same blocks. SOURCE_FROM_BLOCK and
+historical floor fallback are unsupported.`);
 }
 
 /**
  * One request per call, never a JSON-RPC batch. Batching is what turns one flaky backend answer
  * into a whole failed sweep, and neither public endpoint here is reliable enough to batch against.
  */
-function providers(): { src: ethers.JsonRpcProvider; hub: ethers.JsonRpcProvider } {
-  const opts = { batchMaxCount: 1, staticNetwork: true } as const;
+function providers(): { src: ethers.JsonRpcProvider; headers: ethers.JsonRpcProvider; hub: ethers.JsonRpcProvider } {
+  const opts = { batchMaxCount: 1, cacheTimeout: -1 } as const;
+  const connection = (url: string) => { const request = new ethers.FetchRequest(url); request.timeout = 15_000; return request; };
+  const sourceUrl = process.env.SOURCE_CHAIN_RPC_URL || DEFAULT_SOURCE_RPC;
+  const headerUrl = process.env.SOURCE_HEADER_RPC_URL || DEFAULT_SOURCE_HEADER_RPC;
+  if (new URL(sourceUrl).href === new URL(headerUrl).href) throw new Error('SOURCE_HEADER_RPC_URL must differ from SOURCE_CHAIN_RPC_URL');
   return {
-    src: new ethers.JsonRpcProvider(process.env.SOURCE_CHAIN_RPC_URL || DEFAULT_SOURCE_RPC, 11_155_111, opts),
-    hub: new ethers.JsonRpcProvider(process.env.CREDITCOIN_RPC_URL || DEFAULT_HUB_RPC, 102_031, opts),
+    src: new ethers.JsonRpcProvider(connection(sourceUrl), 11_155_111, opts),
+    headers: new ethers.JsonRpcProvider(connection(headerUrl), 11_155_111, opts),
+    hub: new ethers.JsonRpcProvider(connection(process.env.CREDITCOIN_RPC_URL || DEFAULT_HUB_RPC), 102_031, opts),
   };
 }
 
 async function dryRun(): Promise<void> {
-  const { src, hub } = providers();
+  const { src, headers, hub } = providers();
+  await requireRosterV2(hub, REGISTRY_ADDRESS);
   step('Building the roster from chain state');
-  const r = await buildFromChain(src, hub);
+  const r = await buildFromChain(src, headers, hub);
   printRoster(r);
   selfCheck(r.tree);
 
   const source = new ethers.Contract(SOURCE_ADDRESS, SOURCE_ABI, src);
   const asc = new ethers.Contract(ASC_ADDRESS, ASC_ABI, hub);
+  await requireEpochV2(() => source.EPOCH_SCHEMA_VERSION(), () => asc.EPOCH_SCHEMA_VERSION());
+  await requireRosterAuthorization(() => source.ROSTER_AUTH_VERSION(), () => asc.ROSTER_AUTH_VERSION());
   const [lastEpoch, latestEpoch] = await Promise.all([
     retry('lastEpoch()', () => source.lastEpoch()),
     retry('latestEpoch()', () => asc.latestEpoch()),
   ]);
   const epoch = Number(lastEpoch) + 1;
-  const p = epochParams();
+  const p = await epochParams(src, r);
 
   step('Planned calls');
   say(`  source lastEpoch ${Number(lastEpoch)} on Sepolia, ASC latestEpoch ${Number(latestEpoch)} on CC3, so this would publish epoch ${epoch}`);
-  say('  1. setEpochPublisher(<signer>, true)  only if the signer is the owner and not already a publisher, as its own transaction');
-  say(`  2. publishEpoch(${epoch}, ${r.tree.root}, ${p.listVersion}, ${p.validUntil})  as its own transaction, never batched`);
+  say('  Publisher must already be authorized. This script never grants roles.');
+  say(`  publishEpoch[ForIssuers](${epoch}, ${r.tree.root}, ${p.listVersion}, ${p.validUntil}, ${p.sourceCutoff}, ${p.snapshotId}[, approvals])`);
   for (const line of freshnessNote(p)) say(line);
+  const publisher = process.env.EPOCH_PUBLISHER_ADDRESS;
+  if (publisher) {
+    const typed = rosterApprovalData(11155111n, SOURCE_ADDRESS, { epoch, root: r.tree.root, listVersion: p.listVersion,
+      validUntil: p.validUntil, sourceCutoff: p.sourceCutoff, snapshotId: p.snapshotId, publisher });
+    if ((await source.rosterApprovalDigest(epoch, r.tree.root, p.listVersion, p.validUntil, p.sourceCutoff, p.snapshotId, publisher)).toLowerCase() !== typed.digest.toLowerCase()) throw new Error('source and local approval digest disagree');
+    const block = await src.getBlock(r.scannedTo);
+    if (!block?.hash || block.timestamp !== p.sourceCutoff) throw new Error('source cutoff changed while preparing approval plan');
+    step('Issuer signing plan — independently review the roster and snapshot before signing');
+    say(JSON.stringify({ version: 1, sourceCutoffBlock: r.scannedTo, sourceCutoffBlockHash: block.hash, sourceSnapshot: r.sourceSnapshot,
+      ...typed, requiredIssuers: [...new Set(r.tree.entries.map(e => e.issuer.toLowerCase()))], entries: r.tree.entries, approvals: [] },
+    (_key, value) => typeof value === 'bigint' ? value.toString() : value, 2));
+    say('  Save only the JSON object, add {issuer, signature} approvals, and supply EPOCH_APPROVALS_FILE. Never edit signed fields.');
+  } else say('  Set EPOCH_PUBLISHER_ADDRESS to print a publisher-bound EIP-712 signing plan.');
 
   step('dry run — no transaction sent');
 }
 
-async function publish(): Promise<void> {
-  await import('dotenv/config');   // only this path needs .env
-  const key = process.env.DEPLOYER_PRIVATE_KEY;
-  if (!key) {
-    bad('DEPLOYER_PRIVATE_KEY is not set. --publish signs two transactions on Sepolia; fill the root .env first.');
-    process.exit(1);
-  }
-
-  const { src, hub } = providers();
+async function publish(mode: 'publish' | 'resume' | 'cancel' = 'publish'): Promise<void> {
+  await import('dotenv/config'); // Only explicit publication lifecycle modes load keys/config.
+  SOURCE_ADDRESS = process.env.SOURCE_CONTRACT_ADDRESS ?? deployment.contracts.ComplianceSource;
+  ASC_ADDRESS = process.env.ASC_CONTRACT_ADDRESS ?? deployment.contracts.ProofmarkASC;
+  REGISTRY_ADDRESS = process.env.REGISTRY_CONTRACT_ADDRESS ?? deployment.contracts.ProofmarkRegistry;
+  if (mode === 'publish') expectedDemoIssuer(process.env.DEMO_EXPECTED_ISSUER);
+  const { src, headers, hub } = providers();
+  let journal: EpochPublicationJournal | undefined;
+  try {
+  const key = process.env.EPOCH_PUBLISHER_PRIVATE_KEY;
+  const path = process.env.EPOCH_PUBLICATION_JOURNAL_PATH, secret = process.env.EPOCH_PUBLICATION_JOURNAL_KEY;
+  if (!key || !path || !secret) throw new PublicationJournalError('PUBLICATION_JOURNAL_AND_DEDICATED_KEY_REQUIRED');
   const wallet = new ethers.Wallet(key, src);
-  const signer = await wallet.getAddress();
+  const expectedPublisher = process.env.EPOCH_PUBLISHER_ADDRESS;
+  if (!expectedPublisher || !ethers.isAddress(expectedPublisher) || expectedPublisher === ethers.ZeroAddress
+    || expectedPublisher.toLowerCase() !== wallet.address.toLowerCase()) {
+    throw new PublicationJournalError('PUBLICATION_SIGNER_ROLE_MISMATCH');
+  }
+  journal = new EpochPublicationJournal(path, secret, { chainId: 11155111, source: SOURCE_ADDRESS, publisher: wallet.address });
+  if (mode === 'cancel') {
+    const pending = journal.snapshot().find(e => !e.confirmation && !e.abandonment);
+    if (!pending) throw new PublicationJournalError('PUBLICATION_NOT_FOUND');
+    journal.abandonUnsigned(pending.id, Date.now());
+    say('Unsigned publication plan cancelled; no transaction sent.'); return;
+  }
+  // Validate actual dotenv-selected destinations before any signing or broadcast.
+  await checkEpochRuntimes(src, hub, { source: SOURCE_ADDRESS, asc: ASC_ADDRESS, registry: REGISTRY_ADDRESS }, epochRuntimePins(process.env));
+  await requireRosterV2(hub, REGISTRY_ADDRESS);
+  const sourceRead = new ethers.Contract(SOURCE_ADDRESS, SOURCE_ABI, src);
+  const asc = new ethers.Contract(ASC_ADDRESS, ASC_ABI, hub);
+  await requireEpochV2(() => sourceRead.EPOCH_SCHEMA_VERSION(), () => asc.EPOCH_SCHEMA_VERSION());
+  await requireRosterAuthorization(() => sourceRead.ROSTER_AUTH_VERSION(), () => asc.ROSTER_AUTH_VERSION());
+  if (mode === 'resume') return await resumePublication(journal, src, headers, hub, wallet);
+  const existing = journal.snapshot().filter(e => !e.abandonment);
+  if (existing.some(e => !e.confirmation)) throw new PublicationJournalError('PUBLICATION_PENDING_RESUME_REQUIRED');
+  // Even a historical confirmation must still be canonical before a new nonce/epoch is planned.
+  if (existing.length) await advancePublication(journal, existing.at(-1)!.id, publicationTransport(journal, src, headers, hub, wallet));
+  await publishFresh(journal, src, headers, hub, wallet);
+  } finally { try { journal?.close(); } finally { src.destroy(); headers.destroy(); hub.destroy(); } }
+}
+
+function publicationTransport(journal: EpochPublicationJournal, src: ethers.JsonRpcProvider, headers: ethers.JsonRpcProvider,
+  hub: ethers.JsonRpcProvider, wallet: ethers.Wallet, roster?: Roster): PublicationTransport {
+  let checkedRoster = roster;
+  return evmPublicationTransport(src, wallet, journal, num('SOURCE_CONFIRMATIONS', 12), async entry => {
+    await checkEpochRuntimes(src, hub, { source: SOURCE_ADDRESS, asc: ASC_ADDRESS, registry: REGISTRY_ADDRESS }, epochRuntimePins(process.env));
+    const call = PUBLICATION_ABI.parseTransaction({ data: entry.intent.calldata })!;
+    checkedRoster ??= await buildFromChain(src, headers, hub, entry.intent.sourceCutoff.blockNumber, entry.intent.sourceCutoff.blockHash);
+    if (checkedRoster.tree.root !== call.args.root) throw new PublicationJournalError('PUBLICATION_ROSTER_CHANGED');
+    const lists = await loadLists(join(REPO, 'data/raw'), 'epoch');
+    const p = boundedEpochParams(Number(call.args.sourceCutoff), lists.provenance, Date.now(), String(Number(call.args.validUntil - call.args.sourceCutoff) / 3600));
+    if (p.validUntil !== Number(call.args.validUntil) || p.snapshotId !== call.args.snapshotId || p.listVersion !== Number(call.args.listVersion)) throw new PublicationJournalError('PUBLICATION_SNAPSHOT_CHANGED');
+    const approved: string[] = call.name === 'publishEpoch' ? [journal.scope.publisher] : call.args.approvals.map((a: { issuer: string }) => a.issuer.toLowerCase());
+    if (checkedRoster.tree.entries.some(e => !approved.includes(e.issuer.toLowerCase()))) throw new PublicationJournalError('PUBLICATION_ISSUER_NOT_APPROVED');
+  });
+}
+
+async function settlePublication(journal: EpochPublicationJournal, entry: PublicationEntry, transport: PublicationTransport) {
+  const seconds = num('EPOCH_SOURCE_WAIT_SECONDS', 30);
+  if (seconds < 1 || seconds > 300) throw new PublicationJournalError('PUBLICATION_WAIT_INVALID');
+  const deadline = Date.now() + seconds * 1000;
+  do {
+    const result = await advancePublication(journal, entry.id, transport);
+    if (result.state === 'confirmed') return result.confirmation;
+    if (Date.now() >= deadline) break;
+    await sleep(250);
+  } while (Date.now() < deadline);
+  throw new PublicationJournalError('PUBLICATION_PENDING_RESUME_REQUIRED');
+}
+
+async function resumePublication(journal: EpochPublicationJournal, src: ethers.JsonRpcProvider, headers: ethers.JsonRpcProvider,
+  hub: ethers.JsonRpcProvider, wallet: ethers.Wallet): Promise<void> {
+  const entry = journal.snapshot().filter(e => !e.abandonment).at(-1);
+  if (!entry) throw new PublicationJournalError('PUBLICATION_NOT_FOUND');
+  const confirmation = await settlePublication(journal, entry, publicationTransport(journal, src, headers, hub, wallet));
+  const rec = await recoveredSourceRecord(journal, entry, confirmation, src, headers, hub);
+  const staged = stagePublicationAvailability(publicationBundleRecord(rec));
+  if (entry.intent.availability && (entry.intent.availability.seedHash !== staged.seedHash ||
+      entry.intent.availability.replicaCount !== staged.replicaCount)) throw new PublicationJournalError('PUBLICATION_ROSTER_REPLICAS_CHANGED');
+  rec.proofAvailability = finalizePublicationAvailability(staged, rec.publishedAt!, Boolean(entry.intent.availability));
+  writeRecord(rec);
+  say(`Source publication recovered: ${confirmation.transactionHash}. CC3 materialization NOT_CHECKED; run --check-publication for original carry verification.`);
+  process.exitCode = 2; // Source recovery alone is not complete cross-chain publication verification.
+}
+
+async function recoveredSourceRecord(journal: EpochPublicationJournal, entry: PublicationEntry,
+  confirmation: PublicationConfirmation, src: ethers.JsonRpcProvider, headers: ethers.JsonRpcProvider,
+  hub: ethers.JsonRpcProvider): Promise<Record> {
+  if (confirmation.status !== 1) throw new PublicationJournalError('PUBLICATION_SOURCE_REVERTED');
+  const call = PUBLICATION_ABI.parseTransaction({ data: entry.intent.calldata })!;
+  // Reconstruct the exact historical cutoff, not a fresh next epoch or a new approval file.
+  const r = await buildFromChain(src, headers, hub, entry.intent.sourceCutoff.blockNumber, entry.intent.sourceCutoff.blockHash);
+  if (r.tree.root !== call.args.root) throw new PublicationJournalError('PUBLICATION_ROSTER_CHANGED');
+  const block = await src.getBlock(confirmation.blockNumber);
+  if (block?.hash !== confirmation.blockHash || block.number !== confirmation.blockNumber) throw new PublicationJournalError('PUBLICATION_CONFIRMATION_CHANGED');
+  const approvedIssuers: string[] = call.name === 'publishEpoch' ? [journal.scope.publisher] : call.args.approvals.map((a: { issuer: string }) => a.issuer);
+  return { sourceSnapshot: r.sourceSnapshot, rosterAuthVersion: 1, approvedIssuers, epochSchemaVersion: 2,
+    sourceCutoff: Number(call.args.sourceCutoff), snapshotId: call.args.snapshotId, publishedAt: block.timestamp,
+    rosterFormatVersion: r.tree.formatVersion, epoch: Number(call.args.epoch), root: r.tree.root,
+    listVersion: Number(call.args.listVersion), validUntil: Number(call.args.validUntil), validUntilIso: iso(Number(call.args.validUntil)),
+    validDays: Number(call.args.validUntil - call.args.sourceCutoff) / 86400,
+    entryCount: r.tree.entries.length, entries: r.tree.entries, excluded: r.excluded,
+    setEpochPublisherTx: null, publishEpochTx: confirmation.transactionHash, sepoliaBlock: confirmation.blockNumber, sepoliaConfirmedAt: iso(block.timestamp) };
+}
+
+/** Read-only on both chains and on journal bytes. Only the local lease and derived evidence change. */
+async function checkPublication(): Promise<void> {
+  // Intentionally no dotenv import: shell config only, and no private-key lookup.
+  const publisher = expectedDemoIssuer(process.env.EPOCH_PUBLISHER_ADDRESS);
+  expectedDemoIssuer(process.env.DEMO_EXPECTED_ISSUER);
+  const pins = epochRuntimePins(process.env);
+  const path = process.env.EPOCH_PUBLICATION_JOURNAL_PATH, secret = process.env.EPOCH_PUBLICATION_JOURNAL_KEY;
+  if (!path || !secret) throw new PublicationJournalError('PUBLICATION_JOURNAL_CONFIG');
+  const fromBlock = num('EPOCH_HUB_FROM_BLOCK', -1), confirmations = num('EPOCH_HUB_CONFIRMATIONS', 6);
+  if (!Number.isSafeInteger(fromBlock) || fromBlock < 0 || !Number.isSafeInteger(confirmations) || confirmations < 1)
+    throw new PublicationJournalError('EPOCH_CARRY_CONFIG_INVALID');
+  const { src, headers, hub } = providers();
+  let journal: EpochPublicationJournal | undefined;
+  try {
+    journal = new EpochPublicationJournal(path, secret, { chainId: 11155111, source: SOURCE_ADDRESS, publisher });
+    const entry = journal.snapshot().filter(e => !e.abandonment).at(-1);
+    if (!entry) throw new PublicationJournalError('PUBLICATION_NOT_FOUND');
+    await checkEpochRuntimes(src, hub, { source: SOURCE_ADDRESS, asc: ASC_ADDRESS, registry: REGISTRY_ADDRESS }, pins);
+    const transport = evmPublicationTransport(src, new ethers.VoidSigner(publisher, src), journal,
+      num('SOURCE_CONFIRMATIONS', 12), async () => { throw new PublicationJournalError('PUBLICATION_READ_ONLY'); });
+    // Never advancePublication: even an unsigned or absent transaction must remain untouched.
+    const observation = await transport.observe(entry);
+    if (observation.state !== 'confirmed') throw new PublicationJournalError('PUBLICATION_SOURCE_NOT_CONFIRMED');
+    const confirmation = observation.confirmation, prior = entry.confirmation;
+    if (prior && (prior.transactionHash !== confirmation.transactionHash || prior.blockHash !== confirmation.blockHash
+      || prior.blockNumber !== confirmation.blockNumber || prior.status !== confirmation.status))
+      throw new PublicationJournalError('PUBLICATION_CONFIRMATION_CHANGED');
+    const rec = await recoveredSourceRecord(journal, entry, confirmation, src, headers, hub);
+    rec.proofAvailability = retainedProofAvailability(rec);
+    const receipt = await src.getTransactionReceipt(confirmation.transactionHash);
+    if (!receipt || receipt.status !== 1 || receipt.blockHash !== confirmation.blockHash || receipt.blockNumber !== confirmation.blockNumber)
+      throw new PublicationJournalError('PUBLICATION_CONFIRMATION_CHANGED');
+    const carry = await observeEpochCarry(hub, { asc: ASC_ADDRESS, epoch: rec.epoch, root: rec.root, validUntil: rec.validUntil,
+      sourceCutoff: rec.sourceCutoff!, publishedAt: rec.publishedAt!, listVersion: rec.listVersion, snapshotId: rec.snapshotId!,
+      sourceBlock: receipt.blockNumber, sourceTxIndex: receipt.index }, fromBlock, confirmations);
+    if (!carry) throw new PublicationJournalError('PUBLICATION_HUB_NOT_CONFIRMED');
+    await check({ ...rec, hubCarry: carry, cc3AcceptedAt: iso(carry.timestamp), propagationSeconds: carry.timestamp - rec.publishedAt!,
+      propagationMethod: 'source block timestamp to exact matched CC3 acceptance receipt block timestamp' },
+      () => reobservePublication(transport, entry, confirmation));
+    say('Original publication verified; no transaction signed or sent, journal bytes unchanged.');
+  } finally { try { journal?.close(); } finally { src.destroy(); headers.destroy(); hub.destroy(); } }
+}
+
+async function publishFresh(journal: EpochPublicationJournal, src: ethers.JsonRpcProvider, headers: ethers.JsonRpcProvider,
+  hub: ethers.JsonRpcProvider, wallet: ethers.Wallet): Promise<void> {
+  const signer = wallet.address;
+  const hubConfirmations = num('EPOCH_HUB_CONFIRMATIONS', 6);
+  if (!Number.isSafeInteger(hubConfirmations) || hubConfirmations < 1) throw new PublicationJournalError('EPOCH_CARRY_CONFIG_INVALID');
+  const asc = new ethers.Contract(ASC_ADDRESS, ASC_ABI, hub);
+  const frozen = approvalBundle();
 
   step('Building the roster from chain state');
-  const r = await buildFromChain(src, hub);
+  const r = await buildFromChain(src, headers, hub, frozen?.sourceCutoffBlock, frozen?.sourceCutoffBlockHash);
+  if (frozen) assertSourceSnapshot(frozen.sourceSnapshot, r.sourceSnapshot);
   printRoster(r);
   selfCheck(r.tree);
 
   const source = new ethers.Contract(SOURCE_ADDRESS, SOURCE_ABI, wallet);
-  const asc = new ethers.Contract(ASC_ADDRESS, ASC_ABI, hub);
-
   const [lastEpoch, owner, alreadyPublisher, balance] = await Promise.all([
     retry('lastEpoch()', () => source.lastEpoch()),
     retry('owner()', () => source.owner()),
@@ -834,7 +843,7 @@ async function publish(): Promise<void> {
     retry('getBalance()', () => src.getBalance(signer)),
   ]);
   const epoch = Number(lastEpoch) + 1;
-  const p = epochParams();
+  const p = await epochParams(src, r, frozen);
 
   step('Signer');
   say(`  address        ${signer}`);
@@ -842,42 +851,61 @@ async function publish(): Promise<void> {
   say(`  source owner   ${owner}`);
   say(`  epoch publisher ${alreadyPublisher}`);
 
-  let setPublisherTx: string | null = null;
-  if (!alreadyPublisher) {
-    if (owner.toLowerCase() !== signer.toLowerCase()) {
-      bad(`${signer} is neither the ComplianceSource owner (${owner}) nor an epoch publisher.`);
-      bad('publishEpoch is onlyEpochPublisher and setEpochPublisher is onlyOwner, so this signer cannot publish.');
-      process.exit(1);
-    }
-    step('Granting the epoch publisher role (its own transaction)');
-    const tx = await source.setEpochPublisher(signer, true);
-    say(`  sent ${tx.hash}`);
-    const rc = await tx.wait();
-    if (rc?.status !== 1) { bad(`setEpochPublisher failed: ${tx.hash}`); process.exit(1); }
-    setPublisherTx = tx.hash;
-    ok(`epoch publisher role granted in block ${rc.blockNumber}, gas ${rc.gasUsed}`);
+  if (!alreadyPublisher) throw new Error('signer is not an epoch publisher; role administration is a separate authorized operation');
+  const typed = rosterApprovalData(11155111n, SOURCE_ADDRESS, { epoch, root: r.tree.root, listVersion: p.listVersion,
+    validUntil: p.validUntil, sourceCutoff: p.sourceCutoff, snapshotId: p.snapshotId, publisher: signer });
+  const args = [epoch, r.tree.root, p.listVersion, p.validUntil, p.sourceCutoff, p.snapshotId] as const;
+  if ((await source.rosterApprovalDigest(...args, signer)).toLowerCase() !== typed.digest.toLowerCase()) throw new Error('source and local approval digest disagree');
+  const issuers = [...new Set(r.tree.entries.map(e => e.issuer.toLowerCase()))];
+  const approvals = frozen ? readRootApprovals(frozen, typed.digest, issuers) : undefined;
+  if (!approvals && (!(await source.isIssuer(signer)) || issuers.some(issuer => issuer !== signer.toLowerCase()))) {
+    throw new Error('implicit approval only covers the publisher as issuer; all other roster issuers must approve this exact plan via EPOCH_APPROVALS_FILE');
   }
+  if (approvals) await source.publishEpochForIssuers.staticCall(...args, approvals);
+  else await source.publishEpoch.staticCall(...args);
+  const approvedIssuers = approvals?.map(a => a.issuer) ?? [signer];
+  say(`  approval digest ${typed.digest}; issuers ${approvedIssuers.join(', ')}`);
 
-  step(`Publishing epoch ${epoch} (its own transaction — one transaction, one kind of ASC event)`);
+  step(`Publishing epoch ${epoch} (authorization(s) and epoch in one source receipt)`);
   say(`  root        ${r.tree.root}`);
   say(`  listVersion ${p.listVersion}`);
   for (const line of freshnessNote(p)) say(line);
 
   const cc3BlockBefore = await retry('CC3 getBlockNumber', () => hub.getBlockNumber());
-  const tx = await source.publishEpoch(epoch, r.tree.root, p.listVersion, p.validUntil);
-  say(`  sent ${tx.hash}`);
-  const rc = await tx.wait();
-  if (rc?.status !== 1) { bad(`publishEpoch failed: ${tx.hash}`); process.exit(1); }
+  boundedEpochParams(p.sourceCutoff, p.provenance, Date.now(), String((p.validUntil - p.sourceCutoff) / 3600));
+  const cutoffNow = await src.getBlock(r.scannedTo);
+  if (!cutoffNow || cutoffNow.timestamp !== p.sourceCutoff || cutoffNow.hash !== r.sourceSnapshot.cutoffBlockHash) throw new Error('source cutoff changed before publication');
+  const stagedAvailability = stagePublicationAvailability({ rosterAuthVersion: 1, approvedIssuers,
+    epochSchemaVersion: 2, sourceCutoff: p.sourceCutoff, snapshotId: p.snapshotId, rosterFormatVersion: r.tree.formatVersion,
+    epoch, root: r.tree.root, listVersion: p.listVersion, validUntil: p.validUntil,
+    entries: r.tree.entries });
+  const calldata = PUBLICATION_ABI.encodeFunctionData(approvals ? 'publishEpochForIssuers' : 'publishEpoch', approvals ? [...args, approvals] : args);
+  const intent = journal.begin({ calldata, sourceCutoff: { blockNumber: r.scannedTo, blockHash: r.sourceSnapshot.cutoffBlockHash },
+    availability: { version: 1, seedHash: stagedAvailability.seedHash, replicaCount: stagedAvailability.replicaCount }, createdAt: Date.now() });
+  const transport = publicationTransport(journal, src, headers, hub, wallet, r);
+  const confirmation = await settlePublication(journal, intent, transport);
+  if (confirmation.status !== 1) throw new PublicationJournalError('PUBLICATION_SOURCE_REVERTED');
+  const confirmedEntry = journal.snapshot().find(e => e.id === intent.id)!;
+  const tx = confirmedEntry.transaction!;
+  say(`  source confirmed ${tx.hash}`);
+  const rc = await src.getTransactionReceipt(tx.hash);
+  if (!rc || rc.blockHash !== confirmation.blockHash || rc.blockNumber !== confirmation.blockNumber) throw new PublicationJournalError('PUBLICATION_CONFIRMATION_CHANGED');
   const srcBlock = await retry('getBlock()', () => src.getBlock(rc.blockNumber));
+  if (srcBlock?.hash !== confirmation.blockHash || srcBlock.number !== confirmation.blockNumber) throw new PublicationJournalError('PUBLICATION_CONFIRMATION_CHANGED');
   const t0 = Number(srcBlock!.timestamp);
   ok(`published in Sepolia block ${rc.blockNumber} at ${iso(t0)}, gas ${rc.gasUsed}`);
 
   let rec: Record = {
+    sourceSnapshot: r.sourceSnapshot,
+    rosterAuthVersion: 1, approvedIssuers,
+    epochSchemaVersion: 2, sourceCutoff: p.sourceCutoff, snapshotId: p.snapshotId, publishedAt: t0,
+    rosterFormatVersion: r.tree.formatVersion,
     epoch, root: r.tree.root, listVersion: p.listVersion,
     validUntil: p.validUntil, validUntilIso: iso(p.validUntil), validDays: p.validDays,
     entryCount: r.tree.entries.length, entries: r.tree.entries, excluded: r.excluded,
-    setEpochPublisherTx: setPublisherTx, publishEpochTx: tx.hash,
+    setEpochPublisherTx: null, publishEpochTx: tx.hash,
     sepoliaBlock: rc.blockNumber, sepoliaConfirmedAt: iso(t0),
+    proofAvailability: finalizePublicationAvailability(stagedAvailability, t0, true),
   };
   writeRecord(rec);
 
@@ -888,84 +916,90 @@ async function publish(): Promise<void> {
   const pollMs = num('EPOCH_POLL_SECONDS', 15) * 1000;
   const timeoutMs = num('EPOCH_TIMEOUT_MINUTES', 30) * 60_000;
   const started = Date.now();
-  let accepted = false;
+  let carry: Awaited<ReturnType<typeof observeEpochCarry>> = null;
 
   while (Date.now() - started < timeoutMs) {
     const latest = Number(await retry('latestEpoch()', () => asc.latestEpoch()));
     const elapsed = (Date.now() - started) / 1000;
     process.stdout.write(`\r  elapsed ${mmss(elapsed)}  latestEpoch ${latest}   `);
-    if (latest >= epoch) { accepted = true; break; }
+    if (latest >= epoch) {
+      carry = await observeEpochCarry(hub, { asc: ASC_ADDRESS, epoch, root: r.tree.root, validUntil: p.validUntil,
+        sourceCutoff: p.sourceCutoff, publishedAt: t0, listVersion: p.listVersion, snapshotId: p.snapshotId,
+        sourceBlock: rc.blockNumber, sourceTxIndex: rc.index }, cc3BlockBefore, hubConfirmations);
+      if (carry) break;
+      if (latest > epoch) throw new PublicationJournalError('EPOCH_HUB_SUPERSEDED_UNCONFIRMED');
+    }
     await sleep(pollMs);
   }
   say();
 
-  if (!accepted) {
-    bad(`CC3 latestEpoch never reached ${epoch} within ${num('EPOCH_TIMEOUT_MINUTES', 30)} minutes.`);
-    bad('The publish transaction is on Sepolia and stays valid; only the carry is missing. Check:');
+  if (!carry) {
+    bad(`No exact sufficiently confirmed CC3 acceptance for epoch ${epoch} within ${num('EPOCH_TIMEOUT_MINUTES', 30)} minutes.`);
+    bad('The source transaction was confirmed; current hub acceptance remains unverified. Check:');
     bad('  - is `npm run worker` running?');
-    bad('  - was it started BEFORE the publish transaction? Its cursor starts at the current head,');
-    bad(`    so an earlier event is never seen. Restart it with WORKER_START_BLOCK=${rc.blockNumber}.`);
+    bad(`  - does its explicit WORKER_START_BLOCK cover source block ${rc.blockNumber}? Preserve its durable state; do not blindly reset the cursor.`);
     bad('  - does WORKER_STATE_PATH (currently state/worker-v2.json) list this transaction, and in what state?');
-    process.exit(1);
+    throw new PublicationJournalError('PUBLICATION_HUB_NOT_CONFIRMED');
   }
 
-  // Prefer on-chain timestamps: EpochAccepted gives the CC3 block the epoch landed in, which is
-  // exact, where the poll loop only knows the epoch flipped some time in the last interval.
-  let t1 = Math.floor(Date.now() / 1000);
-  let method = `source block timestamp to poll detection (${num('EPOCH_POLL_SECONDS', 15)}s resolution)`;
-  try {
-    const hubHead = await retry('CC3 getBlockNumber', () => hub.getBlockNumber());
-    const topic = ethers.zeroPadValue(ethers.toBeHex(epoch), 32);
-    for (let from = cc3BlockBefore; from <= hubHead; from += 500) {
-      const logs = await retry('CC3 EpochAccepted lookup', () => hub.getLogs({
-        address: ASC_ADDRESS, topics: [EPOCH_ACCEPTED_TOPIC, topic],
-        fromBlock: from, toBlock: Math.min(from + 499, hubHead),
-      }));
-      if (logs.length) {
-        const blk = await retry('CC3 getBlock()', () => hub.getBlock(logs[0].blockNumber));
-        t1 = Number(blk!.timestamp);
-        method = 'source block timestamp to CC3 EpochAccepted block timestamp';
-        say(`  EpochAccepted in CC3 block ${logs[0].blockNumber}, tx ${logs[0].transactionHash}`);
-        break;
-      }
-    }
-  } catch (e: any) {
-    say(`  note: could not locate the EpochAccepted log (${e?.shortMessage ?? e?.message}); falling back to the poll timestamp`);
-  }
-
-  ok(`CC3 latestEpoch is ${epoch}`);
+  const t1 = carry.timestamp;
+  const method = 'source block timestamp to exact matched CC3 acceptance receipt block timestamp';
+  ok(`CC3 accepted epoch ${epoch} in ${carry.transactionHash}`);
   ok(`propagation ${mmss(t1 - t0)} (one run), ${method}`);
 
-  rec = { ...rec, cc3AcceptedAt: iso(t1), propagationSeconds: t1 - t0, propagationMethod: method };
+  rec = { ...rec, hubCarry: carry, cc3AcceptedAt: iso(t1), propagationSeconds: t1 - t0, propagationMethod: method };
   const jsonPath = writeRecord(rec);
   say(`  wrote ${jsonPath}`);
 
   step('Verifying against the deployed contracts');
-  await check(rec);
+  await check(rec, () => reobservePublication(transport, confirmedEntry, confirmation));
 }
 
 /** `--check`, also reused as the tail of `--publish` so a publish is never reported unverified. */
-async function check(carried?: Record): Promise<void> {
-  const { src, hub } = providers();
+async function check(carried?: Record, finalSourceCheck?: () => Promise<PublicationConfirmation>): Promise<void> {
+  if (carried && !finalSourceCheck) throw new PublicationJournalError('PUBLICATION_FINAL_CHECK_REQUIRED');
+  const expectedIssuer = expectedDemoIssuer(process.env.DEMO_EXPECTED_ISSUER);
+  const runtimePins = epochRuntimePins(process.env);
+  const { src, headers, hub } = providers();
+  try {
+  const observation = await captureEpochHub(hub), at = { blockTag: observation.blockNumber };
+  const runtimeObservation = await checkEpochRuntimes(src, hub,
+    { source: SOURCE_ADDRESS, asc: ASC_ADDRESS, registry: REGISTRY_ADDRESS }, runtimePins, observation.blockNumber);
+  await requireRosterV2(hub, REGISTRY_ADDRESS, observation.blockNumber);
   const asc = new ethers.Contract(ASC_ADDRESS, ASC_ABI, hub);
+  const reg = new ethers.Contract(REGISTRY_ADDRESS, REGISTRY_ABI, hub);
+  if ((await reg.ASC(at)).toLowerCase() !== ASC_ADDRESS.toLowerCase()) throw new Error('EPOCH_REGISTRY_ASC_MISMATCH');
+  await requireEpochV2(() => asc.EPOCH_SCHEMA_VERSION(at));
+  await requireRosterAuthorization(() => asc.ROSTER_AUTH_VERSION(at));
+  const policyObservation = await checkEpochPolicies(hub, REGISTRY_ADDRESS, expectedIssuer, observation.blockNumber);
 
-  step('Building the roster from chain state');
-  const r = await buildFromChain(src, hub);
-  printRoster(r);
-
-  const latestEpoch = Number(await retry('latestEpoch()', () => asc.latestEpoch()));
+  const latestEpoch = Number(await retry('latestEpoch()', () => asc.latestEpoch(at)));
+  if (carried) requireCurrentPublishedEpoch(carried.epoch, latestEpoch);
   if (latestEpoch === 0) {
     step('no epoch published yet (latestEpoch=0)');
     say('  Mode B is implemented and tested, but nothing has been published on chain, so there is no');
     say('  root to verify against. Every deployed mark is origin = Direct.');
     say('  Publish one with: npx tsx script/publish-epoch.ts --publish   (worker running first)');
-    process.exit(1);
+    throw new Error('EPOCH_VERIFICATION_FAILED');
   }
 
+  // Reproduce the originally reviewed cutoff, never compare a later active set to an old root.
+  const original: Record = carried?.epoch === latestEpoch ? carried : JSON.parse(readFileSync(recordPath(latestEpoch), 'utf8'));
+  const input = original.sourceSnapshot;
+  if (!input || input.version !== 2 || input.source.toLowerCase() !== SOURCE_ADDRESS.toLowerCase() || input.chainId !== '11155111') throw new Error('epoch source snapshot record missing or mismatched; historical records are not upgraded by inference');
+  step('Replaying the recorded finalized source cutoff');
+  const r = await buildFromChain(src, headers, hub, input.cutoffBlock, input.cutoffBlockHash, observation.blockNumber);
+  assertSourceSnapshot(input, r.sourceSnapshot);
+  const [sourceCutoff, publishedAt, snapshotId, listVersion] = await Promise.all([
+    asc.epochSourceCutoff(at), asc.epochPublishedAt(at), asc.epochSnapshotId(at), asc.epochListVersion(at),
+  ]);
+  if (Number(sourceCutoff) !== input.cutoffTimestamp) throw new Error('hub source cutoff differs from source snapshot');
+  printRoster(r);
+
   const [onChainRoot, validUntil, fresh] = await Promise.all([
-    retry('epochRoots()', () => asc.epochRoots(latestEpoch) as Promise<string>),
-    retry('epochValidUntil()', () => asc.epochValidUntil() as Promise<bigint>),
-    retry('isRosterFresh()', () => asc.isRosterFresh() as Promise<boolean>),
+    retry('epochRoots()', () => asc.epochRoots(latestEpoch, at) as Promise<string>),
+    retry('epochValidUntil()', () => asc.epochValidUntil(at) as Promise<bigint>),
+    retry('isRosterFresh()', () => asc.isRosterFresh(at) as Promise<boolean>),
   ]);
 
   step(`On-chain epoch ${latestEpoch}`);
@@ -977,23 +1011,25 @@ async function check(carried?: Record): Promise<void> {
     step('roster drift — refusing to print verdicts');
     bad(`rebuilt root  ${r.tree.root}`);
     bad(`on-chain root ${onChainRoot}`);
-    bad('The active set changed after epoch ' + latestEpoch + ' was published: a mark was issued,');
-    bad('revoked, or expired since. Proofs built from the rebuilt tree cannot verify against the');
-    bad('published root, and verdicts against a root that is not ours would mean nothing.');
-    bad('Remedy: publish a fresh epoch (npx tsx script/publish-epoch.ts --publish). Do not edit');
-    bad(`the roster to match; deployments/epoch-${latestEpoch}.json holds the entries as published.`);
-    process.exit(1);
+    bad('The exact recorded cutoff does not reproduce the published root. Do not edit the roster');
+    bad('to match or treat this as normal post-publication drift. Stop and investigate source history,');
+    bad(`RPC consistency and the recorded publication at ${recordPath(latestEpoch)}.`);
+    throw new Error('EPOCH_VERIFICATION_FAILED');
   }
   ok('rebuilt root matches the on-chain root');
+  const approvedIssuers = [...new Set(r.tree.entries.map(e => e.issuer.toLowerCase()))];
+  for (const issuer of approvedIssuers) {
+    if (!(await asc.epochIssuerApproved(latestEpoch, issuer, at))) throw new Error(`epoch ${latestEpoch} has no authenticated approval for roster issuer ${issuer}`);
+  }
 
   if (!fresh) {
     bad(`the roster is past its validUntil, so verifyWithRoster fails closed for every subject`);
   }
 
-  const proofMode = await registryHasProofMode(hub);
-  const verdicts = proofMode ? await rosterVerdicts(hub, r.tree) : [];
+  const proofMode = await registryHasProofMode(hub, observation.blockNumber);
+  const verdicts = proofMode ? await rosterVerdicts(hub, r.tree, observation.blockNumber) : [];
   const offChain = proofMode ? [] : offChainVerdicts(r.tree, onChainRoot);
-  const allMatch = proofMode ? printVerdicts(verdicts) : false;
+  const allMatch = proofMode && verdicts.every(v => v.expected === v.actual);
 
   if (!proofMode) {
     step('the deployed ProofmarkRegistry has no proof-mode entry points');
@@ -1015,13 +1051,24 @@ async function check(carried?: Record): Promise<void> {
     say('  two agree in tests. Agreeing in tests is not a deployed contract answering.');
   }
 
-  // `carried` holds what --publish measured; the epoch state just read from chain wins where the
-  // two overlap, and writeRecord merges both over whatever an earlier run left on disk.
+  // Preserve original source facts, not previous checks/propagation. Only `carried` can supply
+  // a propagation measurement from this same invocation; current contract reads supply checks.
   const rec: Record = {
+    ...sourceEpochRecord(original),
     ...(carried ?? {}),
+    hubObservation: observation,
+    policyObservation,
+    runtimeObservation,
+    sourceSnapshot: r.sourceSnapshot,
+    rosterAuthVersion: 1, approvedIssuers,
+    epochSchemaVersion: 2,
+    sourceCutoff: Number(sourceCutoff),
+    publishedAt: Number(publishedAt),
+    snapshotId,
+    rosterFormatVersion: r.tree.formatVersion,
     epoch: latestEpoch,
     root: onChainRoot,
-    listVersion: carried?.listVersion ?? epochParams().listVersion,
+    listVersion: Number(listVersion),
     validUntil: Number(validUntil),
     validUntilIso: iso(Number(validUntil)),
     entryCount: r.tree.entries.length,
@@ -1033,39 +1080,59 @@ async function check(carried?: Record): Promise<void> {
     checkedAt: new Date().toISOString().replace('.000Z', 'Z'),
   };
 
+  // The long source replay and verdict calls must not turn a replaced hub block or source
+  // cutoff into a completed observation. No record/snippet is written before these checks.
+  const sourceBlock = await src.getBlock(input.cutoffBlock);
+  if (sourceBlock?.number !== input.cutoffBlock || sourceBlock.hash !== input.cutoffBlockHash
+    || sourceBlock.timestamp !== input.cutoffTimestamp) throw new Error('EPOCH_SOURCE_OBSERVATION_CHANGED');
+  if (finalSourceCheck) rec.sourcePublicationObservation = await finalSourceCheck();
+  if (carried?.hubCarry) {
+    const c = carried.hubCarry;
+    const [block, receipt] = await Promise.all([hub.getBlock(c.blockNumber), hub.getTransactionReceipt(c.transactionHash)]);
+    if (block?.number !== c.blockNumber || block.hash !== c.blockHash || !receipt || receipt.status !== 1
+      || receipt.hash !== c.transactionHash || receipt.blockNumber !== c.blockNumber || receipt.blockHash !== c.blockHash)
+      throw new Error('EPOCH_HUB_CARRY_CHANGED');
+  }
+  await assertEpochHub(hub, observation);
+  if (proofMode) printVerdicts(verdicts);
   const jsonPath = writeRecord(rec);
-  const merged: Record = JSON.parse(readFileSync(jsonPath, 'utf8'));
-  const mdPath = writeSnippet(merged);
   step('Recorded');
   say(`  ${jsonPath}`);
-  say(`  ${mdPath}   paste into README sections 8 and 6`);
 
   if (!proofMode) {
     bad('exiting non-zero: the epoch is published and verified against the rebuilt tree, but the');
     bad('contract-side roster verdicts could not be produced. A check that did not run stays unset.');
-    process.exit(1);
+    throw new Error('EPOCH_VERIFICATION_FAILED');
   }
   if (!allMatch || !fresh) {
     bad('at least one verdict did not match expectation');
-    process.exit(1);
+    throw new Error('EPOCH_VERIFICATION_FAILED');
   }
+  const mdPath = writeSnippet(rec);
+  say(`  ${mdPath}   observation snippet; independently verify before submission`);
   step('all verdicts match expectation');
+  } finally { src.destroy(); headers.destroy(); hub.destroy(); }
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
   const flags = process.argv.slice(2).filter((a) => a.startsWith('--'));
-  const unknown = flags.filter((f) => !['--dry-run', '--publish', '--check', '--help'].includes(f));
+  const unknown = flags.filter((f) => !['--dry-run', '--publish', '--resume-publication', '--check-publication', '--cancel-unsigned-publication', '--check', '--help'].includes(f));
   if (unknown.length) { bad(`unknown flag ${unknown.join(' ')}`); usage(); process.exit(1); }
 
   if (flags.includes('--help')) { usage(); return; }
+  if (flags.length > 1 || process.argv.slice(2).some(a => !a.startsWith('--'))) throw new Error('choose exactly one mode; positional arguments are unsupported');
+  if (flags.includes('--resume-publication')) return publish('resume');
+  if (flags.includes('--check-publication')) return checkPublication();
+  if (flags.includes('--cancel-unsigned-publication')) return publish('cancel');
   if (flags.includes('--publish')) return publish();
   if (flags.includes('--check')) return check();
   return dryRun();
 }
 
 main().catch((e) => {
-  bad(e?.shortMessage ?? e?.message ?? String(e));
+  const publication = process.argv.slice(2).some(f => ['--publish', '--resume-publication', '--check-publication', '--cancel-unsigned-publication'].includes(f));
+  bad(publication ? (e instanceof PublicationJournalError ? e.code : 'PUBLICATION_DEPENDENCY_UNAVAILABLE') : e?.shortMessage ?? e?.message ?? String(e));
   process.exit(1);
 });

@@ -1,6 +1,7 @@
 /**
- * Issue two demo-regime marks that pass frozen pilot policy #2, so the GatedRwaNote gate can be
- * exercised end to end on chain.
+ * Issue two demo-regime marks satisfying the pilot's attribute requirements. New GatedRwaNote
+ * deployments ALSO require an authorized fresh roster and cached holder witnesses; issuance
+ * alone does not open that gate. This command is not the complete fresh-roster lifecycle.
  *
  * What this is, stated plainly: both subjects go through the real issuance pipeline — the same
  * reconciliation, the same sanctions screening against the real OFAC/UN/EU lists, the same claim
@@ -19,7 +20,7 @@
  *     npx tsx script/demo-gate-issue.ts             # screen, pack, and send issueBatch
  *     npx tsx script/demo-gate-issue.ts --dry-run   # everything except the transaction
  *
- * Reads from the root .env: DEPLOYER_PRIVATE_KEY (the ComplianceSource issuer), EVIDENCE_HMAC_KEY,
+ * Reads from the root .env: ISSUER_PRIVATE_KEY (a dedicated ComplianceSource issuer), EVIDENCE_HMAC_KEY,
  * SOURCE_CHAIN_RPC_URL, SOURCE_CONTRACT_ADDRESS, DEMO_SUBJECT_A_KEY, DEMO_SUBJECT_B_KEY.
  * Keys stay in that file; nothing here prints one.
  */
@@ -32,6 +33,7 @@ import { KrAdapter, type BankAccountResult, type IdDocumentResult } from '../pip
 import { DemoIdDocumentVendor, DemoBankAccountVendor } from '../pipeline/adapters/demo.js';
 import { runIssuance, toIssueCall, type IssueOutcome } from '../pipeline/issue.js';
 import { Methods } from '../pipeline/methods.js';
+import { SYNTHETIC_INDIVIDUAL_NONFACE_POLICY } from '../pipeline/identity-policy.js';
 
 /** Both policies require these bits and assurance; policy #2 additionally pins sandbox regime 2. */
 const PILOT_REQUIRE_ALL = Methods.ID_DOC_AUTHENTICITY | Methods.BANK_ACCOUNT | Methods.SANCTIONS_SCREENED;
@@ -136,7 +138,8 @@ async function issueOne(
   };
 
   const out = await runIssuance(
-    { wallet, declared, idDocument: idDocument as IdDocumentResult, bankAccount, walletControlProven: true, jurisdiction: 410, kind: 1, assurance },
+    { wallet, declared, idDocument: idDocument as IdDocumentResult, bankAccount, walletControlProven: true, jurisdiction: 410, kind: 1, assurance,
+      identityPolicy: SYNTHETIC_INDIVIDUAL_NONFACE_POLICY },
     adapter,
     engine,
   );
@@ -172,11 +175,13 @@ async function main() {
   const adapter = new KrAdapter(new DemoIdDocumentVendor(), new DemoBankAccountVendor(), { sandboxBits: true });
 
   // The real screening engine, over the real lists in data/raw/.
-  const { entries, listVersions, counts } = await loadLists('data/raw');
+  const { entries, listVersions, counts, provenance, maxAgeHours } = await loadLists('data/raw', 'issuance');
   console.log(`lists: OFAC ${counts.OFAC_SDN}, UN ${counts.UN_CONSOLIDATED}, EU ${counts.EU_FSF} = ${entries.length} entries\n`);
   const engine = new ListBackedAmlEngine({
     entries,
     listVersions,
+    provenance,
+    maxAgeHours,
     evidenceKey: req('EVIDENCE_HMAC_KEY'),
     keyId: 'demo-gate-k1',
   });
@@ -193,7 +198,7 @@ async function main() {
   }
 
   const provider = new ethers.JsonRpcProvider(req('SOURCE_CHAIN_RPC_URL'));
-  const signer = new ethers.Wallet(req('DEPLOYER_PRIVATE_KEY'), provider);
+  const signer = new ethers.Wallet(req('ISSUER_PRIVATE_KEY'), provider);
   const source = new ethers.Contract(req('SOURCE_CONTRACT_ADDRESS'), SOURCE_ABI, signer);
 
   const sentAt = new Date();

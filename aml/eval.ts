@@ -1,11 +1,22 @@
 /** Evaluation corpus. If we are going to claim a number, we measure it. */
-import { loadLists } from './loader.js';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { loadLists, loadHistoricalLists } from './loader.js';
 import { ListBackedAmlEngine } from './engine.js';
+import { assertEvaluation, buildInternalEvaluationReport, EVALUATION_POLICY_VERSION } from './evaluation-gate.js';
+import { ENGINE_VERSION } from './normalize.js';
 const EVIDENCE_KEY = 'test-only-evidence-key';
 
-const { entries, listVersions, counts } = await loadLists();
+const historical = process.argv.includes('--historical');
+const outputIndex = process.argv.indexOf('--out');
+const outputPath = outputIndex < 0 ? undefined : process.argv[outputIndex + 1];
+if (outputIndex >= 0 && (!outputPath || outputPath.startsWith('--'))) throw new Error('--out requires a report path');
+const { entries, listVersions, counts, sourceSha256 } = await (historical ? loadHistoricalLists() : loadLists());
 const engine = new ListBackedAmlEngine({ entries, listVersions, evidenceKey: EVIDENCE_KEY, keyId: 'test-k1' });
 console.log(`lists loaded: OFAC ${counts.OFAC_SDN}, UN ${counts.UN_CONSOLIDATED}, EU ${counts.EU_FSF} = ${entries.length}\n`);
+console.log('internal regression provenance:', JSON.stringify({ engineVersion: ENGINE_VERSION, evaluationPolicy: EVALUATION_POLICY_VERSION,
+  sourceSha256, freshnessMode: historical ? 'historical regression only; NOT for issuance' : 'fresh manifest required',
+  sampling: 'deterministic in-list positives; synthetic clean names; one normalization target; not independent holdout' }));
 
 // Recall: look up each listed individual with their own name, date of birth and country
 const inds = entries.filter(e => e.type === 'individual' && e.dobs.length && e.countries.length && e.primaryName.split(/\s+/).length >= 2);
@@ -59,9 +70,11 @@ const evasions: [string,string][] = [
   ['punctuation', base.split(' ').join('. ')],
 ];
 console.log(`\nevasion resistance (target: ${base}, ${target.listId}:${target.entryId})`);
+let evasionMissed = 0;
 for (const [label, variant] of evasions) {
   const r = await engine.screen({ fullName: variant, dateOfBirth: target.dobs[0].length===4?`${target.dobs[0]}-01-01`:target.dobs[0], nationality: target.countries[0], residence: target.countries[0], walletAddress: '0x'+'4'.repeat(40) });
-  console.log(`  ${(r.decision==='BLOCK'?'✅':'❌')} ${label.padEnd(16)} → ${r.decision} ${r.hits[0]?.score ?? ''}`);
+  if (r.decision === 'ALLOW') evasionMissed++;
+  console.log(`  ${(r.decision!=='ALLOW'?'✅':'❌')} ${label.padEnd(16)} → ${r.decision} ${r.hits[0]?.score ?? ''}`);
 }
 
 // The wallet path
@@ -73,3 +86,24 @@ console.log(`\nsanctioned wallet lookup ${addr.slice(0,12)}... -> ${rw.decision}
 // methods bits
 const r0 = await engine.screen({ fullName: 'Test Person', dateOfBirth: '1990-01-01', nationality: 'KR', residence: 'KR', walletAddress: '0x'+'5'.repeat(40) });
 console.log(`\nmethodsApplied = 0x${r0.methodsApplied.toString(16)} , PEP bit ${(r0.methodsApplied & (1<<17)) ? 'SET (wrong)' : 'unset, no data'}`);
+const metrics = { positiveCount: sample.length, missed: missed.length, cleanCount: KO.length + EN.length, falsePositive: fp,
+  evasionCount: evasions.length, evasionMissed, walletBlocked: rw.decision === 'BLOCK', unearnedBits: r0.methodsApplied & ((1 << 17) | (1 << 18) | (1 << 20)) };
+console.log('regression metrics:', JSON.stringify(metrics));
+assertEvaluation(metrics); // Nonzero exit on regression; output alone is not a CI gate.
+console.log(`PASS ${EVALUATION_POLICY_VERSION} (internal regression only)`);
+const report = buildInternalEvaluationReport({
+  engineVersion: ENGINE_VERSION,
+  sourceSha256,
+  listCounts: { ...counts, total: entries.length },
+  historical,
+  blocked,
+  reviewed,
+  metrics,
+});
+if (outputPath) {
+  const absolute = resolve(outputPath);
+  mkdirSync(dirname(absolute), { recursive: true });
+  writeFileSync(absolute, JSON.stringify(report, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+  console.log(`report: ${absolute}`);
+  console.log(`report fingerprint: ${report.reportFingerprint}`);
+}

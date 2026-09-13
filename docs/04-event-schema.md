@@ -15,18 +15,18 @@ All four come from reading `ASCBase`. They decide how much freedom the event des
 
 | # | Constraint | Source | Effect on the schema |
 |---|---|---|---|
-| C1 | `queryId = f(chainKey, blockHeight, txIndex)`, carrying neither the action nor the log index | `ASCBase._computeQueryId` | One source transaction gets one `execute()`. Mix event kinds in a transaction and one is processed while the rest are sealed permanently |
-| C2 | One `execute()` can walk every log in that transaction | `getLogsByEventSignature` returns an array | Batching means N events of one kind in one transaction |
+| C1 | `queryId = f(chainKey, blockHeight, txIndex)`, carrying neither the action nor the log index | `ASCBase._computeQueryId` | One source transaction gets one `execute()`. Working-tree ASC v2 must therefore process all trusted lifecycle logs atomically |
+| C2 | One `execute()` can walk every log in that transaction | Decoded receipt preserves `receiptLogs` order | v2 supports repeated subjects, mixed lifecycle events and multiple epochs; v1 only filters by action |
 | C3 | At most 4 topics: the signature plus 3 indexed | EVM | Three indexed parameters. Everything else goes in `data` |
 | C4 | Checking `log.address_` is the only authenticity test available | `ASCLoanManager._processFundLogs` | Events come from exactly one source contract |
 
-### The hard rule that follows from C1
+### Atomic receipt processing in v2 (2026-09-06)
 
-> One transaction emits one kind of ASC event.
+The old rule, “one transaction emits one kind of ASC event,” was not enforced by separate source functions: a contract issuer can compose calls in one transaction. On the historical ASC v1 a caller could consume the query with one action and suppress the others.
 
-Mixing them opens a griefing path. An attacker lands the cheap action first, `processedQueries[queryId]` is consumed, and every other event in that transaction is sealed for good. `execute()` is permissionless, so anyone can do it.
+Working-tree `TRANSACTION_PROCESSING_VERSION() == 2` consumes every recognized log from the pinned source in receipt order. The ordinary cursor is `(blockHeight, txIndex, receipt-local logIndex)`. Ordinary events are latest-wins, including duplicate subjects; denial remains cumulative unless a newer governed correction supersedes it on its separate source-order cursor. Every epoch log is visited; stale epochs are skipped without suppressing other lifecycle events. Foreign lookalike logs are ignored. A malformed trusted lifecycle log reverts the entire receipt and replay guard.
 
-Every `ComplianceSource` function emits one kind of event. Compound operations, such as issuing and publishing an epoch, use separate transactions.
+The new worker requires version 2 and groups mixed logs into one job. This is not deployed to the historical sandbox. See [migration and tests](23-atomic-receipts.md) before introducing a contract issuer or multisig batching.
 
 ---
 
@@ -37,11 +37,13 @@ enum Action {
     MarkIssued,       // 0
     MarkRevoked,      // 1
     SanctionDenied,   // 2
-    RosterEpoch       // 3
+    RosterEpoch,      // 3
+    IssuerKeyCompromise, // 4
+    SanctionDenialCorrection // 5
 }
 ```
 
-The `action` in `execute(action, ...)` comes from the caller and is not derived from the proof. A wrong pairing makes `getLogsByEventSignature` return nothing and the `require` reverts, so it fails safely. A revert also rolls back `processedQueries`, so nothing is sealed. The exception is the mixed transaction C1 describes.
+The `action` remains caller-supplied for ABI compatibility. In v2 it must name an event actually present from the trusted source, but does not filter execution. Any present action applies the same entire receipt. Absent/invalid actions revert, rolling back `processedQueries` and every state change.
 
 ---
 
@@ -70,12 +72,12 @@ bit  207            176 175            136 135          96 95        64 63    0
 | `issuedAt` | uint40 | 136 | `0xFFFFFFFFFF` |
 | `expiry` | uint40 | 96 | `0xFFFFFFFFFF` |
 | `epoch` | uint32 | 64 | `0xFFFFFFFF` |
-| (reserved) | 64 bits | 0 | room to extend |
+| (reserved) | 64 bits | 0 | schema 0 requires zero; unsupported extensions fail |
 
 **Why pack**
 1. The whole encoded transaction travels as calldata, so a smaller log costs less gas to verify.
 2. Indexing `attrs` lets the ASC read it straight from `topics[2]` with no `abi.decode`.
-3. The reserved 64 bits allow new fields without changing the event signature, and a signature change means editing three places at once.
+3. The reserved 64 bits identify unsupported extensions when nonzero. Future use requires a new explicit decoder/migration. [Credential and policy schema](24-credential-policy-schema.md) defines the working-tree accepted ranges and kind binding; the original wire vector is unchanged.
 
 ```solidity
 library MarkAttrs {
@@ -103,7 +105,7 @@ library MarkAttrs {
 
 ---
 
-## 3. The four events
+## 3. Lifecycle events
 
 ### 3.1 `MarkIssued`
 
@@ -127,6 +129,9 @@ event MarkIssued(
 
 > Indexing `attrs` is what makes this work. The ASC reads `topics[2]` and has all eight fields.
 > `subject` and `issuer` also serve the worker's `queryFilter`.
+
+Stable contract issuers use the action-0-compatible
+`KeyedMarkIssued(address indexed subject, bytes32 indexed attrs, address indexed issuer, uint64 issuerKeyEpoch, bytes32 claimsRoot, bytes32 evidenceHash)` event instead. `ComplianceSource.issueOnceWithKey` verifies that the caller's advertised version-1 `keyEpoch()` equals the nonzero event value. Legacy EOA issuance keeps `MarkIssued` and implicit key epoch zero. The ASC stores the key generation and proved source block separately from the unchanged `Mark` ABI.
 
 ### 3.2 `MarkRevoked`
 
@@ -177,28 +182,57 @@ event SanctionDenied(
 | data | 0 bytes |
 | Action | `2` |
 
-> Separate from `MarkRevoked` because a later full issuance can reactivate an ordinary revocation, while a sanctions denial is permanent in this contract version and consumers query it through `isDenied()`. Distinct signatures are what let the worker separate them.
+> Separate from `MarkRevoked` because a later ordinary issuance can reactivate an ordinary revocation, while a sanctions denial can be superseded only by the governed action-5 correction below. Distinct signatures let the worker and ASC preserve those semantics.
 
-### 3.4 `RosterEpochPublished`
+### 3.4 `SanctionDenialCorrected`
+
+```solidity
+event SanctionDenialCorrected(
+    address indexed subject,
+    uint64 indexed denialRevision,
+    uint256 indexed correctionId,
+    bytes32 reasonHash,
+    address proposer,
+    address approver
+);
+```
+
+| | |
+|---|---|
+| Signature | `SanctionDenialCorrected(address,uint64,uint256,bytes32,address,address)` |
+| topics | 4 |
+| data | 96 bytes |
+| Action | `5` |
+
+The source emits this only after an issuer proposal, a different configured approver, current denial-revision check and delay. The exact replacement `MarkIssued` follows in the same receipt. The ASC uses a separate sanctions-decision source cursor, so late older denial proofs cannot erase a newer correction. Correction without the replacement stays suspended. See [T-13 governance](84-denial-correction-recovery-governance.md).
+
+### 3.5 `RosterEpochPublished`
 
 ```solidity
 /// @notice Publishes an epoch roster root. One write regardless of how many subjects it covers.
 event RosterEpochPublished(
     uint32  indexed epoch,        // topics[1]
     bytes32 indexed root,         // topics[2] sorted-key Merkle root
-    uint32  indexed listVersion,  // topics[3] AML list edition
-    uint40  validUntil            // data[0]   roster freshness expiry
+    uint32  indexed listVersion,  // topics[3] short snapshot edition; full binding in data[3]
+    uint40  validUntil,           // data[0] expiry, at most cutoff + 24 hours
+    uint40  sourceCutoff,         // data[1] publisher's asserted source scan cutoff timestamp
+    uint40  publishedAt,          // data[2] source block.timestamp, set by the contract
+    bytes32 snapshotId            // data[3] complete AML manifest hash, not proof of rescreening
 );
 ```
 
 | | |
 |---|---|
-| Signature | `RosterEpochPublished(uint32,bytes32,uint32,uint40)` |
+| Signature | `RosterEpochPublished(uint32,bytes32,uint32,uint40,uint40,uint40,bytes32)` |
 | topics | 4 |
-| data | 32 bytes |
+| data | 128 bytes |
 | Action | `3` |
 
-> Exactly one per transaction. Epochs increase monotonically, so batching them means nothing.
+Epoch schema v2 is incompatible with the historical event. Source, ASC and Registry expose `EPOCH_SCHEMA_VERSION() == 2`; the worker and publication tools require it. The source permits a nonzero root/snapshot, a cutoff no more than one hour before publication, and an unexpired validity ending at most 24 hours after cutoff. The ASC preserves these times even when a receipt arrives after expiry. Both membership and non-membership use the same current-epoch freshness predicate. Multiple epochs in one receipt are processed in order; stale sequence numbers do not suppress other lifecycle events. [Bounds, tests and migration](32-epoch-freshness.md) define the trust limits.
+
+Roster authorization v1 adds `RosterIssuerAuthorized(uint32 indexed epoch, bytes32 indexed root, address indexed issuer)` (four topics including signature, no data). Every accepted epoch requires 1..16 matching, unique issuer approvals from the trusted source **in the same complete receipt**. Source publication validates current issuer roles and EIP-712/1271 signatures, or the dual-role caller explicitly authorizes itself. The worker still schedules the paired epoch event; authorization logs are not independently consumable actions. Registry membership checks the leaf issuer's approval even when policy `trustedIssuer` is wildcard. [Approval wire format and trust limits](33-roster-issuer-authorization.md).
+
+Issuer-key provenance v1 additionally emits `RosterIssuerKeyAuthorized(uint32 indexed epoch, bytes32 indexed root, address indexed issuer, uint64 issuerKeyEpoch)` for a version-1 stable issuer. A recovery owner can atomically retire the current key and ask the source to emit `IssuerKeyCompromised(address indexed issuer, uint64 indexed issuerKeyEpoch, uint64 lastTrustedBlock, bytes32 reasonHash)`. This is action 4. The ASC accepts only a nonzero opaque reason, nonzero epoch and a last-trusted block strictly before the proved declaration block. Registry direct and roster decisions reject evidence from that generation when its proved source height is after the tightest relayed cutoff. A plain `suspend` has no historical cutoff and therefore does not silently rewrite earlier evidence. [Rotation and remaining governance limits](37-issuer-key-rotation.md).
 
 ---
 
@@ -209,7 +243,7 @@ The Attestcoin docs list five readability practices. This schema follows all fiv
 | Guidance | This schema | |
 |---|---|---|
 | One source contract per dApp | `ComplianceSource.sol` only | yes |
-| A distinct event type per query | four distinct signatures | yes |
+| A distinct event type per query | purpose-built lifecycle signatures | yes |
 | Names that state the cross-chain intent | `MarkIssued`, `RosterEpochPublished` | yes |
 | Avoid standard events such as `Transfer` | purpose-built events only | yes |
 | Everything the ASC needs is in the event | eight fields in `attrs` plus two roots | yes |
@@ -225,7 +259,7 @@ contract ProofmarkASC is Ownable, ASCBaseX {   // the fork, see doc 05 section 2
     bytes32 constant SIG_ISSUED  = keccak256("MarkIssued(address,bytes32,address,bytes32,bytes32)");
     bytes32 constant SIG_REVOKED = keccak256("MarkRevoked(address,uint16,uint32)");
     bytes32 constant SIG_DENIED  = keccak256("SanctionDenied(address,uint32,uint32)");
-    bytes32 constant SIG_EPOCH   = keccak256("RosterEpochPublished(uint32,bytes32,uint32,uint40)");
+    bytes32 constant SIG_EPOCH   = keccak256("RosterEpochPublished(uint32,bytes32,uint32,uint40,uint40,uint40,bytes32)");
 
     uint64  public expectedChainKey;        // doc 05 section 1, cross-chain confusion
     address public sourceContract;          // C4
@@ -298,17 +332,18 @@ contract ProofmarkASC is Ownable, ASCBaseX {   // the fork, see doc 05 section 2
 
 ```solidity
 contract ComplianceSource is Ownable {
-    // C1: each function emits one kind of event
+    // Simplified interface; epoch publication emits authorization(s) plus the epoch event.
     function issue(address subject, bytes32 attrs, bytes32 claimsRoot, bytes32 evidenceHash) external onlyIssuer;
     function issueBatch(Issuance[] calldata items) external onlyIssuer;      // C2 batching
     function revoke(address subject, uint16 reasonCode) external onlyIssuer;
     function revokeBatch(address[] calldata subjects, uint16[] calldata reasons) external onlyIssuer;
     function deny(address subject, uint32 listVersion) external onlyIssuer;
-    function publishEpoch(bytes32 root, uint32 listVersion, uint40 validUntil) external onlyEpochKey;
+    function publishEpoch(uint32 epoch, bytes32 root, uint32 listVersion, uint40 validUntil, uint40 sourceCutoff, bytes32 snapshotId) external onlyEpochPublisher onlyIssuer;
+    function publishEpochForIssuers(uint32 epoch, bytes32 root, uint32 listVersion, uint40 validUntil, uint40 sourceCutoff, bytes32 snapshotId, RootApproval[] calldata approvals) external onlyEpochPublisher;
 }
 ```
 
-> No convenience function calls `issue` and `publishEpoch` in one transaction. That violates C1.
+The source's separate functions do not prevent composition by an issuer contract. Combining them is supported only by the atomic-receipt ASC v2, not the historical deployment.
 > Epoch publication is always its own transaction.
 
 ---
@@ -374,8 +409,8 @@ bytes32 constant SIG_ISSUED  = 0xffac883eea6676651044a7e28ee0527defa8e3fce755814
 bytes32 constant SIG_REVOKED = 0xdde75c52928e1a0e5b14011716a8309ab432e435d50ced197b667cc906d3fd09;
 // SanctionDenied(address,uint32,uint32)
 bytes32 constant SIG_DENIED  = 0x4e68a53405a08cc0e2bb7cd374ad540457f069bcf32e0830ea2e851815d6f5ae;
-// RosterEpochPublished(uint32,bytes32,uint32,uint40)
-bytes32 constant SIG_EPOCH   = 0x984d6a4d0b5705f143158aad863f7a4f77abd36d272098cda48adbcbd40b0dc3;
+// Epoch v2, recomputed 2026-09-07: RosterEpochPublished(uint32,bytes32,uint32,uint40,uint40,uint40,bytes32)
+bytes32 constant SIG_EPOCH   = 0x9c17b3d0d930980ffef5e671b9390a26d8f8b5f801f0ce3636909c95c69eb908;
 ```
 
 Recompute:
@@ -383,5 +418,5 @@ Recompute:
 cast keccak "MarkIssued(address,bytes32,address,bytes32,bytes32)"
 cast keccak "MarkRevoked(address,uint16,uint32)"
 cast keccak "SanctionDenied(address,uint32,uint32)"
-cast keccak "RosterEpochPublished(uint32,bytes32,uint32,uint40)"
+cast keccak "RosterEpochPublished(uint32,bytes32,uint32,uint40,uint40,uint40,bytes32)"
 ```

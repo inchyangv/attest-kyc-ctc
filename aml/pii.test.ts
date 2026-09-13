@@ -1,11 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 import { existsSync } from 'node:fs';
-import { loadLists } from './loader.js';
+import { loadHistoricalLists as loadLists } from './loader.js';
 import { ListBackedAmlEngine } from './engine.js';
 import { containsPii } from '../pipeline/pii-guard.js';
 
-const HAVE = existsSync('data/raw/ofac_sdn.xml');
+const HAVE = existsSync('data/raw/current.json') || existsSync('data/raw/ofac_sdn.xml');
 
 // pipeline/pii-guard.ts owns the detector. A second copy would drift.
 const leaks = (h: unknown, n: string) => containsPii(h, n);

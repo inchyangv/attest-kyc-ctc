@@ -2,17 +2,15 @@ import 'server-only';
 import { EvidenceVault, type VaultRecord, type VaultState } from '@pipeline/vault.js';
 import type { IssueOutcome, IssueRequest } from '@pipeline/issue.js';
 import { ConfigError } from './kyc-server';
+import type { IssuanceEntry } from '@pipeline/issuance-journal.js';
+import { issuanceEvidenceSink as makeEvidenceSink } from '@pipeline/issuance-evidence.js';
+import { IssuanceJournalError } from '@pipeline/issuance-journal.js';
+import { getEngine } from './aml-server';
+import { retentionPolicyEvidence, type RetentionPolicyV1, type RetentionOutcome } from '@pipeline/retention-policy.js';
 
 const env = (name: string): string | undefined => process.env[name]?.trim() || undefined;
 
 export type VaultStatus = { configured: boolean; persistent: boolean; missing: string[]; mode: 'file' | 'none' };
-
-export class EvidenceReplayError extends Error {
-  constructor(readonly recordId: string) {
-    super('this verification flow already has a final evidence record; start a new consented flow');
-    this.name = 'EvidenceReplayError';
-  }
-}
 
 let cached: { path: string; secret: string; vault: EvidenceVault } | null = null;
 
@@ -35,32 +33,37 @@ export function evidenceVaultStatus(): VaultStatus {
   };
 }
 
-export function storeEvidenceRecord(
+export function buildEvidenceRecord(
   id: string,
   req: IssueRequest,
   outcome: IssueOutcome,
   consentVersion: string,
-  demo: boolean,
+  processingPolicy: NonNullable<IssueRequest['processingPolicy']>,
+  retentionPolicy: RetentionPolicyV1,
   now = Date.now(),
-): { stored: boolean; mode: 'file' | 'none'; recordId: string; reason?: string } {
+): VaultRecord | undefined {
   const status = evidenceVaultStatus();
   if (!status.configured) {
-    if (demo) return { stored: false, mode: 'none', recordId: id, reason: 'public sandbox keeps no server-side evidence' };
+    if (retentionPolicy.status === 'synthetic') return undefined; // Encrypted short-term issuance journal is still mandatory.
     throw new ConfigError('production issuance requires a persistent encrypted evidence vault', status.missing);
   }
 
-  const retentionDays = Number(env('EVIDENCE_RETENTION_DAYS') ?? '1825');
-  if (!Number.isInteger(retentionDays) || retentionDays <= 0) {
-    throw new ConfigError('EVIDENCE_RETENTION_DAYS must be a positive integer', ['EVIDENCE_RETENTION_DAYS']);
-  }
-  const state: VaultState = outcome.status === 'ISSUED' ? 'active'
+  const state: VaultState = outcome.status === 'ISSUED' ? 'pending'
     : outcome.status === 'REVIEW' ? 'review'
       : outcome.status === 'DENIED' ? 'blocked' : 'rejected';
   const issued = outcome.status === 'ISSUED' ? outcome : null;
-  const record: VaultRecord = {
+  const retentionOutcome: RetentionOutcome = outcome.status === 'ISSUED' ? 'issued'
+    : outcome.status === 'REVIEW' ? 'review' : outcome.status === 'DENIED' ? 'denied' : 'error';
+  const retention = retentionPolicyEvidence(retentionPolicy, {
+    customerId: processingPolicy.customerId, jurisdiction: 'KR', outcome: retentionOutcome,
+    collectedAt: now, decisionAt: now,
+  });
+  return {
     id,
     walletAddress: req.wallet,
     consentVersion,
+    processingPolicy,
+    retentionPolicy: retention,
     screeningSubject: {
       fullName: req.declared.fullName,
       dateOfBirth: req.declared.dateOfBirth,
@@ -75,13 +78,26 @@ export function storeEvidenceRecord(
     claims: issued?.claims,
     state,
     createdAt: now,
-    retentionUntil: now + retentionDays * 86_400_000,
+    retentionUntil: retention.vaultDeleteAt,
     lastScreenedAt: outcome.status === 'ISSUED' || outcome.status === 'DENIED' || outcome.status === 'REVIEW' ? now : undefined,
     rescreens: [],
     reviews: [],
   };
-  const evidenceVault = configuredVault();
-  if (evidenceVault.get(id)) throw new EvidenceReplayError(id);
-  evidenceVault.put(record);
-  return { stored: true, mode: 'file', recordId: id };
 }
+
+function retained(entry: IssuanceEntry): EvidenceVault | null {
+  if (!entry.evidenceRecord) return null;
+  const status = evidenceVaultStatus();
+  if (!status.configured) throw new ConfigError('retained evidence vault is unavailable; issuance cannot resume', status.missing);
+  return configuredVault();
+}
+
+function assertCurrentScreening(entry: IssuanceEntry): void {
+  if (entry.outcome.status !== 'ISSUED') return;
+  const prepared = entry.outcome.screeningSnapshotId;
+  if (!prepared) throw new IssuanceJournalError('SANCTIONS_SNAPSHOT_UNAVAILABLE');
+  const current = getEngine('issuance').meta.provenance.snapshotId;
+  if (prepared !== current) throw new IssuanceJournalError('SANCTIONS_SNAPSHOT_CHANGED');
+}
+
+export const issuanceEvidenceSink = makeEvidenceSink(retained, assertCurrentScreening);

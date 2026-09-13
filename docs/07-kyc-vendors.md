@@ -1,13 +1,17 @@
 # KYC vendors: what is real, what is demo, and how to connect each
 
+> **2026-09-10 addition:** native hosted Sumsub onboarding is implemented separately at `/verify/provider`; see [setup and limits](89-sumsub-onboarding.md). Its authenticated overall review is a non-issuable evidence candidate, not a replacement for actual per-check evidence. The Korean flow below remains available at `/verify`; a real vendor session and its onchain issuance bridge are different acceptance gates.
+
 > 2026-08-31 · Tech Lead
 > Background: [`03-product-plan.md`](03-product-plan.md) section 4.2 (the Korean adapter) and section 16 D4.
 > Code: `pipeline/adapters/{kr,codef,openbanking,demo}.ts`, `web/lib/kyc-server.ts`, `web/app/api/kyc/*`, `web/app/verify/page.tsx`.
-> Verified: 117 TypeScript tests, `next build`, and the full `/verify` flow driven through the API in demo mode (section 8).
+> Verified: 123 TypeScript tests, `next build`, and the full `/verify` flow driven through the API in demo mode (section 8).
 
 ---
 
 ## 1. The decision
+
+Current working-tree caveat (2026-09-07): [institution HTTP limits](40-vendor-http-boundaries.md) remove automatic POST replay, and [public diagnostic projection](41-public-diagnostic-boundary.md) omits upstream error messages/references, uses fixed two-way instructions and applies no-store responses. This does not change retained evidence hashes or establish live institutional approval. Earlier verification counts and the demo journey below are historical, not proof that the current hardened deployment has been released.
 
 The two regulatory checks in the Korean adapter, **document authenticity with the issuing authority** (FSC method 1) and **an existing bank account through a one-won transfer** (method 4), are integrated against real vendors in code. The commercial side of some of them cannot be arranged before the deadline, so the rule is:
 
@@ -148,12 +152,14 @@ All keys with comments: `web/.env.example`. Grouped:
 | CODEF login, cert | `CODEF_LOGIN_TYPE=cert`, `CODEF_CERT_TYPE`, `CODEF_CERT_FILE`, `CODEF_KEY_FILE`, `CODEF_CERT_PASSWORD`, `CODEF_LOGIN_USER_NAME`, `CODEF_LOGIN_IDENTITY` |
 | Bank | `BANK_VENDOR` (`openbanking` / `codef`), `OPENBANKING_CLIENT_ID`, `OPENBANKING_CLIENT_SECRET`, `OPENBANKING_CLIENT_USE_CODE`, `OPENBANKING_CNTR_ACCOUNT_TYPE`, `OPENBANKING_CNTR_ACCOUNT_NUM`, `OPENBANKING_WD_PASS_PHRASE`, `OPENBANKING_PRINT_NAME`, `OPENBANKING_ENV` |
 | Issuer | `ISSUER_PRIVATE_KEY` (allow-listed with `setIssuer`), `NEXT_PUBLIC_SEPOLIA_RPC`, `NEXT_PUBLIC_SOURCE` |
-| Sealing | `EVIDENCE_HMAC_KEY` (already required by screening; the step tokens derive their key from it) |
+| Sealing | Dedicated `SERVER_TOKEN_KEY` + `SERVER_TOKEN_KEY_ID`; optional bounded previous key triplet during rotation |
 
-Local: `web/.env.local` carries `KYC_DEMO=1`, so `npm run dev` and `/verify` work with no vendor. Deployment, minimum for the demo:
+Local: `web/.env.local` may carry `KYC_DEMO=1`; `/verify` needs the dedicated token/evidence and issuance state settings even when no vendor is configured. Deployment, minimum token settings for the demo include:
 
 ```
 vercel env add KYC_DEMO production            # 1
+vercel env add SERVER_TOKEN_KEY production    # independent high-entropy secret
+vercel env add SERVER_TOKEN_KEY_ID production # opaque current version, for example token-k1
 vercel env add ISSUER_PRIVATE_KEY production  # without it the pipeline runs and the Sepolia tx is skipped
 ```
 
@@ -170,7 +176,7 @@ then the CODEF keys as they arrive; the document axis turns real on redeploy, th
 | 2 bank | `POST /api/kyc/bank` | `start`: holder name compared with the declared name, one won sent, sealed `challenge` carrying an HMAC of the code (never the code); `verify`: five tries, then `bankProof` |
 | 3 issue | `POST /api/kyc/issue` | Opens proofs bound to the same wallet/flow, runs reconciliation, AML, claims and `packAttrs`, stores a production evidence record, then calls replay-safe `ComplianceSource.issueOnce(requestId,...)`. The public demo retains no server-side record and says so |
 
-Sealed tokens are AES-256-GCM under `sha256(EVIDENCE_HMAC_KEY | proofmark-seal-v1)` with a type tag and expiry; a forged or expired token is a 400. Evidence never holds a name, number or account: vendor, reference, `live`, decision codes and hashes only (`pipeline/pii-guard.ts` checks this in tests).
+Sealed tokens are AES-256-GCM under a dedicated, key-ID-bound `SERVER_TOKEN_KEY` with a type tag and expiry; a forged, retired-key or expired token is a 400. A bounded rotation may accept one explicitly configured previous key until its Unix-millisecond deadline while every new token uses the current key. Evidence never holds a name, number or account: vendor, reference, `live`, decision codes and hashes only (`pipeline/pii-guard.ts` checks this in tests).
 
 ---
 

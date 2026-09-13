@@ -2,10 +2,13 @@
 pragma solidity ^0.8.30;
 
 import {Test} from "forge-std/Test.sol";
+import {Vm} from "forge-std/Vm.sol";
 import {EvmV1Decoder} from "@gluwa/usc-contracts/contracts/decoding/EvmV1Decoder.sol";
 
 import {ProofmarkASC} from "../src/ProofmarkASC.sol";
-import {ProofmarkRegistry} from "../src/ProofmarkRegistry.sol";
+import {ProofmarkRegistry, RosterMark} from "../src/ProofmarkRegistry.sol";
+import {RosterProof} from "../src/lib/RosterProof.sol";
+import {RosterWitnessFixture} from "./RosterWitnessFixture.sol";
 import {ComplianceSource} from "../src/ComplianceSource.sol";
 import {GatedRwaNote} from "../src/GatedRwaNote.sol";
 import {INativeQueryVerifier} from "../src/lib/VerifierInterface.sol";
@@ -33,10 +36,13 @@ contract GatedRwaNoteTest is Test {
     address alice = address(0xA11);
     address bob = address(0xB0B);
     address mallory = address(0xBAD1);
+    address recoveryApprover = address(0xC0A11);
 
     uint256 krPolicy;
     uint40 constant ISSUED_AT = 1_700_000_000;
     uint40 constant EXPIRY = 1_800_000_000;
+    address[] subjects;
+    RosterMark[] rosterMarks;
 
     function setUp() public {
         vm.etch(PRECOMPILE, address(new MockBlockProver()).code);
@@ -47,6 +53,7 @@ contract GatedRwaNoteTest is Test {
 
         vm.startPrank(owner);
         src.setIssuer(issuer, true);
+        src.setEpochPublisher(issuer, true);
         asc = new ProofmarkASC(owner);
         asc.configureSource(SEPOLIA_KEY, address(src));
         vm.stopPrank();
@@ -57,22 +64,24 @@ contract GatedRwaNoteTest is Test {
                 requireAll: KR_VASP,
                 minAssurance: 2,
                 maxAge: 0,
-                requiredRegime: 410,
+                requiredRegime: 1,
                 requiredJurisdiction: 410,
                 trustedIssuer: issuer,
-                requireRoster: false,
+                requireRoster: true,
                 exists: false
             })
         );
         reg.freezePolicy(krPolicy);
 
         krNote = new GatedRwaNote("KR Credit Note", "KRCN", address(reg), krPolicy, owner);
+        vm.prank(owner);
+        krNote.configureRecoveryGovernance(owner, recoveryApprover);
     }
 
     // Helpers
 
     function _issue(address subject, uint32 methods_, uint64 height, uint256 salt) internal {
-        bytes32 attrs = MarkAttrs.pack(1, 3, 410, 410, methods_, ISSUED_AT, EXPIRY, 0);
+        bytes32 attrs = MarkAttrs.pack(1, 3, 1, 410, methods_, ISSUED_AT, EXPIRY, 0);
         bytes32[] memory t = new bytes32[](4);
         t[0] = keccak256("MarkIssued(address,bytes32,address,bytes32,bytes32)");
         t[1] = bytes32(uint256(uint160(subject)));
@@ -81,6 +90,32 @@ contract GatedRwaNoteTest is Test {
         EvmV1Decoder.LogEntryTuple[] memory logs = new EvmV1Decoder.LogEntryTuple[](1);
         logs[0] = fx.log(address(src), t, abi.encode(bytes32(uint256(1)), bytes32(uint256(2))));
         _exec(uint8(Action.MarkIssued), height, fx.tx2(logs), salt);
+        subjects.push(subject);
+        rosterMarks.push(RosterMark(attrs, bytes32(uint256(1)), bytes32(uint256(2)), issuer));
+        _refreshRoster();
+    }
+
+    function _refreshRoster() internal {
+        (bytes32 root, RosterProof.Inclusion[] memory proofs) = RosterWitnessFixture.build(subjects, rosterMarks);
+        _publishRoot(root);
+        for (uint256 i; i < subjects.length; ++i) {
+            if (!asc.tombstone(subjects[i])) reg.cacheRosterWitness(subjects[i], rosterMarks[i], proofs[i]);
+        }
+    }
+
+    function _publishRoot(bytes32 root) internal {
+        uint32 nextEpoch = src.lastEpoch() + 1;
+        vm.recordLogs();
+        vm.prank(issuer);
+        src.publishEpoch(
+            nextEpoch, root, 1, uint40(block.timestamp + 1 days), uint40(block.timestamp), bytes32(uint256(7))
+        );
+        Vm.Log[] memory recorded = vm.getRecordedLogs();
+        EvmV1Decoder.LogEntryTuple[] memory logs = new EvmV1Decoder.LogEntryTuple[](recorded.length);
+        for (uint256 i; i < recorded.length; ++i) {
+            logs[i] = fx.log(recorded[i].emitter, recorded[i].topics, recorded[i].data);
+        }
+        _exec(3, 1000 + uint64(src.lastEpoch()), fx.tx2(logs), 1000 + src.lastEpoch());
     }
 
     function _revoke(address subject, uint64 height, uint256 salt) internal {
@@ -182,10 +217,10 @@ contract GatedRwaNoteTest is Test {
                 requireAll: EU_RWA,
                 minAssurance: 2,
                 maxAge: 0,
-                requiredRegime: 276,
+                requiredRegime: 1, // Hypothetical consumer constraints, not an implemented EU regime.
                 requiredJurisdiction: 276,
                 trustedIssuer: issuer,
-                requireRoster: false,
+                requireRoster: true,
                 exists: false
             })
         );
@@ -226,7 +261,7 @@ contract GatedRwaNoteTest is Test {
                 requireAll: KR_VASP,
                 minAssurance: 2,
                 maxAge: 0,
-                requiredRegime: 410,
+                requiredRegime: 1,
                 requiredJurisdiction: 410,
                 trustedIssuer: issuer,
                 requireRoster: false,
@@ -237,18 +272,33 @@ contract GatedRwaNoteTest is Test {
         new GatedRwaNote("Mutable", "MUT", address(reg), mutablePolicy, owner);
     }
 
-    function test_OwnerCanForceBurnBlockedHolder() public {
+    function test_ApprovedDelayedRecoveryCanBurnBlockedHolder() public {
         _issue(alice, KR_VASP, 100, 60);
         vm.prank(owner);
         krNote.mint(alice, 1000);
         _revoke(alice, 200, 61);
 
         vm.prank(owner);
-        krNote.forceBurn(alice, 400);
+        uint256 recoveryId = krNote.proposeRecovery(
+            GatedRwaNote.RecoveryKind.Burn, alice, address(0), 400, keccak256("synthetic redemption case")
+        );
+        vm.prank(recoveryApprover);
+        krNote.approveRecovery(recoveryId);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                GatedRwaNote.RecoveryDelayActive.selector,
+                recoveryId,
+                uint40(block.timestamp + krNote.MIN_RECOVERY_DELAY())
+            )
+        );
+        krNote.executeRecovery(recoveryId);
+        vm.warp(block.timestamp + krNote.MIN_RECOVERY_DELAY());
+        vm.prank(mallory);
+        krNote.executeRecovery(recoveryId);
         assertEq(krNote.balanceOf(alice), 600);
     }
 
-    function test_ForceTransferStillRequiresVerifiedRecipient() public {
+    function test_GovernedRecoveryRechecksVerifiedRecipient() public {
         _issue(alice, KR_VASP, 100, 70);
         vm.prank(owner);
         krNote.mint(alice, 1000);
@@ -256,11 +306,176 @@ contract GatedRwaNoteTest is Test {
 
         vm.prank(owner);
         vm.expectRevert(abi.encodeWithSelector(GatedRwaNote.RecipientNotVerified.selector, bob, krPolicy));
-        krNote.forceTransfer(alice, bob, 100);
+        krNote.proposeRecovery(
+            GatedRwaNote.RecoveryKind.Transfer, alice, bob, 100, keccak256("synthetic transfer case")
+        );
 
         _issue(bob, KR_VASP, 300, 72);
         vm.prank(owner);
-        krNote.forceTransfer(alice, bob, 100);
+        uint256 recoveryId = krNote.proposeRecovery(
+            GatedRwaNote.RecoveryKind.Transfer, alice, bob, 100, keccak256("synthetic transfer case")
+        );
+        vm.prank(recoveryApprover);
+        krNote.approveRecovery(recoveryId);
+        vm.warp(block.timestamp + krNote.MIN_RECOVERY_DELAY());
+        krNote.executeRecovery(recoveryId);
         assertEq(krNote.balanceOf(bob), 100);
+    }
+
+    function test_ApprovedRecoveryCannotExecuteAfterRecipientLosesEligibility() public {
+        _issue(alice, KR_VASP, 100, 76);
+        _issue(bob, KR_VASP, 101, 77);
+        vm.prank(owner);
+        krNote.mint(alice, 1000);
+        _revoke(alice, 200, 78);
+        bytes32 reasonHash = keccak256("synthetic successor transfer case");
+        vm.prank(owner);
+        uint256 recoveryId = krNote.proposeRecovery(GatedRwaNote.RecoveryKind.Transfer, alice, bob, 100, reasonHash);
+        vm.prank(recoveryApprover);
+        krNote.approveRecovery(recoveryId);
+        _revoke(bob, 300, 79);
+        vm.warp(block.timestamp + krNote.MIN_RECOVERY_DELAY());
+        vm.expectRevert(abi.encodeWithSelector(GatedRwaNote.RecipientNotVerified.selector, bob, krPolicy));
+        krNote.executeRecovery(recoveryId);
+        assertEq(krNote.balanceOf(alice), 1000);
+        assertEq(krNote.balanceOf(bob), 0);
+
+        (
+            address storedFrom,
+            address storedTo,
+            uint256 storedAmount,
+            bytes32 storedReason,
+            address proposer,
+            address storedApprover,,,
+            bool executed
+        ) = krNote.recoveryRequests(recoveryId);
+        assertEq(storedFrom, alice);
+        assertEq(storedTo, bob);
+        assertEq(storedAmount, 100);
+        assertEq(storedReason, reasonHash);
+        assertEq(proposer, owner);
+        assertEq(storedApprover, recoveryApprover);
+        assertFalse(executed);
+    }
+
+    /// @dev T-13 counterexample: the asset owner must not be a unilateral recovery authority,
+    ///      even when the eventual recipient currently passes the frozen policy.
+    function test_OwnerAloneCannotForceMoveOrBurn() public {
+        _issue(alice, KR_VASP, 100, 73);
+        _issue(bob, KR_VASP, 101, 74);
+        vm.prank(owner);
+        krNote.mint(alice, 1000);
+        _revoke(alice, 200, 75);
+
+        vm.startPrank(owner);
+        (bool moved,) =
+            address(krNote).call(abi.encodeWithSignature("forceTransfer(address,address,uint256)", alice, bob, 100));
+        (bool burned,) = address(krNote).call(abi.encodeWithSignature("forceBurn(address,uint256)", alice, 100));
+        vm.stopPrank();
+
+        assertFalse(moved, "one owner moved a blocked holder without independent approval");
+        assertFalse(burned, "one owner burned a blocked holder without independent approval");
+        assertEq(krNote.balanceOf(alice), 1000, "failed recovery attempts changed holder balance");
+        assertEq(krNote.balanceOf(bob), 0, "failed recovery attempt changed recipient balance");
+    }
+
+    function test_FrozenDirectPolicyCannotBackANewRwaNote() public {
+        uint256 direct = reg.registerPolicy(Policy(KR_VASP, 2, 0, 1, 410, issuer, false, false));
+        reg.freezePolicy(direct);
+        vm.expectRevert(abi.encodeWithSelector(GatedRwaNote.PolicyMustRequireRoster.selector, direct));
+        new GatedRwaNote("Unsafe", "OLD", address(reg), direct, owner);
+    }
+
+    function test_SourceRevocationWithoutRelayAndNoPublisherStopsAssetAtCutoffDeadline() public {
+        _issue(alice, KR_VASP, 100, 80);
+        _issue(bob, KR_VASP, 101, 81);
+        uint256 cutoff = block.timestamp;
+        uint256 direct = reg.registerPolicy(Policy(KR_VASP, 2, 0, 1, 410, issuer, false, false));
+        vm.prank(owner);
+        krNote.mint(alice, 1000);
+        uint32 epoch = src.lastEpoch();
+        vm.prank(issuer);
+        src.revoke(alice, 2, epoch); // source event deliberately NEVER delivered to ASC
+        assertFalse(asc.tombstone(alice));
+        vm.warp(cutoff + 1 days - 1);
+        assertTrue(krNote.canTransfer(alice, bob), "exposure window is explicit, not instant revocation");
+        vm.prank(alice);
+        assertTrue(krNote.transfer(bob, 1));
+        vm.warp(cutoff + 1 days);
+        assertTrue(reg.isVerified(alice, direct), "old Direct issuance remains fresh by credential age only");
+        assertFalse(krNote.canTransfer(alice, bob));
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(GatedRwaNote.SenderNotVerified.selector, alice, krPolicy));
+        krNote.transfer(bob, 1);
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(GatedRwaNote.RecipientNotVerified.selector, bob, krPolicy));
+        krNote.mint(bob, 1);
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(GatedRwaNote.RecipientNotVerified.selector, bob, krPolicy));
+        krNote.proposeRecovery(
+            GatedRwaNote.RecoveryKind.Transfer, alice, bob, 1, keccak256("synthetic stale recipient case")
+        );
+        vm.prank(owner);
+        uint256 recoveryId = krNote.proposeRecovery(
+            GatedRwaNote.RecoveryKind.Burn, alice, address(0), 1, keccak256("synthetic blocked holder redemption")
+        );
+        vm.prank(recoveryApprover);
+        krNote.approveRecovery(recoveryId);
+        vm.warp(block.timestamp + krNote.MIN_RECOVERY_DELAY());
+        krNote.executeRecovery(recoveryId);
+    }
+
+    function test_LateWitnessDeliveryDoesNotRenewTimeOrRewriteDirectOrigin() public {
+        _issue(alice, KR_VASP, 100, 90);
+        uint40 expiry = asc.epochValidUntil();
+        (, RosterProof.Inclusion[] memory proofs) = RosterWitnessFixture.build(subjects, rosterMarks);
+        vm.warp(expiry - 1);
+        vm.prank(mallory); // anyone may deliver a valid proof
+        reg.cacheRosterWitness(alice, rosterMarks[0], proofs[0]);
+        assertTrue(reg.isVerified(alice, krPolicy));
+        assertEq(asc.getMark(alice).origin, 1, "Direct provenance stays Direct");
+        assertEq(asc.lastAppliedHeight(alice), 100, "witness must not rewrite lifecycle ordering");
+        vm.warp(expiry);
+        assertFalse(reg.isVerified(alice, krPolicy));
+        vm.expectRevert(ProofmarkRegistry.InvalidRosterWitness.selector);
+        reg.cacheRosterWitness(alice, rosterMarks[0], proofs[0]);
+    }
+
+    function test_NewEpochInvalidatesWitnessEvenWithSameRootAndRejectsForgedReplacement() public {
+        _issue(alice, KR_VASP, 100, 100);
+        (bytes32 root, RosterProof.Inclusion[] memory proofs) = RosterWitnessFixture.build(subjects, rosterMarks);
+        _publishRoot(root);
+        assertFalse(reg.isVerified(alice, krPolicy));
+        reg.cacheRosterWitness(alice, rosterMarks[0], proofs[0]);
+        assertTrue(reg.isVerified(alice, krPolicy));
+        RosterMark memory forged = rosterMarks[0];
+        forged.issuer = mallory;
+        vm.expectRevert(ProofmarkRegistry.InvalidRosterWitness.selector);
+        reg.cacheRosterWitness(alice, forged, proofs[0]);
+        vm.expectRevert(ProofmarkRegistry.InvalidRosterWitness.selector);
+        reg.cacheRosterWitness(bob, rosterMarks[0], proofs[0]);
+        (uint32 cachedEpoch, RosterMark memory cached) = reg.getRosterWitness(alice);
+        assertEq(cachedEpoch, asc.latestEpoch());
+        assertEq(cached.issuer, issuer);
+        assertTrue(reg.isVerified(alice, krPolicy));
+        // A valid empty asserted set invalidates every old witness; no prior Direct fallback.
+        (root,) = RosterWitnessFixture.build(new address[](0), new RosterMark[](0));
+        _publishRoot(root);
+        assertFalse(reg.isVerified(alice, krPolicy));
+    }
+
+    function test_WitnessRechecksPolicyAgeAndTombstoneAtUseTime() public {
+        _issue(alice, KR_VASP, 100, 110);
+        uint256 strict = reg.registerPolicy(Policy(KR_VASP, 2, 1 days, 1, 410, issuer, true, false));
+        assertTrue(reg.isVerified(alice, strict));
+        vm.warp(block.timestamp + 1);
+        assertTrue(asc.isRosterFresh());
+        assertFalse(reg.isVerified(alice, strict), "credential age is separate from roster time");
+        assertTrue(reg.isVerified(alice, krPolicy));
+        (, RosterProof.Inclusion[] memory proofs) = RosterWitnessFixture.build(subjects, rosterMarks);
+        _revoke(alice, 200, 111);
+        assertFalse(reg.isVerified(alice, krPolicy));
+        vm.expectRevert(ProofmarkRegistry.InvalidRosterWitness.selector);
+        reg.cacheRosterWitness(alice, rosterMarks[0], proofs[0]);
     }
 }

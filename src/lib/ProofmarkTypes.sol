@@ -7,7 +7,9 @@ enum Action {
     MarkIssued, // 0
     MarkRevoked, // 1
     SanctionDenied, // 2
-    RosterEpoch // 3
+    RosterEpoch, // 3
+    IssuerKeyCompromise, // 4
+    SanctionDenialCorrection // 5
 }
 
 /// @notice Mark status
@@ -39,6 +41,7 @@ library Methods {
     uint32 internal constant PEP_SCREENED = 1 << 17;
     uint32 internal constant ADVERSE_MEDIA = 1 << 18;
     uint32 internal constant JURISDICTION_CHECK = 1 << 19;
+    // Not earned by an exact listed-wallet lookup. Current built-in engine leaves this unset.
     uint32 internal constant ONCHAIN_EXPOSURE = 1 << 20;
 }
 
@@ -67,7 +70,7 @@ enum MarkOrigin {
 struct Mark {
     uint8 status;
     uint8 origin; // MarkOrigin, set by the ASC. The source cannot claim it.
-    uint8 kind; // 1 INDIVIDUAL · 2 ENTITY · 3 SANCTION
+    uint8 kind; // Positive schema-0 credentials: 1 INDIVIDUAL · 2 ENTITY. Denial is a separate event.
     uint8 assurance; // issuer's own grade, 1..5. Not a claim of equivalence to any regime.
     uint16 regime;
     uint16 jurisdiction; // ISO-3166 numeric
@@ -86,8 +89,8 @@ struct Mark {
 ///
 ///      Direct: proof that the mark was issued. Says nothing about a revocation that was never
 ///              submitted cross-chain.
-///      Roster: the full valid set at an epoch. Whoever is missing has been revoked. Costs one
-///              epoch interval of latency.
+///      Roster: the publisher's asserted set at an epoch; absence does not establish its reason.
+///      Credential kind is bound separately by Registry.policyKind and cannot change on update.
 struct Policy {
     uint32 requireAll; // every bit here must be present
     uint8 minAssurance;

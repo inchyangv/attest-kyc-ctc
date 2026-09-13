@@ -10,7 +10,7 @@ import { ethers } from 'ethers';
  *      175..136 issuedAt(40)  135..96 expiry(40)  95..64 epoch(32)  63..0 reserved
  */
 export interface MarkAttrsInput {
-  kind: number;          // 1 INDIVIDUAL · 2 ENTITY · 3 SANCTION
+  kind: number;          // Positive credentials: 1 INDIVIDUAL · 2 ENTITY; denial uses a separate event.
   assurance: number;     // 1..5
   regime: number;
   jurisdiction: number;  // ISO-3166 numeric
@@ -25,8 +25,23 @@ const LIMITS: Record<keyof MarkAttrsInput, bigint> = {
   methods: 0xffffffffn, issuedAt: 0xffffffffffn, expiry: 0xffffffffffn, epoch: 0xffffffffn,
 };
 
+export const ATTRS_SCHEMA_VERSION = 0;
+export const SUPPORTED_METHODS = 0x001f07ff;
+
+/** Wire schema check, not a KYC/legal verdict. Jurisdiction checks numeric range, not ISO membership. */
+export function validCredentialAttrs(attrs: string, now?: number): boolean {
+  if (!/^0x[0-9a-fA-F]{64}$/.test(attrs)) return false;
+  const a = unpackAttrs(attrs);
+  return (BigInt(attrs) & 0xffffffffffffffffn) === 0n
+    && (a.kind === 1 || a.kind === 2) && a.assurance >= 1 && a.assurance <= 5
+    && (a.regime === 1 || a.regime === 2) && a.jurisdiction >= 1 && a.jurisdiction <= 999
+    && (a.methods & ~SUPPORTED_METHODS) === 0 && a.issuedAt > 0 && a.expiry > a.issuedAt
+    && (now === undefined || (Number.isSafeInteger(now) && now >= 0 && a.issuedAt <= now && a.expiry > now));
+}
+
 export function packAttrs(a: MarkAttrsInput): string {
   for (const [k, max] of Object.entries(LIMITS) as [keyof MarkAttrsInput, bigint][]) {
+    if (!Number.isSafeInteger(a[k])) throw new Error(`packAttrs: ${k} must be a safe integer`);
     const v = BigInt(a[k]);
     if (v < 0n || v > max) throw new Error(`packAttrs: ${k}=${a[k]} is out of range (max ${max})`);
   }
@@ -43,6 +58,7 @@ export function packAttrs(a: MarkAttrsInput): string {
 }
 
 export function unpackAttrs(attrs: string): MarkAttrsInput {
+  if (!/^0x[0-9a-fA-F]{64}$/.test(attrs)) throw new Error('unpackAttrs: expected exactly bytes32');
   const v = BigInt(attrs);
   const at = (shift: bigint, mask: bigint) => Number((v >> shift) & mask);
   return {

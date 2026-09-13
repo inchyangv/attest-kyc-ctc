@@ -6,14 +6,18 @@
     "dev": "next dev --webpack",
     "build": "next build --webpack",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test:api": "TSX_TSCONFIG_PATH=tsconfig.json node --conditions=react-server --import ../node_modules/tsx/dist/loader.mjs --test tests/*.test.mts",
+    "test:id-image-build": "node --test scripts/test-id-image-build.mjs"
   },
   "dependencies": {
     "ethers": "^6.17.0",
     "next": "16.3.3",
     "react": "19.2.8",
     "react-dom": "19.2.8",
+    "saxes": "^6.0.0",
     "server-only": "^0.0.1",
+    "sharp": "0.35.4",
     "viem": "^2.56.0"
   },
   "devDependencies": {

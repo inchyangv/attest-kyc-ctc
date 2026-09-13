@@ -7,7 +7,7 @@ import {RosterProof} from "../src/lib/RosterProof.sol";
 /// @notice Pins byte-level agreement with `pipeline/roster.ts`.
 /// @dev TypeScript generated the vectors from a five-entry roster. Fix one side and this breaks.
 contract RosterProofTest is Test {
-    bytes32 constant ROOT = 0x765ddbec0ab20e3913c344b3f1c3ecca87b6567b65f5946ae51f4c3a9905fc69;
+    bytes32 constant ROOT = 0xfd1fc0f9cc82c72c2771bc978ffdb61676508d3778f2499d27279be6f5c03297;
 
     function test_SubjectKeyMatchesTypeScript() public pure {
         assertEq(
@@ -30,12 +30,12 @@ contract RosterProofTest is Test {
 
     function test_VerifyInclusion() public pure {
         bytes32[] memory sib = new bytes32[](3);
-        sib[0] = 0xfbbc81fa8da94f9a85ed206876f2b2aaa33c3a53fe4157448aac65417a8927bd;
-        sib[1] = 0x7832447164f5b0d2cdf288d9a8166035ef78df550ca265dd64b7f0d582470376;
-        sib[2] = 0x7ff7e97cf93c59f4ac6c4ca6aab0d2a22317f63cda167f4f66e5e7bcf472c4a2;
+        sib[0] = 0xaecb2e865064c20000b9ddc0621ebee5deb52b2482fd2f7ae2fbe3894d742b1d;
+        sib[1] = 0xcab431567059010cfd298dbc39438843a528d4efd760c574240f68890400edac;
+        sib[2] = 0x7fbc6b57150d781bd7d8498cba0b7f4fe2cdb2afc01c4765816f4ac470c394f4;
 
-        RosterProof.Inclusion memory p = RosterProof.Inclusion({index: 3, siblings: sib});
-        bytes32 leaf = 0x403d0f0839541c259f599993a09de0177357022d45a6753c3372e16936cf0dc2;
+        RosterProof.Inclusion memory p = RosterProof.Inclusion({index: 3, leafCount: 7, siblings: sib});
+        bytes32 leaf = 0x050d0d386055a3f8c2254fa608426547ff72c10cb4a77052c3a4d9ec250e608a;
 
         assertTrue(RosterProof.verifyInclusion(ROOT, leaf, p));
         assertFalse(RosterProof.verifyInclusion(ROOT, keccak256("fake"), p), "a forged leaf passed");
@@ -43,20 +43,20 @@ contract RosterProofTest is Test {
 
     function _nonInclusion() private pure returns (RosterProof.NonInclusion memory) {
         bytes32[] memory ls = new bytes32[](3);
-        ls[0] = 0x8658b057089e256e0473bf97d547f46f9885654629fd8f9710717591d8be0dde;
-        ls[1] = 0x6157acf5aa61ae0b0ff57e9ef207bdf0e94397aef718c5ff4ea8af78a2d9aac1;
-        ls[2] = 0x0747c16b891ec99a024175958b9f661640f5de2be03452e1f881cb2cfdf8f7e8;
+        ls[0] = 0x76da52501097479dcea5f0dd0a17f4329b9e2082cf31985ba096d6b824725894;
+        ls[1] = 0x6bdebc48add0843090eff238c07744471faeca1d7c8569be7ed005f1f12b4244;
+        ls[2] = 0xba30721859d681be0eb1e66f28d160a3309359e7842db4ade5c30ce42757a827;
 
         bytes32[] memory rs = new bytes32[](3);
-        rs[0] = 0xbbd6e7dddd4326dd7c827841ab9733c6e3fcdf38a516374bd10feec8f674ea8a;
-        rs[1] = 0x20ce4ea559ae0aaecbc11daacf1e8124dc7666cd8886757a074bd55d2f761486;
-        rs[2] = 0x0747c16b891ec99a024175958b9f661640f5de2be03452e1f881cb2cfdf8f7e8;
+        rs[0] = 0x9c1ee289e03d80d15a778d11d4159ca8444fbb86ddb1433b09a069e81c6179d8;
+        rs[1] = 0xc58b31c0121c7e112c3f103c1a3bc8d5cb2bf91270e1e82e433a20f1885d0fc2;
+        rs[2] = 0xba30721859d681be0eb1e66f28d160a3309359e7842db4ade5c30ce42757a827;
 
         return RosterProof.NonInclusion({
-            left: RosterProof.Inclusion({index: 5, siblings: ls}),
+            left: RosterProof.Inclusion({index: 5, leafCount: 7, siblings: ls}),
             leftKey: 0xa43c201135cfef37d7be83630438e9c6af9e5ba946c85c47447e0ee967b02772,
             leftMark: 0x78935246536b71d758f03be218147b414eed21cd155c64a3c7034ac585b70f91,
-            right: RosterProof.Inclusion({index: 6, siblings: rs}),
+            right: RosterProof.Inclusion({index: 6, leafCount: 7, siblings: rs}),
             rightKey: bytes32(type(uint256).max),
             rightMark: bytes32(0)
         });
@@ -94,5 +94,61 @@ contract RosterProofTest is Test {
     function test_SentinelConstantsMatchTypeScript() public pure {
         assertEq(RosterProof.MIN_KEY, bytes32(0));
         assertEq(RosterProof.MAX_KEY, bytes32(type(uint256).max));
+    }
+
+    function test_RejectsDepthSizeAndIndexForgery() public pure {
+        RosterProof.NonInclusion memory p = _nonInclusion();
+        bytes32 leaf = RosterProof.leafOf(p.leftKey, p.leftMark);
+        p.left.index += 8; // Same path bits, but outside the seven-leaf tree.
+        assertFalse(RosterProof.verifyInclusion(ROOT, leaf, p.left));
+        p = _nonInclusion();
+        p.left.leafCount = 8; // Same depth, different committed size.
+        assertFalse(RosterProof.verifyInclusion(ROOT, leaf, p.left));
+        p = _nonInclusion();
+        p.left.siblings = new bytes32[](0);
+        assertFalse(RosterProof.verifyInclusion(ROOT, leaf, p.left));
+        p.left.index = 0;
+        p.left.leafCount = 1;
+        assertFalse(RosterProof.verifyInclusion(RosterProof.rootOf(leaf, 1), leaf, p.left));
+    }
+
+    function test_RejectsReviewExploitAgainstLegacyRoot() public pure {
+        bytes32[] memory ls = new bytes32[](2);
+        ls[0] = 0xbb18114919f158d7c2b3f1895fe76e2e67dc753800ac843eda5479d4fdbfd75d;
+        ls[1] = 0xa09637336041ba36b37e6a41cb44622df981df1b35506054ef79a3cf75f4f59a;
+        bytes32[] memory rs = new bytes32[](1);
+        rs[0] = 0xee435ed92c2d049d1ab2ab0c480df0eaa5f35376441b38f789754b706878ede0;
+        RosterProof.NonInclusion memory p = RosterProof.NonInclusion({
+            left: RosterProof.Inclusion(0, 4, ls),
+            leftKey: bytes32(0),
+            leftMark: bytes32(0),
+            right: RosterProof.Inclusion(1, 4, rs),
+            rightKey: 0x9e1dc5ce841b03a33bab09d4a206c67a0afe3d7f0aab857a58ced05925237d45,
+            rightMark: 0xbbd6e7dddd4326dd7c827841ab9733c6e3fcdf38a516374bd10feec8f674ea8a
+        });
+        assertFalse(
+            RosterProof.verifyNonInclusion(
+                0xfe6cf3e0fc518c85ec822fd119fa8291461ff5fc1e0a5d6dbe6be1e7e8f5364d,
+                RosterProof.subjectKey("eip155", 0x4816B6e3Acb775f65Da888f185f708E2C8D7a3e2),
+                p
+            )
+        );
+    }
+
+    function test_LeafCannotBeAnInternalNode() public pure {
+        bytes32 a = keccak256("a");
+        bytes32 b = keccak256("b");
+        bytes32 internalNode = keccak256(abi.encodePacked(bytes1(0x01), a, b));
+        assertNotEq(RosterProof.leafOf(a, b), internalNode);
+    }
+
+    function test_RejectsMalformedOddTailAndOverflowWithoutRevert() public pure {
+        RosterProof.NonInclusion memory p = _nonInclusion();
+        p.right.siblings[0] = bytes32(0);
+        assertFalse(RosterProof.verifyInclusion(ROOT, RosterProof.leafOf(p.rightKey, p.rightMark), p.right));
+        p = _nonInclusion();
+        p.left.index = type(uint256).max;
+        p.right.index = 0;
+        assertFalse(RosterProof.verifyNonInclusion(ROOT, bytes32(type(uint256).max - 1), p));
     }
 }

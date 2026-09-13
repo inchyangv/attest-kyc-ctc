@@ -5,16 +5,20 @@
  *    Banking for the bank account. No vendor means no adapter, and the API says which variables
  *    are missing. There is no mock to fall back to.
  *  - seals the state that has to cross the browser between steps (the ID result, the one-won
- *    challenge, the wallet proof) with AES-256-GCM under a key derived from EVIDENCE_HMAC_KEY.
+ *    challenge, the wallet proof) with AES-256-GCM under a dedicated, versioned server-token key.
  *    The browser holds an opaque token, never the holder name or the code.
  *  - builds and checks the EIP-4361 message for wallet control.
  */
 import 'server-only';
+import { SIWE_STATEMENT } from './consent';
+export { CONSENT_VERSION, SIWE_STATEMENT } from './consent';
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { KrAdapter, type BankAccountVendor, type IdDocumentVendor } from '@pipeline/adapters/kr.js';
 import { CodefClient, CodefIdDocumentVendor, CodefBankAccountVendor, type CodefEnv, type CodefLogin } from '@pipeline/adapters/codef.js';
 import { OpenBankingAccountVendor, type OpenBankingEnv } from '@pipeline/adapters/openbanking.js';
 import { DemoIdDocumentVendor, DemoBankAccountVendor } from '@pipeline/adapters/demo.js';
+import type { ProcessingPolicyBindingV1 } from '@pipeline/privacy-processing-policy.js';
+import type { RetentionPolicyBindingV1 } from '@pipeline/retention-policy.js';
 
 const env = (name: string): string | undefined => process.env[name]?.trim() || undefined;
 
@@ -42,6 +46,9 @@ export interface WalletFlow {
   address: string;
   flowId: string;
   consentVersion: string;
+  consentStatementHash: string;
+  processingPolicy: ProcessingPolicyBindingV1;
+  retentionPolicy: RetentionPolicyBindingV1;
   at: number;
 }
 
@@ -72,7 +79,7 @@ export interface VendorStatus {
 }
 
 const unconfigured = (e: string | null, missing: string[], error?: string): SideStatus =>
-  ({ configured: false, vendor: null, live: false, demo: false, env: e, missing, error });
+  ({ configured: false, vendor: null, live: false, demo: false, env: e && ['sandbox', 'demo', 'api', 'test', 'prod'].includes(e) ? e : null, missing, error });
 
 let codefClient: CodefClient | null = null;
 function codef(): CodefClient {
@@ -80,7 +87,7 @@ function codef(): CodefClient {
   const missing = CODEF_CLIENT_VARS.filter((v) => !env(v));
   if (missing.length) throw new ConfigError('CODEF client is not configured', missing);
   const e = (env('CODEF_ENV') ?? 'demo') as CodefEnv;
-  if (!['sandbox', 'demo', 'api'].includes(e)) throw new ConfigError(`CODEF_ENV must be sandbox, demo or api (got ${e})`, ['CODEF_ENV']);
+  if (!['sandbox', 'demo', 'api'].includes(e)) throw new ConfigError('CODEF_ENV must be sandbox, demo or api', ['CODEF_ENV']);
   codefClient = new CodefClient({ clientId: env('CODEF_CLIENT_ID')!, clientSecret: env('CODEF_CLIENT_SECRET')!, publicKey: env('CODEF_PUBLIC_KEY'), env: e });
   return codefClient;
 }
@@ -121,8 +128,8 @@ function buildIdVendor(): { vendor: IdDocumentVendor | null; status: SideStatus 
   try {
     const vendor = new CodefIdDocumentVendor(codef(), login.login);
     return { vendor, status: { configured: true, vendor: `${vendor.name}:${vendor.loginKind}`, live: vendor.live, demo: false, env: e, missing: [] } };
-  } catch (err) {
-    return { vendor: null, status: unconfigured(e, [], (err as Error).message) };
+  } catch {
+    return { vendor: null, status: unconfigured(e, [], 'ID vendor configuration is invalid.') };
   }
 }
 
@@ -141,15 +148,16 @@ function buildBankVendor(): { vendor: BankAccountVendor | null; status: SideStat
     try {
       const vendor = new CodefBankAccountVendor(codef());
       return { vendor, status: { configured: true, vendor: vendor.name, live: true, demo: false, env: env('CODEF_ENV') ?? 'demo', missing: [] } };
-    } catch (err) {
-      return demoFallback(['CODEF_ENV=api'], (err as Error).message);
+    } catch {
+      return demoFallback(['CODEF_ENV'], 'The configured bank product is unavailable in this environment.');
     }
   }
   if (which !== 'openbanking') {
-    return { vendor: null, status: unconfigured(null, ['BANK_VENDOR'], `BANK_VENDOR must be openbanking or codef (got ${which})`) };
+    return { vendor: null, status: unconfigured(null, ['BANK_VENDOR'], 'BANK_VENDOR must be openbanking or codef') };
   }
   const missing = OPENBANKING_VARS.filter((v) => !env(v));
   const e = (env('OPENBANKING_ENV') ?? 'test') as OpenBankingEnv;
+  if (e !== 'test' && e !== 'prod') return { vendor: null, status: unconfigured(null, ['OPENBANKING_ENV'], 'OPENBANKING_ENV must be test or prod') };
   if (missing.length) return demoFallback(missing);
   try {
     const vendor = new OpenBankingAccountVendor({
@@ -162,8 +170,8 @@ function buildBankVendor(): { vendor: BankAccountVendor | null; status: SideStat
       env: e === 'prod' ? 'prod' : 'test',
     });
     return { vendor, status: { configured: true, vendor: vendor.name, live: vendor.live, demo: false, env: e, missing: [] } };
-  } catch (err) {
-    return { vendor: null, status: unconfigured(e, [], (err as Error).message) };
+  } catch {
+    return { vendor: null, status: unconfigured(e, [], 'Bank vendor configuration is invalid.') };
   }
 }
 
@@ -201,26 +209,87 @@ export function requireBankVendor(): KrAdapter {
 
 // ─── sealed tokens ─────────────────────────────────────────────────────────
 
-function sealKey(): Buffer {
-  const k = env('EVIDENCE_HMAC_KEY');
-  if (!k || k.length < 32) throw new ConfigError('EVIDENCE_HMAC_KEY is required (32+ chars)', ['EVIDENCE_HMAC_KEY']);
-  return createHash('sha256').update(`${k}|proofmark-seal-v1`).digest();
+type TokenKey = { id: string; key: Buffer };
+type TokenKeyRing = { current: TokenKey; previous?: TokenKey & { acceptUntil: number } };
+const TOKEN_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
+
+function tokenKey(secret: string, id: string): TokenKey {
+  if (secret.length < 32) throw new ConfigError('server token keys must be at least 32 characters', ['SERVER_TOKEN_KEY']);
+  if (!TOKEN_ID.test(id)) throw new ConfigError('server token key IDs must be opaque identifiers', ['SERVER_TOKEN_KEY_ID']);
+  return { id, key: createHash('sha256').update(`${secret}|proofmark-server-token-v1`).digest() };
 }
+
+function tokenKeyRing(): TokenKeyRing {
+  const currentSecret = env('SERVER_TOKEN_KEY'), currentId = env('SERVER_TOKEN_KEY_ID');
+  const missing = ['SERVER_TOKEN_KEY', 'SERVER_TOKEN_KEY_ID'].filter(name => !env(name));
+  if (missing.length || !currentSecret || !currentId) {
+    throw new ConfigError('a dedicated server token key and key ID are required', missing);
+  }
+  for (const other of ['EVIDENCE_HMAC_KEY', 'EVIDENCE_VAULT_KEY', 'ISSUANCE_JOURNAL_KEY']) {
+    if (env(other) === currentSecret) throw new ConfigError('server token custody must be independent', ['SERVER_TOKEN_KEY', other]);
+  }
+  const current = tokenKey(currentSecret, currentId);
+  const previousSecret = env('SERVER_TOKEN_PREVIOUS_KEY'), previousId = env('SERVER_TOKEN_PREVIOUS_KEY_ID');
+  const previousUntilText = env('SERVER_TOKEN_PREVIOUS_ACCEPT_UNTIL');
+  const previousValues = [previousSecret, previousId, previousUntilText].filter(Boolean).length;
+  if (previousValues === 0) return { current };
+  if (previousValues !== 3 || !previousSecret || !previousId || !previousUntilText) {
+    throw new ConfigError('the previous token key, ID and acceptance deadline must be configured together',
+      ['SERVER_TOKEN_PREVIOUS_KEY', 'SERVER_TOKEN_PREVIOUS_KEY_ID', 'SERVER_TOKEN_PREVIOUS_ACCEPT_UNTIL']);
+  }
+  if (previousSecret === currentSecret || previousId === currentId) {
+    throw new ConfigError('token rotation requires distinct current and previous keys and IDs',
+      ['SERVER_TOKEN_KEY', 'SERVER_TOKEN_KEY_ID', 'SERVER_TOKEN_PREVIOUS_KEY', 'SERVER_TOKEN_PREVIOUS_KEY_ID']);
+  }
+  for (const other of ['EVIDENCE_HMAC_KEY', 'EVIDENCE_VAULT_KEY', 'ISSUANCE_JOURNAL_KEY']) {
+    if (env(other) === previousSecret) throw new ConfigError('server token custody must be independent', ['SERVER_TOKEN_PREVIOUS_KEY', other]);
+  }
+  if (!/^\d+$/.test(previousUntilText)) throw new ConfigError('previous token acceptance deadline must be Unix milliseconds', ['SERVER_TOKEN_PREVIOUS_ACCEPT_UNTIL']);
+  const acceptUntil = Number(previousUntilText);
+  if (!Number.isSafeInteger(acceptUntil) || acceptUntil < 0) throw new ConfigError('previous token acceptance deadline is out of range', ['SERVER_TOKEN_PREVIOUS_ACCEPT_UNTIL']);
+  return { current, previous: { ...tokenKey(previousSecret, previousId), acceptUntil } };
+}
+
+export function serverTokenStatus(): { configured: boolean; mode: 'versioned-dedicated' | 'none'; missing: string[];
+  currentKeyId?: string; previousKeyId?: string; previousAcceptedUntil?: number } {
+  try {
+    const ring = tokenKeyRing();
+    return { configured: true, mode: 'versioned-dedicated', missing: [], currentKeyId: ring.current.id,
+      ...(ring.previous ? { previousKeyId: ring.previous.id, previousAcceptedUntil: ring.previous.acceptUntil } : {}) };
+  } catch (error) {
+    return { configured: false, mode: 'none', missing: error instanceof ConfigError ? error.missing : [] };
+  }
+}
+
+const tokenAad = (id: string): Buffer => Buffer.from(`proofmark-server-token-v1\0${id}`);
 
 /** Encrypt-and-authenticate `payload` under a type tag with a lifetime. Opaque to the browser. */
 export function seal(typ: string, payload: object, ttlSec: number): string {
+  const active = tokenKeyRing().current;
   const iv = randomBytes(12);
-  const c = createCipheriv('aes-256-gcm', sealKey(), iv);
+  const c = createCipheriv('aes-256-gcm', active.key, iv);
+  c.setAAD(tokenAad(active.id));
   const pt = Buffer.from(JSON.stringify({ ...payload, typ, exp: Date.now() + ttlSec * 1000 }), 'utf8');
   const ct = Buffer.concat([c.update(pt), c.final()]);
-  return Buffer.concat([iv, c.getAuthTag(), ct]).toString('base64url');
+  return `pm1.${Buffer.from(active.id).toString('base64url')}.${Buffer.concat([iv, c.getAuthTag(), ct]).toString('base64url')}`;
 }
 
 export function open<T extends object>(typ: string, token: unknown): T & { exp: number } {
   if (typeof token !== 'string' || token.length < 40) throw new TokenError(`missing ${typ} token`);
-  const buf = Buffer.from(token, 'base64url');
+  const parts = token.split('.');
+  if (parts.length !== 3 || parts[0] !== 'pm1') throw new TokenError(`malformed ${typ} token`);
+  let id: string;
+  try { id = Buffer.from(parts[1], 'base64url').toString('utf8'); }
+  catch { throw new TokenError(`malformed ${typ} token`); }
+  if (!TOKEN_ID.test(id) || Buffer.from(id).toString('base64url') !== parts[1]) throw new TokenError(`malformed ${typ} token`);
+  const ring = tokenKeyRing(), now = Date.now();
+  const selected = id === ring.current.id ? ring.current
+    : ring.previous && id === ring.previous.id && now <= ring.previous.acceptUntil ? ring.previous : undefined;
+  if (!selected) throw new TokenError(`${typ} token key is not accepted`);
+  const buf = Buffer.from(parts[2], 'base64url');
   if (buf.length < 29) throw new TokenError(`malformed ${typ} token`);
-  const d = createDecipheriv('aes-256-gcm', sealKey(), buf.subarray(0, 12));
+  const d = createDecipheriv('aes-256-gcm', selected.key, buf.subarray(0, 12));
+  d.setAAD(tokenAad(selected.id));
   d.setAuthTag(buf.subarray(12, 28));
   let pt: Buffer;
   try { pt = Buffer.concat([d.update(buf.subarray(28)), d.final()]); } catch { throw new TokenError(`${typ} token failed authentication`); }
@@ -232,7 +301,11 @@ export function open<T extends object>(typ: string, token: unknown): T & { exp: 
 
 export function flowFromWalletToken(token: unknown): WalletFlow & { exp: number } {
   const flow = open<WalletFlow>('wallet', token);
-  if (!flow.flowId || !flow.address || flow.consentVersion !== CONSENT_VERSION) {
+  if (!flow.flowId || !flow.address || !flow.processingPolicy
+    || flow.processingPolicy.schema !== 'proofmark-processing-policy-binding-v1'
+    || !flow.retentionPolicy || flow.retentionPolicy.schema !== 'proofmark-retention-policy-binding-v1'
+    || !/^0x[0-9a-fA-F]{64}$/.test(flow.consentStatementHash)
+    || flow.consentVersion !== flow.processingPolicy.noticeVersion) {
     throw new TokenError('wallet token has no current flow and consent binding');
   }
   return flow;
@@ -250,12 +323,17 @@ export function assertSameFlow(flow: WalletFlow, proof: FlowBinding, label: stri
 
 /** Keyed digest of the one-won code, so the challenge token can carry it without carrying it. */
 export function codeDigest(code: string): string {
-  return createHmac('sha256', sealKey()).update(`code|${code.trim()}`).digest('hex');
+  return createHmac('sha256', tokenKeyRing().current.key).update(`code|${code.trim()}`).digest('hex');
 }
 export function codeMatches(code: string, digest: string): boolean {
-  const a = Buffer.from(codeDigest(code), 'hex');
-  const b = Buffer.from(digest, 'hex');
-  return a.length === b.length && timingSafeEqual(a, b);
+  if (!/^[0-9a-f]{64}$/.test(digest)) return false;
+  const ring = tokenKeyRing(), now = Date.now();
+  const candidates = [ring.current, ...(ring.previous && now <= ring.previous.acceptUntil ? [ring.previous] : [])];
+  const expected = Buffer.from(digest, 'hex');
+  return candidates.some(candidate => {
+    const actual = createHmac('sha256', candidate.key).update(`code|${code.trim()}`).digest();
+    return timingSafeEqual(actual, expected);
+  });
 }
 
 // ─── EIP-4361 ──────────────────────────────────────────────────────────────
@@ -267,10 +345,12 @@ export interface SiweFields {
   nonce: string;
   issuedAt: string;
   expirationTime: string;
+  /** Exact structured-policy binding and generated notice carried in the sealed challenge. */
+  processingPolicy?: ProcessingPolicyBindingV1;
+  retentionPolicy?: RetentionPolicyBindingV1;
+  statement?: string;
 }
 
-export const CONSENT_VERSION = 'proofmark-kyc-v2';
-export const SIWE_STATEMENT = 'Consent proofmark-kyc-v2: process identity and account data for KYC/AML, share it with the configured verification vendors, retain encrypted evidence under the issuer policy, and publish pseudonymous wallet-linked metadata and commitments on chain.';
 export const SIWE_CHAIN_ID = 11155111;
 
 export function siweMessage(f: SiweFields): string {
@@ -278,7 +358,7 @@ export function siweMessage(f: SiweFields): string {
     `${f.domain} wants you to sign in with your Ethereum account:`,
     f.address,
     '',
-    SIWE_STATEMENT,
+    f.statement ?? SIWE_STATEMENT,
     '',
     `URI: ${f.uri}`,
     'Version: 1',

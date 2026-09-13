@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "status": "local-change-detection-baseline-not-independent-approval",
+  "forgeStdCommit": "bf647bd6046f2f7da30d0c2bf435e5c76a780c1b",
+  "sourceHashes": {
+    "src/ASCBaseX.sol": "fca3fa88bf35c01d53d7d461936f982621e1ee010a26d5afe5efdb4a4f5dca4e",
+    "src/lib/VerifierInterface.sol": "b05b0e318620334038c057671853f3ee01a1cd45c8b61009f3612f50163fce71",
+    "node_modules/@gluwa/usc-contracts/contracts/decoding/EvmV1Decoder.sol": "221e75723d585acda8c7e427b629006cba788838d7ca06a59cc53773e1cd786f",
+    "node_modules/@gluwa/usc-contracts/contracts/write-ability/INativeQueryVerifier.sol": "3e95bb38be27d3b6b3d00ca18e81c25a64596036fdf601931fc63aada1d8308d"
+  },
+  "forkReference": {
+    "repository": "https://github.com/gluwa/attestcoin-protocol-examples",
+    "commit": "2332f577c754f4e7f1289dc540889f1eff405778",
+    "path": "contracts/sol/ASCBase.sol",
+    "sha256": "dafb9779e226af3bfad446a58264ec12df7b40af3ded4629ec604aed38ec0eb0",
+    "fileSpdx": "MIT",
+    "repositoryLicense": "Apache-2.0",
+    "licenseResolution": "requires-rightsholder-review"
+  }
+}

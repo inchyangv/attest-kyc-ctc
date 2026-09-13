@@ -4,26 +4,39 @@
 > Prerequisites: [`00-hackathon-brief.md`](00-hackathon-brief.md), [`01-env-verification.md`](01-env-verification.md)
 > Prior team work: an EAS-based compliance layer on GIWA. Knowledge carried over, code did not (section 11, R4).
 >
-> **Status:** the canonical document for product, architecture and scope. When research changes, fix the mapping in section 13 first and let section 9 follow.
+> **Status, updated 2026-09-07:** product proposal and implementation history, not release approval. The [56-ticket execution ledger](../TICKET.md) is the current completion record. Historical addresses, schedules, fees and testnet observations below do not establish the current working tree's deployed behavior. Sections 9.2–9.7 preserve dated planning/observations; they are not current deadline, balance, latency or eligibility checks.
 > Notation: measurements stand as written; estimates are marked `estimate`; unverified assumptions are marked `assumed`.
+
+### Current investment and release boundary
+
+The [2026-09-10 winning sprint](88-winning-sprint.md) is the current implementation priority: authenticated global provider onboarding, current AML, minimal-disclosure eligibility proofs, and a judge-facing product journey. The historical plan below remains background; new local features are not presumed deployed or production-approved.
+
+| Question | Current evidence and limit |
+|---|---|
+| Does one issuer leave another issuer's credential intact? | No. [T-06 acceptance](69-issuer-isolation-decision.md) still fails all three local overwrite/revoke/deny isolation cases. Independent issuer scoping versus an enforced single-issuer product needs a user decision. |
+| Is the current flow connected? | The built browser, actual routes, isolated Redis/vault/source and later hub/witness/token actions are [connected locally](51-local-api-issuance-integration.md). The provider interface, institutions and native proof are fixtures; later chain actions are test-process transactions. |
+| Are the latest contract fixes deployed? | Not established. Historical public addresses are incompatible with several new schema/proof/consumer guarantees. New deployment and migration require separate approval and evidence. |
+| Are official lists available? | A [dated isolated full GET/build/evaluation](83-official-snapshot-observation.md) passed. The candidate was not copied into repository or deployed runtimes. Provenance v2/readers/index/pins must be transitioned together. |
+| Can another chain consume verified state now? | This repository has local consumer tools/examples. A production spoke mirror, independent consuming app and measured external integration are not verified. |
+| Are institutions, customers and legal rights secured? | Not verified. Provider access/reuse rights, customer discovery, retention/processing approval, IP and independent audit remain gates, not consequences of a green test suite. |
 
 ---
 
 ## 1. In one paragraph
 
-An international KYC and AML attestation layer. It issues, on Ethereum and in machine-readable form, which country verified an identity and by what method; Creditcoin verifies that issuance mathematically with no oracle operator in between; any chain can read the result. No name, date of birth, document number, or account number goes on chain. Wallet-linked metadata and commitments remain pseudonymous and linkable. What remains is a **mark** describing the checks and a **proof** that the mark was really issued.
+A proposed cross-chain KYC and AML attestation layer. An issuer records its asserted checks, jurisdiction and commitments on an EVM source; the Creditcoin-side consumer is intended to verify source-event provenance through the native proof system. That does not independently verify the truth of identity checks, issuer judgment or roster completeness. Arbitrary-chain consumption is a roadmap item, not an implemented universal read surface. The defined events contain no name, date of birth, document number or account number, but wallet-linked metadata and commitments remain pseudonymous and linkable.
 
 One design proposition decides whether this works across borders:
 
 > "KYC complete" does not carry a fixed meaning across borders. So the mark carries the checks that were performed rather than a verdict, and each consumer decides equivalence under its own jurisdiction's policy.
 
-The first jurisdiction adapter is Korea: ID document verification, then bank account verification through a one-won transfer. That pairing satisfies the two-check requirement in the FSC's non-face-to-face identification guidance, and the same interface takes any other jurisdiction's adapter.
+The first proposed jurisdiction adapter is Korea: ID-document and bank-account checks, with a one-won code flow. Whether an approved vendor arrangement and the complete customer workflow satisfy applicable identification obligations requires qualified review. A shared adapter interface is not evidence that another jurisdiction or provider is supported.
 
 | Item | Value |
 |---|---|
 | Product name | **Proofmark**. Repository and technical name `attest-kyc` |
-| One line | Verify once, carry the result by proof, check it on any chain |
-| Tagline | Prove your compliance once. Carry it to every chain. |
+| One line | Record issuer checks on a source chain; evaluate their proven record under a consumer policy |
+| Tagline | Issuer assertions, source provenance, consumer policy |
 | Track | **RWA**, section 12 |
 | Source chain | Ethereum Sepolia, chainKey `1`. Confirmed at runtime, and not the same as chainId 11155111 |
 | Verification hub | Creditcoin CC3 Testnet, chainId 102031, through the ASC and BlockProver |
@@ -60,7 +73,7 @@ Put a single boolean on chain and it stops being useful the moment it crosses a 
 
 Carry the evidence, not the conclusion. The mark holds `methods`, a bitmap of the checks performed, `regime`, the framework they ran under, `jurisdiction`, and `assurance`, the issuer's own grade. The consumer applies its policy and decides. We never claim Korean KYC equals EU KYC. We publish what was done, in a form a contract can read.
 
-That buys two things at once: portability across regimes, and legal safety, because no equivalence is asserted.
+The proposition is reusable, explicit check metadata. Avoiding an equivalence claim does not itself establish legal safety, portability rights or a customer's acceptance policy.
 
 ---
 
@@ -80,14 +93,14 @@ That buys two things at once: portability across regimes, and legal safety, beca
 0. consent and connect wallet; sign EIP-4361 binding address, flow ID and consent version
 1. [ID document]  capture, OCR, authenticity lookup with the issuing authority (face match and liveness once a face vendor is connected)
 2. [bank account] one-won transfer, account holder name compared with the document name
-                  this pair satisfies the FSC two-check requirement
+                  operational and legal sufficiency requires provider/customer approval
 3. [reconcile]    declared details, document, account holder. All three must agree
 4. [AML]          sanctions lists, jurisdiction, on-chain exposure, risk band, which sets expiry
 5. [commitment]   the issuer creates per-claim random salts and computes claimsRoot.
                   Openings return to the user and enter the encrypted production evidence record
 6. [issue]        Sepolia ComplianceSource.issueOnce(requestId,...), permanently consuming the flow
-7. [cross-chain]  wait for attestation, about 8 min, fetch the proof, the ASC verifies
-8. [use]          any dApp on any chain calls isVerified(wallet, policy)
+7. [cross-chain]  obtain/verify the source proof; public latency for the new release is not established
+8. [use on hub]   satisfy the exact frozen policy; a roster policy also needs a current stored witness
 ```
 
 Step 3 is the heart of it. Declared details, document and account holder are reconciled, and only the fact that they agreed reaches the chain as a proof and a mark.
@@ -97,10 +110,10 @@ Step 3 is the heart of it. Declared details, document and account holder are rec
 | Who | Sees |
 |---|---|
 | Anyone, on chain | wallet, kind, assurance, the methods bitmap, regime, jurisdiction, expiry, issuer, epoch, claimsRoot, evidenceHash, and the proof it was issued on Ethereum |
-| A dApp | `isVerified(W, policy)` returning a bool, and nothing else |
-| The user | their own credential, held locally, with selective disclosure available |
+| A dApp | The bool is a convenience call, not an access-control boundary: the app can also inspect public events, marks, policy and witness metadata |
+| The user | Full claims/evidence returned to this flow and downloadable; claim-disclosure helpers exist, but an approved selective-disclosure/auditor product is not established |
 | An auditor or regulator, under contract or warrant | the issuer's full offline evidence, checkable against the on-chain `evidenceHash` |
-| Nobody from chain data alone | derives cleartext identity fields from the salted commitments; the wallet linkage and metadata remain visible |
+| Privacy limit | Salted commitments are designed to resist guessing; wallet linkage, auxiliary information, retained openings and issuer-key access still matter. Do not infer anonymity or a legal erasure conclusion |
 
 The regulatory analysis of the off-chain side of this boundary — controller status, PIPA, the Credit Information Act, AML retention — is in `docs/08-regulatory-position.md` (a position paper, not legal advice).
 
@@ -131,7 +144,7 @@ uint32 constant M_JURISDICTION_CHECK  = 1 << 19;
 uint32 constant M_ONCHAIN_EXPOSURE    = 1 << 20;
 ```
 
-**Why a bitmap.** A single grade does not cross a border; a list of checks does. An EU dApp can look at a Korean mark, see document authenticity, account verification and liveness, and decide for itself that this meets substantial under its own rules.
+**Why a bitmap.** It lets a consumer express required checks explicitly. A set of bits does not establish an eIDAS assurance level or cross-border recognition; those mappings require an approved policy and supporting evidence. In particular, this implementation does not currently perform liveness.
 
 ### 4.2 The Korean adapter
 
@@ -140,11 +153,11 @@ uint32 constant M_ONCHAIN_EXPOSURE    = 1 << 20;
 | 0 | Wallet ownership signature | not a regulatory requirement, ours | `WALLET_CONTROL` |
 | 1 | ID document | method 1, document image | `ID_DOC_IMAGE` `ID_DOC_AUTHENTICITY` (`FACE_MATCH` `LIVENESS` when a face vendor is added) |
 | 2 | Bank account, one-won transfer | method 4, use of an existing account | `BANK_ACCOUNT` |
-| 3 | AML screening | CDD under the FIU act | `SANCTIONS_SCREENED` `JURISDICTION_CHECK` `ONCHAIN_EXPOSURE` |
+| 3 | Supported screening | Does not by itself establish complete CDD | `SANCTIONS_SCREENED` and self-declared-input `JURISDICTION_CHECK`; no graph/exposure bit |
 
-Methods 1 and 4 together satisfy the two-check requirement. The mark records that pairing as `regime = KR_FSC_NONFACE`.
+`KR_FSC_NONFACE` is an implementation regime label, not a compliance certificate. Regime selection must reflect completed live results, not configuration alone; demo participation remains sandbox. See [capability and regime boundaries](30-check-capabilities.md).
 
-**How each check is actually performed** (`pipeline/adapters/`, wired into the web flow at `/verify`):
+**Implemented connector paths, not proof of approved live-vendor operation** (`pipeline/adapters/`, wired into `/verify`). Endpoint/response assumptions still require provider conformance and permitted access/reuse:
 
 | Check | Vendor and product | What runs |
 |---|---|---|
@@ -152,13 +165,13 @@ Methods 1 and 4 together satisfy the two-check requirement. The mark records tha
 | Document authenticity, resident registration card | CODEF resident registration authenticity through Government24 (`/v1/kr/public/mw/identity-card/check-status`) | The issuer logs in with its own joint certificate and asks Government24 whether the name, resident number, and issue date identify a genuine card. `resAuthenticity = "1"` sets the bit; anything else stops issuance |
 | Document authenticity, driver licence | CODEF driver-licence authenticity through the Korean National Police Agency's Traffic Civil Service 24 (`/v1/kr/public/ef/driver-license/status`) | Same login; licence number and the anti-forgery serial are checked. `"2"` (number exists, serial did not verify) is a rejection |
 | Account holder | KFTC Open Banking real-name inquiry (`/v2.0/inquiry/real_name`), or CODEF account-holder authentication (`/v1/kr/bank/a/account/holder-authentication`) | The bank returns the holder for the account and the customer's real-name number; it must equal the name on the document |
-| Account control | KFTC Open Banking deposit transfer (`/v2.0/transfer/deposit/acnt_num`), or CODEF account authentication by one-won transfer (`/v1/kr/bank/a/account/transfer-authentication`) | One won is deposited with a code as the sender; the customer types the code back. The code never reaches the browser, only a keyed digest inside a sealed challenge |
+| Account control | KFTC Open Banking deposit transfer (`/v2.0/transfer/deposit/acnt_num`), or CODEF account authentication by one-won transfer (`/v1/kr/bank/a/account/transfer-authentication`) | The configured rail starts a code challenge; the server enforces attempts/expiry/consumption. Built-in demo deliberately displays a simulated code without a deposit. Live rail and ambiguous-timeout reconciliation require provider conformance |
 
 The additional-authentication legs the institutions impose (a captcha on a corporate-certificate login, an app approval) are carried through the same endpoint with `is2Way` and surfaced to the operator in the flow.
 
-> **What "live" means.** CODEF's demo tier reaches the real Government24 and Traffic Civil Service 24 with a daily allowance; its sandbox answers from fixed sample data, and its bank products return random test data anywhere but production. The KFTC testbed runs the real API against canned data and moves no money. Each vendor result therefore carries `live`, and by default a bit is set only from a live result. Production for the bank axis needs participating-institution registration with KFTC or the CODEF partnership contract; production for the document axis needs either the issuer's certificate or an operator approving each lookup through app-based authentication (KakaoTalk, PASS, and others), which needs nothing but a CODEF demo key. None of the commercial side is code, and the code does not pretend otherwise.
+> **What the `live` field does not prove.** The adapters record vendor/mode/results and gate method bits; those local labels are not independent proof of institutional execution or permitted reuse. A key, certificate or environment name alone does not establish contract rights, lawful access, customer acceptance or production availability. Actual provider receipts/run IDs and approved conformance remain T-30 work. Current mode assumptions and unresolved access conditions are tracked in [the vendor document](07-kyc-vendors.md); do not treat this plan as current vendor terms.
 
-> **Demo mode** (`KYC_DEMO=1`, `web/lib/kyc-server.ts`). An axis without a real vendor gets `pipeline/adapters/demo.ts`: same interface, same inputs, same tokens and reconciliation, no institution asked. The page announces it, the evidence names `demo:*`, and the mark carries `regime = KR_FSC_NONFACE_SANDBOX`. The `sandboxBits` switch can set method bits from non-live results, but frozen production policy #1 pins regime 1 and rejects the mark; frozen pilot policy #2 pins regime 2 and accepts it. Real and demo can mix per axis while the overall regime continues to disclose sandbox participation. Sign-up steps, wire formats and the environment reference: [`07-kyc-vendors.md`](07-kyc-vendors.md).
+> **Demo mode** (`KYC_DEMO=1`, `web/lib/kyc-server.ts`). Built-in demo axes use `pipeline/adapters/demo.ts`: the same flow/token interfaces and reconciliation, with no institution asked. The page labels `demo:*` evidence and sandbox regime. `sandboxBits` can represent simulated checks under that regime; a production-regime policy rejects them. A pilot attribute preview is not an onchain pass: a new roster-gated asset also needs its full frozen policy, current witness and issuer approval. Actual result provenance, not configured mode alone, determines the regime. See [`07-kyc-vendors.md`](07-kyc-vendors.md).
 
 ### 4.3 Other jurisdictions, on the roadmap
 
@@ -189,7 +202,7 @@ struct Policy {
 - An EU RWA issuer: one frozen policy per accepted credential combination, for example `LIVENESS | SANCTIONS_SCREENED | PEP_SCREENED | EPASSPORT_NFC`
 - A game: `requireAll = SANCTIONS_SCREENED` and nothing more
 
-The deployed registry enforces every field above. Policy owners can update a policy only before `freezePolicy`; a policy-gated asset constructor accepts only a frozen policy.
+The current working-tree registry also binds an immutable `policyKind` (individual/entity) outside this struct. Policy updates stop at freeze. The new asset additionally requires a compatible witness-capable registry and a frozen roster-required policy; attributes alone or a Direct mark do not open it. Historical deployments must not be assumed to enforce this release's checks.
 
 ### 4.5 AML lists, international from the start
 
@@ -207,6 +220,8 @@ Pipeline knowledge from the earlier project carried over: normalisation rules, t
 ---
 
 ## 5. Architecture
+
+The diagram is the original layer sketch, not a current ABI or a claim that every depicted component is implemented/deployed. The spoke/mirror is roadmap; rescreening has local commands and controls, not an installed production daemon. Current event versions and release boundaries are in [the event schema](04-event-schema.md), [security migration](19-security-migration.md) and TICKET.md.
 
 ```
 ┌─ Ethereum Sepolia (chainKey 1, where issuance happens) ───────────┐
@@ -262,28 +277,20 @@ Pipeline knowledge from the earlier project carried over: normalisation rules, t
 
 ### 5.2 Two application modes
 
-> **The premise changed twice, and measurement settled it.** The faucet gave 10,000 CTC rather than the README's 100. A query costs 0.0002 CTC in gas alone, 394,982 gas at 0.5 gwei, not the 11 CTC we had estimated, and the balance change matched the gas exactly, so no separate oracle fee exists. There is no testnet resource constraint.
->
-> "We batch because queries are scarce" is therefore withdrawn entirely.
+The earlier small testnet observation reported approximately 0.0002 CTC for one submission. It is a historical gas observation, not a current tariff, zero marginal operating cost, production quotation or proof of unlimited resources. Neither a faucet balance nor one transaction settles network fees, RPC/proof-service limits, current writability support or customer integration cost. Use the [explicitly synthetic unit-economics model](43-unit-economics.md) as a planning worksheet until actual quotations and release-specific measurements exist.
 
-> **Settled: the product sits on the free path.** attestcoin.org states "Reading other chains stays free. Every time an app sends action across chains, it pays in ATC." Everything we do is readability, and the measurement agrees. The claim in section 14 about creating ATC demand is withdrawn; what costs ATC is writability, still in development. Free reads are not a fact against us. They mean a dApp integrates with no per-query cost, and saying that plainly beats inventing token demand.
-
-**What drives batching is Ethereum L1, not Creditcoin.** The CC3 submission costs 0.0002 CTC and can be ignored. Issuance itself is an L1 transaction, and a hundred thousand users means a hundred thousand of them, with the issuer paying that gas in any market. An epoch root fixes L1 writes independently of user count: one transaction per epoch whether it covers one subject or a hundred thousand.
-
-Operations point the same way. Every submission carries an eight to ten minute attestation wait and its retries, so a design whose latency and operational load scale with user count does not become a product.
-
-> This argument rests on measurement rather than an unverified assumption, so it survives whatever the ATC question turns out to be.
+Roster publication can batch a set commitment and its cross-chain acceptance. It does **not** remove the source issuance/revocation events that the current source-replay builder consumes, per-member screening, issuer approval work, bundle delivery or holder witness refresh transactions. A new epoch invalidates older witnesses; merely publishing its root does not refresh every consumer's stored proof.
 
 | | Mode A, individual proof | Mode B, epoch roster |
 |---|---|---|
 | What is proven | one `MarkIssued` event | one `RosterEpochPublished` root |
-| Cross-chain writes | one per user | one per epoch, regardless of user count |
-| At 100,000 users | 100,000 L1 issuance transactions plus 100,000 CC3 submissions | one L1 transaction per epoch, eight a day, plus eight on CC3 |
-| Expressing revocation | needs its own event | falling out of the root is the whole mechanism |
-| Latency | finality plus attestation, about 8 min | epoch interval plus about 8 min |
-| Used for | urgent revocation, and a fresh mark usable immediately | the normal operating path |
+| Writes to budget | Source lifecycle and hub receipt processing; batching depends on actual receipts | Source lifecycle plus root/approval publication, hub acceptance and per-subject witness transactions as needed |
+| Scale claim | No customer-volume operating measurement | 100,000 users do not become one total system write; [bundle measurements](39-roster-proof-availability.md) cover only their stated local scope |
+| Revocation | Source event must reach the hub to affect its state | A current roster can exclude a subject; absence alone does not prove why. Previously usable state also depends on expiry, delivery and witness rules |
+| Latency | Source confirmation, attestation/proof and relay; no approved SLA | Adds publication cadence and witness availability; historical timing is not a release SLA |
+| Use boundary | Weaker Direct policies can remain valid until their own limits if later revocation is not delivered | New gated assets require a fresh stored witness and the complete frozen policy |
 
-> The answer to "why batch" is cost, not taste. The design comes from reading how the protocol charges, and it fixes cost independently of user count. That is the strongest evidence of integration depth we can offer, because it is a design only someone who has used the protocol arrives at.
+The investment case depends on measured total cost and a customer who needs this provenance path. Batching alone does not establish either.
 
 **Bursts of revocations go through multiple logs in one transaction, not `verifyBatch`.** Checked against the code: `verifyBatch` exists in the SDK and the precompile but not in `ASCBase`, and `execute()` takes a single proof. Meanwhile `EvmV1Decoder.getLogsByEventSignature()` returns every matching log as an array. The example reading only `logs[0]` is a simplification its own comment admits to.
 >
@@ -301,9 +308,11 @@ leaf_i      = keccak256(abi.encode(key, value, salt_i))
 claimsRoot  = MerkleRoot(sorted(leaf_1..leaf_n))
 evidenceHash= H(prevHash ‖ stepPayload)   // head of the append-only chain, one entry per step
 ```
-The salts stay in the user's browser. Selective disclosure means presenting `(key, value, salt, path)` and checking it against `claimsRoot`.
+Claim openings are returned to the browser and retained in the encrypted recovery journal/configured evidence vault. They are not browser-only secrets. `discloseClaim`/`verifyDisclosure` implement a claim inclusion helper; an approved selective-disclosure workflow, auditor access and export policy remain separate work.
 
 ### 6.2 The on-chain mark
+
+This explanatory sketch omits fields such as actual provenance origin. [ProofmarkTypes.sol](../src/lib/ProofmarkTypes.sol) and schema/version tests are authoritative for encoding. A bit or issuer grade is an assertion, not independently verified institutional performance.
 
 ```solidity
 struct Mark {
@@ -333,11 +342,13 @@ The hard part is not proving a mark was issued. It is proving it was not revoked
 | Sorted-key Merkle with adjacency proofs | `leaf_i.key < target < leaf_{i+1}.key` | about 20 at a million entries | chosen: cheap to verify, clear to implement |
 | Sparse Merkle | natural, through default leaves | 160 to 256 | verification costs too much gas |
 
-A leaf is `H(subjectKey ‖ markHash)` with `subjectKey = keccak256(chainNamespace ‖ subject)`, CAIP-10 shaped so non-EVM subjects remain possible.
+Current roster format v2 uses `subjectKey = keccak256(abi.encode(namespace, subject))`, domain-separated leaf/internal/root hashes (`0x00`/`0x01`/`0x02`) and a root commitment to `leafCount`. Proofs validate full depth/index/odd tails and consistent adjacent leaf counts. Use [the actual library](../src/lib/RosterProof.sol) and cross-language vectors, not the obsolete untagged `H(key ‖ markHash)` recipe. The subject is still an EVM address and is not issuer-scoped; neither non-EVM support nor T-06 isolation follows from the namespace string.
 The verifier recomputes each boundary leaf from both `(key, mark)` before checking adjacency. Accepting a supplied key independently of the Merkle leaf would let an attacker relabel two real neighboring leaves around a target that is actually present.
-**Fallback.** If time runs short, keep only the whitelist in the root and express revocation and sanctions through tombstone events. The functionality survives; the query cost rises.
+Do not silently fall back to old roots, Direct eligibility or a different sanctions authority to meet a deadline. Any reduction or incompatible migration needs explicit product and release approval.
 
 ### 6.4 Decision rules, fail closed and enforced in the contract
+
+Working-tree update (T-08): for `requireRoster=true`, `isVerified` uses the Registry's separate current-epoch witness, not `ASC.marks[W]`. It checks tombstone, latest epoch, original root expiry and issuer approval, then applies all attribute/kind/credential-age rules to the witnessed leaf. `cacheRosterWitness` supplies a verified inclusion without rewriting Direct provenance. New `GatedRwaNote` deployments require this frozen policy and witness capability 1. [Current consumer path and outage evidence](34-fresh-roster-consumers.md). The pseudocode below describes the older materialized-mark branch, not the entire new witness path; `maxAge=0` means no credential-age ceiling and the actual contract additionally rejects future timestamps and invalid schema/kind.
 
 ```
 isVerified(W, policy) =
@@ -365,7 +376,7 @@ _fresh(W, policy) =
 | Provenance | Guarantees | Does not guarantee |
 |---|---|---|
 | **Direct**, Mode A | The mark was issued at L1 block N, a proven past fact. It does not go stale when we stop publishing | A later revocation that was never submitted cross-chain. Tombstones reflect only what arrived |
-| **Roster**, Mode B | The full valid set at that epoch. Whoever is missing has been revoked | Freshness beyond one epoch interval |
+| **Roster**, Mode B | Membership in the issuer-approved asserted set at the current epoch | Completeness, per-member rescreening, the reason for absence, or freshness after the original expiry |
 
 Hence `Policy.requireRoster`. A high-risk dApp accepts roster-backed marks only; a low-risk one takes individual proofs. Direct being the weaker guarantee is stated in the policy rather than buried in code.
 
@@ -378,8 +389,8 @@ Hence `Policy.requireRoster`. A high-risk dApp accepts roster-backed marks only;
 
 | Mode | Call | Character |
 |---|---|---|
-| Cache | `isVerified(W, policyId)` | A storage read. Anyone can fill the cache through `materialize(W, mark, proof)`, so an inattentive issuer never leaves a gate stuck open |
-| Proof | `verifyWithProof(W, mark, proof, epoch, policyId)` | Always current, writes no state. For high-value transactions |
+| Storage | `isVerified(W, policyId)` | Required-roster policy reads a witness supplied by `cacheRosterWitness(W, mark, inclusion)`, rechecking current epoch/expiry/issuer approval/tombstone and policy. Other policies retain weaker Direct behavior. Cache delivery never renews time. |
+| Proof | `verifyWithRoster(W, policyId, mark, inclusion)` | Checks the current issuer-approved, unexpired root directly without writing state; publisher completeness remains a trust assumption. |
 
 ---
 
@@ -388,25 +399,25 @@ Hence `Policy.requireRoster`. A high-risk dApp accepts roster-backed marks only;
 | # | Problem | Approach | What remains |
 |---|---|---|---|
 | 1 | KYC means different things per jurisdiction | Section 4: carry the `methods` bitmap rather than a verdict, and leave equivalence to the consumer | We guarantee no equivalence, which is the point |
-| 2 | Proving a negative | Epoch roster root, section 6.3, plus tombstone priority | The gap inside an epoch interval is covered by the tombstone lane |
+| 2 | Proving a negative | Format-v2 adjacency proves absence from the committed set, not absence from all legal sanctions | Tombstones help only after delivery; set completeness, rescreening and remaining valid-state windows need separate evidence |
 | 3 | Propagation delay | Measured attestation lag of 6.5 to 8.8 minutes on top of finality, published as a product parameter rather than hidden | Real-time blocking has to gate on the source chain |
-| 4 | Write cost. One write per user does not survive mainnet | Mode B epoch batching, which decouples cost from user count | Application lags by one epoch interval, covered by row 2's tombstone lane |
+| 4 | Total write and operating cost | Epoch commitments batch part of the workload; source lifecycle and witness refresh remain | Customer scale, transaction mix, total cost and tolerated delay need measurement |
 | 5 | Freshness | Each epoch publishes `validUntil`, and expiry fails closed | If the issuer stops, gates close. That is the safe direction |
 | 6 | Trusting a mirror | A spoke root is comparable to the hub's verified root, and anyone can disprove a mismatch | Slashing incentives for disproving are roadmap |
 | 7 | Replay | `ASCBase` already blocks it through `queryId = keccak256(chainKey, blockHeight, txIndex)`. We add source address pinning | It only stops resubmitting the same transaction. Rows 13 and 14 are separate problems |
-| **13** | chainKey spoofing. The handler cannot tell which chain a proof came from | `ASCBase._processAndEmitEvent(action, queryId, tx)` receives neither `chainKey` nor `blockHeight`. CC3 serves chainKey 1 and 3 at once, so a same-address contract on mainnet can emit an event that passes. CREATE2 makes claiming that address first straightforward | Fork `ASCBase` to widen the signature and `require(chainKey == EXPECTED)`. P0 |
-| **14** | Reordering revives a revoked mark | Submission is permissionless and unordered. Send `MarkIssued` from block 100 after `MarkRevoked` from block 200 and the mark returns to ACTIVE. The queryIds differ so replay protection never fires, and both proofs are valid | A `lastAppliedHeight` cursor rejects the older height. It needs `blockHeight` in the handler, so the same fork covers it. P0 |
-| 8 | Dusting as griefing, where a sanctioned address sends 1 wei to disable someone's mark | On-chain exposure distinguishes sending from receiving | |
-| 9 | Key risk | Separate issuer, epoch and owner keys, with two-step ownership transfer | A stolen issuer key still forges issuances. Comparison against the epoch root detects it |
+| **13** | Wrong-source proof acceptance | Current ASC checks the configured source chain key and event emitter through the widened processing boundary | Local wrong-chain/emitter tests are not independent native-proof or deployment verification |
+| **14** | Out-of-order lifecycle delivery | Current ASC uses source block/transaction/log ordering, full-receipt atomicity and a separate monotonic permanent denial | T-06 issuer isolation and approved historical migration remain unresolved |
+| 8 | Wallet risk beyond exact list matching | Transaction-graph exposure/dusting analysis is not implemented and bit 20 stays unset | Select an approved data source and policy before claiming this control |
+| 9 | Key risk | Stable issuer/operational key separation and local rotation tests exist | A compromised trusted issuer can authorize false claims/roots; comparison alone does not detect truth. Historical compromise cutoffs and operational custody remain T-12/T-23 work |
 | 10 | False positives | An appeal path plus a cleared list, so the next rescreening does not revoke the same person again | A human makes the call |
-| 11 | Data protection law, PIPA and GDPR | Zero bytes on chain, the consent version bound into the signed message, and erasure carried out in the offline vault. An on-chain commitment means nothing without the original | We are not an identity verification authority. The verification itself is delegated to vendors |
+| 11 | Data protection and retention | Events omit defined cleartext identity fields; wallet linkage/metadata remain public and offchain records persist | Consent capture, cryptography and local deletion controls do not establish lawful processing, complete erasure or vendor rights; T-32/T-33/T-53 remain open |
 | 12 | Honesty while vendors are unconnected | An unconnected check leaves its bit unset, and consumer policies filter on that automatically | The demo's KR adapter is a mock, and the screen, the docs and the mark all say so |
 
 ---
 
 ## 8. How other chains read this
 
-Attestcoin's writability is still in development, so we cannot claim Creditcoin pushes state to other chains.
+No implemented production spoke push/mirror is established in this repository. Earlier roadmap statements about the upstream writability product are not a current verification of its external release status.
 
 | Role | Chain | Trust basis | Scope |
 |---|---|---|---|
@@ -415,7 +426,7 @@ Attestcoin's writability is still in development, so we cannot claim Creditcoin 
 | Spoke | any EVM chain | a mirror comparable to the hub's verified root, plus a proof-serving API | P1 |
 | Push, roadmap | Creditcoin to spoke | Attestcoin writability | P2 |
 
-> For the submission: *"Creditcoin is the chain of record for compliance state. Any chain can read it; only Creditcoin can prove it."*
+Submission-safe scope: *"The local prototype connects source-issued assertions to a Creditcoin-side policy gate. Other-chain distribution and independently verified public-release operation remain to be demonstrated."* Do not claim universal reads or exclusive proof capability from the hub prototype.
 
 ---
 
@@ -434,9 +445,9 @@ Attestcoin's writability is still in development, so we cannot claim Creditcoin 
 | P0 | Worker, `ProofmarkASC` and `Registry` deployed on CC3 | One successful Sepolia to CC3 round trip with public transaction hashes. Done twice |
 | P0 | `GatedRwaNote` demo | Unverified reverts, issuance succeeds, revocation blocks again |
 | P0 | README as the required technical document, plus a three-minute demo video | A judge reproduces it in five minutes |
-| P1 | Epoch roots, Mode B, with sorted-key non-membership proofs | One root applies N subjects |
+| P1 | ~~Epoch roots, Mode B, with sorted-key non-membership proofs~~ | Done. Epoch 1 is published and the deployed registry verifies inclusion and non-inclusion |
 | P0 | ~~`ASCBase` fork, chainKey pinning, ordering cursor~~ | Done. `ASCBaseX.sol` and `ProofmarkASC.sol`, 14 tests. `test_RejectsProofFromWrongChain` and `test_StaleIssueCannotResurrectRevokedMark` are mutation tested: remove the guard and exactly that test fails |
-| P1 | `revokeBatch()`, batching through multiple logs per transaction | Emit N in one transaction, apply all N in one `execute()` |
+| P1 | ~~`revokeBatch()`, batching through multiple logs per transaction~~ | Done. Emit N in one transaction, apply all N in one `execute()` |
 | P2 | ~~`verifyBatch`~~ | Not supported on the contract side. Revisit whether it is needed |
 | P1 | Extended policies: `requireAny`, regime, jurisdiction | Working EU and US policy examples |
 | P1 | `@proofmark/sdk` and a proof REST API | An outsider integrates in half an hour |
@@ -445,7 +456,9 @@ Attestcoin's writability is still in development, so we cannot claim Creditcoin 
 | P2 | Selective disclosure and ZK attribute proofs | |
 | P2 | Rescreening cron | A manual console run covers it for now |
 
-### 9.2 Schedule, deadline 2026-09-14 12:59 KST
+### 9.2 Historical planning schedule — stated deadline unverified for submission
+
+The original plan assumed 2026-09-14 12:59 KST. This date and the relative windows below are retained as planning history, not verified current rules, team assignments or a delivery promise.
 
 | Window | Goal | Gate |
 |---|---|---|
@@ -480,20 +493,20 @@ The budget question closed with 10,000 CTC. What is short is time: an attestatio
 | chainKey: Sepolia 1, mainnet 3 | measured |
 | Proof Builder API works, 0.58s response | measured |
 | ~~Nine queries a day~~, actually 10,000 CTC | measured, and it contradicts the README |
-| Cost per query 0.0002 CTC, 394,982 gas at 0.5 gwei with no separate fee | measured. No budget constraint |
+| One reported query: approximately 0.0002 CTC, 394,982 gas at 0.5 gwei | Historical transaction observation; no general fee, balance or capacity guarantee |
 | Burn to ASC application, 9m 43s: 8.5 min waiting plus about a minute for proof and submission | measured |
 | `verifySingle` gas: estimated 421,105, used 394,982 | measured |
 | Sepolia mint 50,969 gas, burn 30,721 gas | measured |
-| No ATC fee on the readability path | settled. Official wording and our measurement agree |
+| Earlier interpretation of no ATC read fee | Historical interpretation; current upstream terms/status not verified by this revision |
 | `verifyBatch` gas | `assumed`, never measured because the path is unused |
 | Proof Builder rate limits | `assumed`, not yet measured |
 | Sepolia finality to attestation, as a separate figure | `assumed`, folded into the end-to-end number above |
 
 ---
 
-## 9.5 Deployment, which satisfies the testnet requirement
+## 9.5 Historical deployment record — not the current release
 
-`deployments/cc3-testnet.json` is canonical. A redeployment updates it first.
+`deployments/cc3-testnet.json` records historical addresses. These are not evidence that the current source/schema/proof fixes are deployed, or that current submission rules are satisfied. No new deployment was authorized by this plan.
 
 | Contract | Chain | Address |
 |---|---|---|
@@ -507,7 +520,7 @@ The deploy script records and then re-reads every linkage: source chain key, sou
 registry ASC, token policy ID, policy existence, and permanent freeze state. A redeployment aborts
 if any address has no runtime code or any linkage differs from the manifest.
 
-**Post-deployment checks, all passing**
+**Historical post-deployment observations, not rechecked here**
 
 ```
 asc.expectedChainKey  : 1          Sepolia, confirmed at runtime through getSupportedChains()
@@ -530,7 +543,7 @@ $ cast call $REG "isVerified(address,uint256)(bool)" $ME 2 → false
 
 ### 9.6 End-to-end issuance
 
-A mark issued through the Korean flow, propagated cross-chain, opening the gate. Every step succeeded.
+A historical synthetic mark propagated cross-chain and opened a gate. Its identity-check bits were hand-authored, not earned through the Korean vendor flow; it was subsequently revoked as described below. This is not a valid KYC issuance or current-release E2E result.
 
 | Step | Result |
 |---|---|
@@ -586,7 +599,7 @@ evidenceHash 0xfab2199203e7f2e7a6176d54dcd8d1870d3a691b2b544b80735938db23cf297a 
 
 
 
-> **Operational note.** The worker cursor starts at the current head by default, so issuing first means the event is never seen. Start the worker, then issue, or set `WORKER_START_BLOCK`. This is the easiest thing to get wrong in a rehearsal.
+> **Current operational boundary.** The worker now requires an explicit start block and scoped checkpoints. Do not use the old current-head default or guess a recovery floor. Follow [source checkpoint recovery](26-source-checkpoints.md) and reconcile signed/consumed fork holds before resuming.
 
 ---
 
@@ -594,7 +607,7 @@ evidenceHash 0xfab2199203e7f2e7a6176d54dcd8d1870d3a691b2b544b80735938db23cf297a 
 
 ## 9.7 AML screening engine, measured
 
-No fixtures. `aml/fetch-lists.sh` loads 57MB of source XML from OFAC, the UN and the EU.
+The table below is the preserved historical corpus observation, not current runtime freshness. A later [isolated official refresh](83-official-snapshot-observation.md) parsed 26,574 entries and passed an internal evaluation but was not deployed. The normal evaluation combines deterministic in-list positives with synthetic clean inputs; it is not fixture-free independent validation.
 
 | List | Entries | Note |
 |---|---|---|
@@ -603,13 +616,13 @@ No fixtures. `aml/fetch-lists.sh` loads 57MB of source XML from OFAC, the UN and
 | EU FSF | 6,234 | |
 | **Total** | **26,566** entries, **78,365** names and aliases, **124** sanctioned EVM addresses | parsed in 0.5s |
 
-**Measured with `aml/eval.ts`. `aml/engine.test.ts` holds the numbers in place.**
+**Internal regression, not independent validation.** Working-tree `aml-1.1.0` results and snapshot hashes are in [identity comparison and evaluation gates](28-aml-identity-comparison.md). `aml/eval.ts` now fails on defined regressions, and all AML tests are included in CI.
 
 | Metric | Value |
 |---|---|
-| Recall | **100%**. 200 listed individuals looked up by their own name, date of birth and country, all caught |
-| Specificity | **100%**. 600 ordinary Korean names and 10 western names, no false positives |
-| Evasion | **7 of 7**: invisible characters, Cyrillic homoglyphs, diacritics, full width, reversed order, inserted punctuation |
+| In-list positive regression | 200 entries looked up using their own descriptors: 168 BLOCK, 32 REVIEW, zero ALLOW |
+| Synthetic clean regression | 600 generated Korean names and 10 English names: zero holds; not an actual customer false-positive estimate |
+| Normalization regression | Seven variants of one name caught: original, invisible characters, Cyrillic homoglyphs, diacritics, full width, reversed order, inserted punctuation; no general typo-recall claim |
 | Sanctioned wallet | Blocked regardless of name, from the OFAC `idList` |
 
 **The first measurement came back at 67% specificity, a third of ordinary names flagged.** The containment bonus applied regardless of token count, so two tokens overlapping gave a common fragment like `ji` full marks and ordinary Korean names were caught in bulk. Restricting the bonus to cases where the shorter side has three or more tokens took false positives to zero and left recall at 100%.
@@ -626,13 +639,14 @@ An expanded spelling is our inference, not something any list asserts. Strip the
 **Honesty is enforced by code**
 
 ```
-methodsApplied = 0x190000
-  = SANCTIONS_SCREENED | JURISDICTION_CHECK | ONCHAIN_EXPOSURE
+methodsApplied = 0x90000  (working-tree aml-1.4.0)
+  = SANCTIONS_SCREENED | JURISDICTION_CHECK
   PEP_SCREENED  bit 0, no data source connected
   ADVERSE_MEDIA bit 0, no data source connected
+  ONCHAIN_EXPOSURE bit 0, graph/exposure analysis not implemented
 ```
 
-Screening that did not run leaves its bit unset, and a consumer policy filters on that automatically, per section 4.4. The FATF jurisdiction table is source-verified against the June 2026 monitored-jurisdiction publications and its version travels in evidence.
+Exact listed-wallet lookup is recorded separately and does not establish transaction-graph exposure analysis. Unsupported capability flags now reject startup; live vendor configuration alone cannot promote sandbox results to regime 1. See [check capabilities and migration conditions](30-check-capabilities.md). The FATF jurisdiction table's version travels in evidence; the inputs are self-declared nationality/residence, not independently verified citizenship.
 
 **Evidence is deterministic.** The same input produces the same digest, pinned by a test. `engineVersion` travels with it, so a change to the matching rules stays distinguishable even when the list edition is unchanged.
 
@@ -657,10 +671,7 @@ Same characters, different code point sequence. A PII detector that fails on Kor
 
 ## 10. Demo script, three minutes
 
-The production kit lives in [docs/demo-video/](demo-video/): the shot list, per-scene narration, a
-preflight checklist, and `commands.sh`, whose read-only blocks are verified against the live
-testnets. Eight scenes, 178 of the 180 seconds available, and the proof arc — the Sepolia
-transaction, the attestation wait, the verdict on Creditcoin — takes 72 of them.
+The proposed recording kit lives in [docs/demo-video/](demo-video/). It is not a completed recording or current public-chain verification. Before filming, reconcile script/screens/addresses/policies with the approved release and run the preflight. The earlier eight-scene timing below is a storyboard, not proof that its operations fit an unedited three-minute execution.
 
 | # | Scene | Seconds | What it shows |
 |---|---|---|---|
@@ -669,9 +680,9 @@ transaction, the attestation wait, the verdict on Creditcoin — takes 72 of the
 | 3 | Guided issuance at `/verify` | 28 | Wallet control, document, bank account, screening. The identity and bank vendors are labelled demo adapters and the mark discloses it in its regime field; the screening is real |
 | 4 | Sepolia issuance | 20 | On Etherscan, with the `methods` bitmap visible in the mark |
 | 5 | Attestation, as a labelled edit | 16 | The wait, cut under an on-screen caption naming the measured range. Never presented as real time |
-| 6 | Creditcoin verdicts | 36 | One address holding two contracts; one mark passing the pilot policy and failing production for want of the authenticity bit; then the mark that crossed during the cut |
+| 6 | Creditcoin verdicts | 36 | Explain production-regime rejection separately from pilot attribute preview and actual current-witness eligibility; do not invent a missing-bit explanation |
 | 7 | `GatedRwaNote` refuses, then allows | 28 | The gate reverting on an unverified recipient, then the same transfer landing. Remove Attestcoin and the gate stops working |
-| 8 | Revocation, and a full dump of the on-chain data | 18 | A tombstone outranking every policy, and zero bytes of personal data |
+| 8 | Revocation, and a full dump of the on-chain data | 18 | Show delivered revocation and exact policy effect; defined cleartext identity fields are absent, while wallet-linked metadata and commitments remain public |
 
 ---
 
@@ -691,7 +702,7 @@ transaction, the attestation wait, the verdict on Creditcoin — takes 72 of the
 | R8 | Misreading the regulatory position, claiming to be a verification authority or asserting equivalence | high | State that assurance is our own grade and equivalence is the consumer's call | ongoing |
 | R9 | Public Sepolia RPC rate limits | medium | Keep an Alchemy or Infura key in reserve | D-11 |
 | R10 | Not enough people | medium | Everything outside P0 is designed to be droppable | D-6 |
-| R11 | The worker is single-instance with local JSON state and no leader election, a due-diligence question for a product sold with an operational SLA | medium | A down worker delays propagation, never loses or corrupts state. `execute()` is permissionless and idempotent through `processedQueries`, and `lastAppliedHeight` orders application per subject, so N redundant workers are already safe and duplicates cost only gas. Roadmap in `docs/06-worker-design.md` section 10 | post-submission |
+| R11 | Worker durability, signer ownership and distributed operation | high | Local lease/journal/crash/reorg tests exist; they do not guarantee no loss or safe N-worker shared-signing operation. Distributed fencing, backup recovery, monitoring and approved operational SLA remain T-16/T-17/T-21 work | before production operation |
 
 ---
 
@@ -707,75 +718,49 @@ One more argument: every submission in the other four tracks is a potential cust
 
 ---
 
-## 13. Competition requirements against this plan
+## 13. Submission requirements and evidence status
 
-| Requirement | Where | Status |
-|---|---|---|
-| Working Attestcoin integration | Section 5, and the batching design in 5.2 | done |
-| Technical documentation covering setup and protocol use | README plus this document and `01-env-verification.md` | done |
-| Depth of integration | The removal test, the `ASCBase` fork with its two security findings, batching through multiple logs | done |
-| Original work created during the hackathon | R4: new repository, prior work disclosed up front | settled |
-| Testnet deployment on CC3 and Sepolia | Section 9.5 | done |
-| Attestcoin as a core feature | Remove it and the product collapses into a relayer | done |
-| Project sector | RWA, section 12 | settled |
-| Integration summary, the most important narrative | README section 3 | drafted |
-| GitHub URL and README | written; the repository still needs pushing | **open** |
-| Deck or whitepaper PDF | D-1 | **open** |
-| Demo video URL | Script in section 10 | **open** |
-| Team details, residence and citizenship | not collected | **open** |
-| Eligibility, including not being a sanctioned person | needs confirming for everyone | **open** |
+The original requirement mapping is not an approval record. Current rules, dates, eligibility and final acceptance must be checked through the official submission process; this document does not establish them.
+
+| Deliverable | Current status and remaining gate |
+|---|---|
+| Protocol integration | Historical public transactions and current local integrations exist. New-release public proof/runtime/lineage verification remains incomplete. |
+| Technical documentation | Repository documents exist; this revision corrects several contradictory claims. Independent reproduction and final cross-document review remain required. |
+| Testnet deployment | Section 9.5 is historical. The latest incompatible fixes require approved deployment and migration, not reuse of old success output. |
+| Originality, ownership and team | Team statements are not independent IP, licence, incorporation, cap-table or eligibility verification. See T-52. |
+| Public repository and integration summary | Prepared materials are not evidence that a reviewed release commit, URLs and current claims are synchronized. |
+| Deck/PDF | Internal files exist. They do not prove current public-chain behavior or publication approval. |
+| Video, team details and submission receipt | Final recording/URL, authorized team information, official eligibility review and accepted submission are not verified. |
+
+Use [the final checklist](submission/FINAL-CHECKLIST.md) and the ticket ledger. No row is closed merely because a file or historical address exists.
 
 ---
 
-## 14. Market and revenue, for CEIP due diligence
+## 14. Customer and investment hypotheses
 
-The CEIP fast track is worth more than the prize money, and what follows judging is due diligence.
+The proposed first buyer is an issuer or asset operator that needs repeatable holder checks, durable evidence and a consumer-policy gate. The exact customer, gated action, jurisdiction, accepted provider, reuse rights and acceptable delay are still choices to validate through [design-partner discovery](18-design-partner-discovery.md). A wallet address, test token transfer or another hackathon project is not a qualified customer.
 
-| Customer | Why they buy | What they do instead | Pricing |
-|---|---|---|---|
-| RWA and stablecoin issuers | A whitelist has to run every day and produce evidence for a supervisor | Stand up an operations team and build the evidence system themselves | Annual contract plus an operational SLA |
-| Cross-chain dApps | Not rebuilding KYC per chain | Vendor contracts multiplied by chain count | Per issuance; queries are free |
-| Multinational dApps | One integration instead of one per jurisdiction. They change the policy, not the plumbing | Jurisdictions times vendors, in integrations | Jurisdiction adapter subscription |
-| Wallets | Checking a recipient before sending | Incident response and explaining that funds cannot be recovered | Per query |
-| VASPs and custodians | Pre-checking personal wallet recipients, travel rule | Manual review and held withdrawals | Per check |
+The commercial hypothesis is an issuance/operations/evidence service. Annual, usage-based and jurisdiction-adapter pricing are options, not accepted prices or contracted revenue. RPC/proof access, source and hub writes, witness refresh, vendors, storage, manual review, support and legal/security work all contribute to cost. No claim of free integration, unlimited resources or indefinitely free service follows from a historical testnet fee observation. [The unit-economics worksheet](43-unit-economics.md) explicitly uses synthetic assumptions pending real quotations and customer feedback.
 
-**What this gives back to Creditcoin**
+Creditcoin's proposed value is a verifiable source-to-consumer provenance path that an independent issuer and consuming app actually use. That needs comparison with direct issuer signatures, an existing provider or a simpler allowlist under the customer's threat model. This repository does not establish exclusive technical capability, customer demand, durable read volume or protocol-token revenue. Spoke propagation/write-fee scenarios depend on a chosen, verified integration and current terms; they are not present product activity.
 
-Not a token economics argument. Attestcoin reads are free, confirmed by both the official wording and our measurement, and our product sits entirely on that path, so claiming we create ATC demand would be false. CEIP looks for products that strengthen and grow the ecosystem rather than for burn volume, and that is the standard we answer to.
+The team's stated VASP experience, roles and regulatory assessment history require documentary and reference checks under T-52. They must not be described as independently verified facts or proof that this implementation meets regulatory requirements.
 
-| What | Why |
-|---|---|
-| Creditcoin becomes the chain of record for compliance | Issuers legally required to screen holders gain a reason to read it, and Attestcoin is the only trustless cross-chain read available |
-| Every submission in the other four tracks is a potential customer | A dApp that needs gating adds one SDK call, and the demand circulates inside the ecosystem |
-| Free reads mean no adoption barrier | A dApp integrates with no per-query cost, and screening obligations recur, so the read volume is durable rather than one-off. Our revenue comes from issuance, operations and evidence, so queries can stay free indefinitely |
-| Writability propagation, roadmap | Once writability ships, pushing to a spoke chain becomes a paid write, per mark or one roster root per epoch. Quantified as a scenario below, written as roadmap and never as current fact |
-
-**The write pipeline, conditional on writability**
-
-Attestcoin's published token design is fixed supply, free reads, paid writes, fees burned ([`00-hackathon-brief.md`](00-hackathon-brief.md) section 8.9). Writability is still in development, so arguments 1 and 2 below are conditional on it shipping and describe no current activity. Argument 3 is about the free read path the product already sits on.
-
-1. **Mark propagation would be a paid write per mark per spoke chain.** When writability ships, pushing a mark from the hub to a spoke chain becomes a cross-chain write, and under the protocol's own design a cross-chain write is paid. The arithmetic is worked here as a scenario, not a forecast: 100,000 issuances propagated to 3 spoke chains would be 300,000 paid writes, and each later revocation of a direct-origin mark would add one more write per spoke chain, because a direct-origin mark carries its own status instead of inheriting an epoch root. Counts of writes are all we state. The writability fee schedule is unpublished, so any amount attached to those counts would be invented.
-2. **Epoch rosters would make that a cadence rather than a volume.** In roster mode the same propagation batches to one roster-root write per epoch per spoke chain, whatever number of subjects the epoch covers, so the write load follows the publication schedule rather than the user count: recurring, predictable and independent of how many subjects sit behind the root. The mechanism is built and tested in this repository (`pipeline/roster.ts`, `src/lib/RosterProof.sol`, `verifyWithRoster` and `proveNotInRoster` in `src/ProofmarkRegistry.sol`). No epoch has been published on chain yet; all deployed marks are direct-origin, so this describes how the shipped mechanism behaves when operated, not current activity.
-3. **Free reads are the anchor use case, not a missing revenue line.** Holder screening is recurring and legally mandated, so a compliance product on the free read path returns read volume for as long as the obligation exists, which is as long as the issuer is regulated. That volume is what a cross-chain attestation network gets read for, and it gives attesters a reason to exist even at zero fee, because attester economics need a durable use case before they need a per-read price. Read "free" as no adoption barrier plus durable read volume, not as no value returned. We put no number on that volume; none has been measured.
-
-**Why this team**
-Seven years operating Korea's fourth registered VASP, covering the CEO, compliance officer and CTO roles, plus the engineer who built that exchange's KYC. Top rating in the FSC's money laundering risk assessment three quarters running. A team that has actually run document and account verification is moving those procedures on chain, and that combination is unlikely to appear twice in this competition.
-
-**KPIs:** issuances, active marks, transactions passing a gate, integrated dApps, jurisdictions supported, propagation latency at p50 and p95, revocation SLA, zero epoch freshness violations, list freshness.
+Measure distinct independent issuers/apps, non-team retained users, paid customer actions, revenue and full operating cost separately from synthetic/developer/testnet activity. Report source-to-hub and revocation latency with defined start/end points and failure/timeout counts; percentile or SLA claims need a representative observation set. No customer KPI is populated by this plan. Funding amounts, milestones, conditions and investment decisions need the actual approving parties; the AI-authored review is not a foundation commitment.
 
 ---
 
 ## 15. Lines we hold
 
 1. **No cleartext PII on chain.** No names, dates of birth, document numbers, or account numbers. Wallet-linked metadata and commitments are pseudonymous and linkable, not anonymous.
-2. **We do not become an identity verification authority.** Vendors perform the verification; we are responsible for the result's lifecycle and its movement.
-3. **No power to freeze assets.** We publish decisions and never move anyone's funds.
-4. **Everything in the demo works.** No staged screening, no fake timers. An unconnected check is expressed by leaving its bit unset.
+2. **No inherited legal permission.** Using a vendor does not settle our own processing duties or make its permissions ours. Provider execution and legal roles need evidence and approval.
+3. **Asset effects are explicit.** Changing a gate can block transfers even without directly moving funds. Governance, correction, redemption and forced-action authority must be separately defined and approved.
+4. **Demo substitutions are visible.** Synthetic providers, inputs, native proofs and edited waits are labelled. Sandbox bits are not live checks; local test success is not a public end-to-end result.
 5. **No equivalence claims.** We never write that Korean KYC equals EU KYC. We publish the methods and the consumer decides.
 6. **Documents describe what is live.** Nothing that exists only in the repository is described as deployed.
-7. **No overstatement.** We do not write "instant". We write the measured range.
-8. **No design that would work just as well without Attestcoin.**
-9. **Prior work is disclosed first.** The earlier project is a reason to trust us, not something to hide. The code is still written fresh.
+7. **No overstatement.** Timing claims state the observed version, endpoints, sample size and failures; a historical range is not an SLA.
+8. **Test protocol necessity.** Compare this provenance path with simpler alternatives under the customer's requirements; do not assume the answer for the pitch.
+9. **Prior work and rights are disclosed.** Originality, ownership, dependency licences and team history require the T-52 evidence; a narrative is not clearance.
 10. **`.env` is never committed.** We do not copy the example repository's pattern (`01-env-verification.md` section 4).
 
 ---
@@ -787,17 +772,20 @@ Seven years operating Korea's fourth registered VASP, covering the CEO, complian
 | D1 | Product name | Proofmark, AttestKYC | **Proofmark**, and only Proofmark. For an international product the English name has to carry, and this one comes straight from "proof plus mark", so the name explains the design. No secondary or Korean name anywhere in the product; an earlier draft had put one in the wordmark without approval, and it was removed |
 | D2 | Track | RWA, DeFi | **RWA** |
 | D3 | Prior project assets | port the code, or carry knowledge only | **knowledge only**, per R4 |
-| D4 | How far the KR adapter integrates | real vendor integrations, or interface plus mock | **Real integrations, no mock.** Document authenticity through CODEF against Government24 and Traffic Civil Service 24, the account through KFTC Open Banking (or CODEF), both live in code and tested against the documented wire formats. What fourteen days cannot buy is the commercial side (KFTC participating-institution registration, the CODEF partnership contract), and that shows up honestly as `live = false` from a testbed and a bit left at zero, not as a fake vendor. See section 4.2 |
-| D5 | Second jurisdiction | ePassport NFC, EU, US | **ePassport NFC.** It verifies without a vendor or a jurisdiction dependency, which is the real gateway. P2 |
-| D6 | Team size | one, or several | **Several.** The submission form asks each member for residence and citizenship | 
-| D7 | Which spoke chain | undecided | decide at D-5 |
+| D4 | KR adapter target | Approved vendor operation or labelled fixtures | Live connectors remain the target; built-in demo and local HTTP fixtures are what the connected tests currently use. Actual institutional execution/reuse rights are not established by wire-format tests |
+| D5 | Second jurisdiction | ePassport NFC, EU, US | Earlier preference: ePassport NFC. No implementation, trust-list/device assessment, customer need or legal acceptance is established; do not prioritize expansion without evidence |
+| D6 | Team and submission details | Actual eligible team | Team roster, roles and required official-form details remain to be confirmed with the people concerned |
+| D7 | Spoke integration | Customer-selected chain and trust model | Undecided; no current mirror delivery date or deployment authority |
+| D8 | Issuer isolation | Independent scoped credentials or enforced single issuer | **Pending user decision.** Three local T-06 isolation acceptance cases remain red; do not treat a request to continue implementation as a choice between these products |
 
 ---
 
 ## 17. What is left
 
-1. Complete a live institutional vendor contract and production credential run.
-2. Replace the single-instance file vault with managed storage and KMS, then complete legal and security review.
-3. Secure two design partners: one Creditcoin application and one regulated issuer.
-4. Separate testnet roles into managed keys or multisigs and rehearse recovery.
-5. Record the final demo against the current deployment and publish the submission artefacts.
+The [full ticket ledger](../TICKET.md) retains all 56 completion conditions. Principal dependencies are:
+
+1. Decide T-06, implement the chosen scope across contracts/policies/rosters/recovery, and approve disposition of ambiguous legacy restrictions.
+2. Choose the actual customer/gated action/provider and obtain permitted access/reuse, qualified processing/retention review and independent security review.
+3. Approve managed storage/key custody, ownership, backup/recovery, monitoring and real operating limits; install and verify them rather than counting local tools as deployment.
+4. Complete authorized new-release source/proof/worker/hub/witness/consumer reproduction with synchronized current data, runtime pins and migration records.
+5. Reconcile all public materials, current official submission requirements and team/IP evidence; obtain approval before final recording, upload or submission. None of these external actions is authorized by this plan alone.

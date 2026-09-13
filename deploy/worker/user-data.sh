@@ -10,6 +10,7 @@ node -v && npm -v
 
 id proofmark >/dev/null 2>&1 || useradd --system --create-home --home-dir /opt/proofmark --shell /sbin/nologin proofmark
 install -d -o proofmark -g proofmark -m 750 /opt/proofmark
+install -d -o proofmark -g proofmark -m 700 /opt/proofmark/state
 
 cat >/etc/systemd/system/proofmark-worker.service <<'UNIT'
 [Unit]
@@ -26,6 +27,17 @@ Restart=always
 RestartSec=5
 KillSignal=SIGTERM
 TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/proofmark/state
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+CapabilityBoundingSet=
+RestrictSUIDSGID=true
 
 [Install]
 WantedBy=multi-user.target

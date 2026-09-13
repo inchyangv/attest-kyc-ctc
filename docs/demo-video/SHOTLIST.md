@@ -1,83 +1,106 @@
-# Demo video — shot list
+# Demo video — shot list, the two-minute cut
 
-Three minutes is the ceiling the competition sets, and the proof arc is what it is scoring: a fact
-issued on Ethereum, attested through Attestcoin, and driving an on-chain decision on Creditcoin.
-Scenes 4, 5 and 6 are that arc and take 72 of the 178 seconds budgeted below.
+Two minutes, eight scenes, one wallet's life: verified, admitted, refused, revoked. Everything on
+screen is the hosted deployment `https://attest-kyc.stabled.ai` and the two public testnets. The
+narration is [NARRATION.md](NARRATION.md); the commands are [commands.sh](commands.sh); the go /
+no-go list is [PREFLIGHT.md](PREFLIGHT.md).
 
-Recording runs against the hosted deployment `https://attest-kyc.stabled.ai` and the two testnets.
-Run [PREFLIGHT.md](PREFLIGHT.md) first; read [NARRATION.md](NARRATION.md) over the top; the terminal
-scenes come from [commands.sh](commands.sh), one scene at a time:
+## What the two minutes have to make an investor feel
 
-```sh
-SCENES=6 bash docs/demo-video/commands.sh
-```
+The competition scores Attestcoin depth. The CEIP judges score whether this is a company. The cut
+has to do both without a slide, so each scene carries one of these five points and nothing else:
 
-Two takes carry the whole video. **Take A** is filmed live: the screening, the `/verify` issuance,
-the Sepolia transaction. **Take B** is a second mark pushed through `/verify` about fifteen minutes
-before recording starts (PREFLIGHT step i), so that when scene 5 cuts, scene 6 has a mark whose
-attestation has genuinely crossed. The cut is labelled on screen. The wait is never presented as
-real time and never as immediate.
+| # | The point | Where it lands | Why it is a "wow" and not a feature |
+|---|---|---|---|
+| 1 | **The asset itself says no.** A tokenised note reverts a transfer to a wallet nobody checked | Scene 1 cold open, scene 6 | Compliance is usually a form and a promise. Here it is a revert selector anyone can reproduce with `eth_call` |
+| 2 | **One mark, two policies, two answers.** The same credential fails Korea's production policy and passes the pilot policy, and both policies are frozen | Scene 5 | Every competitor ships "KYC passed: yes". Proofmark ships "here is what was checked; your asset decides". Portability becomes a return value |
+| 3 | **Nobody in the middle.** The mark was issued on Ethereum and Creditcoin verified the Ethereum block itself | Scene 4 | Remove Attestcoin and the product is a bridge the team operates. That sentence is the integration-depth score |
+| 4 | **Revocation travels.** The issuer revokes on Ethereum; nine minutes later the note refuses the same holder on Creditcoin, and no one touched Creditcoin | Scene 7 | Onboarding KYC is table stakes. An asset that learns a holder was revoked, on another chain, without an admin key, is the thing regulated issuers actually pay for |
+| 5 | **It is live. Run it.** | Scene 8 | The URL is the proof. Judges can reproduce every verdict in the video with the read-only script |
+
+Screening (scene 2) is the on-ramp: a name everybody recognises gets blocked by real OFAC data in
+one click. It buys the credibility the next six scenes spend.
+
+Team, market and the ask stay out of the video. They live in the deck and the DoraHacks text.
 
 ## Scenes
 
-| # | Scene | Seconds | On screen | Source |
+Total 120 seconds. Narration is budgeted at 150 words per minute.
+
+| # | Scene | Sec | On screen | Source |
 |---|---|---|---|---|
-| 1 | Cold open | 12 | Title card over the landing page. "Proofmark — a KYC mark issued on Ethereum, verified on Creditcoin, gating a tokenised note." Contract addresses held for two seconds | `$DEMO_URL/` |
-| 2 | Live sanctions screening | 20 | `$DEMO_URL/` — click the "Kim Jong Un · KP" preset, run it. BLOCK, risk band 5, the OFAC SDN hit `entryId 20157` with `corroborated: dob`. Scroll once to "Checks performed" so the unset PEP and adverse-media bits are visible | `$DEMO_URL/`, block `SCENES=2` |
-| 3 | Guided issuance, `/verify` | 28 | `$DEMO_URL/verify` — steps 0 Wallet control, 1 ID document, 2 Bank account, 3 Screen and issue. Hold on `demo:id` / `demo:bank`, sandbox regime, production FAIL, pilot PASS, and the Sepolia transaction | `$DEMO_URL/verify`, block `SCENES=3` |
-| 4 | The Sepolia issuance | 20 | `sepolia.etherscan.io/tx/<hash from scene 3>` — status Success, `MarkIssued`, and `ComplianceSource`. Then current source `0xA9A34586303b9fD92e090F9bb1D332DC854c72B9` | `sepolia.etherscan.io`, block `SCENES=4` |
-| 5 | Attestation, as a labelled edit | 16 | Worker log plus the full-frame caption **"edited — cross-chain propagation took about 9 minutes"**. Cut from take A to take B under that caption | worker log, caption in the editor |
-| 6 | Creditcoin verdicts | 36 | Both contracts have runtime code; `expectedChainKey` is 1 and source address is pinned; the same mark fails policy 1 and passes policy 2; both policies frozen; take B passes policy 2 | block `SCENES=6`, `RECORD=1` for take B |
-| 7 | GatedRwaNote refuses, then allows | 28 | Terminal. `canTransfer` false to the control wallet, true to the verified one; the call reverting with `0x17887111` `RecipientNotVerified`; then the live transfer landing status 1. Cut to the token on `creditcoin-testnet.blockscout.com` | block `SCENES=7`, `RECORD=1` |
-| 8 | Fail closed, no cleartext personal data | 18 | An unissued control fails both policies. Then the active `getMark` dump — commitments and scoped metadata, no cleartext name, birth date, document or account number | block `SCENES=8`, `$DEMO_URL/onchain` |
-| | **Total** | **178** | under the 180-second ceiling, 2 seconds of headroom | |
+| 1 | Cold open | 8 | The scene-6 refusal footage, cut to the front: `canTransfer` false, then the revert `0x17887111 RecipientNotVerified`. Title card "Proofmark" fades over it | `SCENES=1` (free call) |
+| 2 | Live sanctions screening | 14 | `$DEMO_URL/` in the browser. Click "Kim Jong Un · KP", run. Hold on BLOCK, risk band 5, `OFAC_SDN` entry `20157`, `corroborated: dob`. One scroll to "Checks performed" so the unset PEP and adverse-media bits are visible | browser, `SCENES=2` |
+| 3 | Guided issuance | 22 | `$DEMO_URL/verify` with a throwaway wallet: 0 Wallet control (sign), 1 ID document (`demo:id`), 2 Bank account (bank list, `demo:bank`, the one-won code), 3 Screen and issue → ISSUED with the Sepolia tx. Speed-ramp typing; hold two seconds each on the `demo:` vendor rows, the regime line and the tx hash. Cut to Etherscan: status Success, `MarkIssued` | browser, `SCENES=3` |
+| 4 | The crossing | 12 | Worker log scrolling. Full-frame caption **"edited — cross-chain propagation took about 9 minutes"**. Cut to `$DEMO_URL/onchain` for holder A: ACTIVE, "Same mark, two policies", then the Verifier panel (chain key 1, source contract) | worker terminal, browser, `SCENES=4` |
+| 5 | One mark, two policies | 16 | Terminal: `isVerified(A, 1)` false, `isVerified(A, 2)` true, `policyFrozen` true / true, `policies(1)` fields. Split-screen with the /onchain FAIL / PASS cards if the editor allows | `SCENES=5` |
+| 6 | The gate | 16 | Terminal: `canTransfer(A, B)` true, `canTransfer(A, control)` false, the free call reverting with `0x17887111`, then the live `transfer` of 10 KPCN landing status 1. Cut to Blockscout for the receipt | `SCENES=6`, `RECORD=1` |
+| 7 | Revocation travels | 22 | Terminal: `revoke(A, 2 RESCREEN_HIT, epoch)` sent on Sepolia, status 1. Etherscan `MarkRevoked`. Caption **"edited — propagation took about N minutes"** with N from the take. Then `tombstone(A)` true, `canTransfer(A, B)` false, the same transfer reverting `0x8677c1af SenderNotVerified`. Cut to `/onchain`: REVOKED · tombstone | `SCENES=7`, `RECORD=1` |
+| 8 | Close | 10 | Title card: "Proofmark — Verified once. Enforced by every asset. Revoked everywhere." Under it `attest-kyc.stabled.ai` and "Live on Creditcoin CC3 Testnet · Ethereum Sepolia" | `SCENES=8` |
+| | **Total** | **120** | | |
+
+## Two takes and one wallet
+
+- **Holder A** (`0x4816B6e3…`) is the wallet of the film from scene 4 on. Its mark must have crossed
+  to CC3 before recording starts (PREFLIGHT h). It holds KPCN, passes policy 2, fails policy 1.
+- **Scene 3 is filmed live with a throwaway wallet.** Its mark will not have crossed by the time
+  scene 4 rolls; the caption says so, and scene 4 shows holder A. Do not imply the on-camera wallet
+  and holder A are the same wallet; the narration never does.
+- **Scene 6 before scene 7, always.** Scene 7 revokes holder A. After it, A cannot send or receive
+  KPCN until a fresh issuance crosses. Re-recording either scene means re-issuing (PREFLIGHT h).
+- The revocation wait is real. Start `RECORD=1 SCENES=7` and keep the terminal recording while it
+  polls; the script prints the elapsed time when the tombstone lands. That number goes into the
+  caption. Never shorten the caption to sound faster than the take.
 
 ## What each scene must not do
 
-- **Scene 3.** The vendor rows saying `demo:id` and `demo:bank` have to be legible, and the
-  narration has to say it out loud. The mark discloses the same thing on chain in its regime field.
-  The screening axis in the same flow is real, against the loaded lists — say which is which.
-- **Scene 5.** No speed ramp without the caption, and no wording that implies the attestation was
-  quick. The caption text above is the wording that ships.
-- **Scene 6.** `tombstone` and `getMark` are functions of `ProofmarkASC`; `isVerified` is on
-  `ProofmarkRegistry`. Calling one on the other's address is the mistake that looks like a bug on
-  camera.
-- **Scene 7.** Keep `--from` on the read-only revert. Without it `msg.sender` is zero, `onlyOwner`
-  fires before the gate, and the frame shows `0x118cdaa7 OwnableUnauthorizedAccount` — the wrong
-  error entirely. Two error selectors that both look like "reverted".
-- **Scene 8.** Do not say anonymous or zero data. Wallets, issuer, method metadata and commitments
-  are public and linkable; the narrower claim is no cleartext personal fields on chain.
+- **Scene 2.** Do not call the screening "AML compliance". It is list screening against three
+  official lists; PEP and adverse media are unset and the screen shows that.
+- **Scene 3.** The `demo:id` and `demo:bank` rows must be legible and the narration says the word
+  "demo". The mark discloses the same thing on chain in its regime field.
+- **Scene 4.** No speed ramp without the caption. Never "instant", never "real-time".
+- **Scene 5.** `isVerified` is on `ProofmarkRegistry`; `getMark` and `tombstone` are on `ProofmarkASC`.
+  Calling one on the other's address is the mistake that looks like a bug on camera.
+- **Scene 6 and 7.** Keep `--from` on every gated call. Without it `msg.sender` is zero, `onlyOwner`
+  fires first and the frame shows `0x118cdaa7 OwnableUnauthorizedAccount`: the wrong error.
+- **Scene 7.** Say "revokes"; do not say "sanctioned" unless a `deny` was actually sent. Reason code 2
+  is a rescreen hit, which is a decision the issuer took, not a list match shown on camera.
+- **Scene 8.** Do not say anonymous or zero data. Wallet, issuer, method metadata and commitments are
+  public and linkable; the accurate claim is no cleartext personal fields on chain.
 
 ## If a live transaction fails on camera
 
-Scenes 4 and 7 send real transactions, and a testnet can refuse at the wrong moment. Every one of
-them has already happened once, and those receipts are on chain — cut to an explorer rather than
-retrying on camera. All three were re-read and still return the status below.
+Scenes 6 and 7 send real transactions. Every transaction the video needs has already happened once;
+cut to the explorer rather than retrying on camera, and narrate it as an earlier run.
 
 | What | Chain | Transaction | Status |
 |---|---|---|---|
-| `issueBatch`, the two current marks | Sepolia | `0x290498028010e6ce5f75de3d69695091e24863423e01a7981a277db86c8d69f1` | 1, success |
-| Mint 100 KPCN to verified A | CC3 | `0xa1f3b9fa62419b0352376d633b703442830d95a45179772825e44397342f8e77` | 1, success |
-| Transfer 40 KPCN from verified A to verified B | CC3 | `0xefe550ff98e513b8c6cd7fa8541fd1d7d0f33197b149fb674df8acba7aa9aa0d` | 1, success |
+| `issueBatch`, the two current marks | Sepolia | `0x290498028010e6ce5f75de3d69695091e24863423e01a7981a277db86c8d69f1` | 1 |
+| Worker `execute()` materialising them | CC3 | `0x50c30b315f74150fecf56b670a5d6c9cf7dc0bc76c815809dbc6af899de567d8` | 1 |
+| Mint 100 KPCN to verified A | CC3 | `0xa1f3b9fa62419b0352376d633b703442830d95a45179772825e44397342f8e77` | 1 |
+| Transfer 40 KPCN from A to verified B | CC3 | `0xefe550ff98e513b8c6cd7fa8541fd1d7d0f33197b149fb674df8acba7aa9aa0d` | 1 |
+| Epoch 1 published | Sepolia | `0x2adefae22bd29e7fc43b9f9161f6c722cc2deb4eae6bc720aca5a2b65e7816df` | 1 |
+| Epoch 1 accepted, 8m 00s later | CC3 | `0xb011cd6e5a590b924858262cdfc832a6ef0d71cc4b78c3ac61efaf3d0c2f532f` | 1 |
 
-Narrate a cut like that as what it is — a transaction from an earlier run, not the one just sent.
-README section 4 records all six transactions from that run and the propagation measured on it.
+There is no prior on-chain revocation for holder A. If scene 7's transaction fails, the fallback is
+the 2026-08-30 revocation observation in `docs/16-propagation-observations.md` (8m 43s), narrated as
+a measurement, not as footage.
 
 ## Cast
 
-| Address | Role in the video |
+| Address | Role |
 |---|---|
-| `0x4816B6e3Acb775f65Da888f185f708E2C8D7a3e2` | Holder A. Holds 60 KPCN; fails production policy 1 and passes sandbox policy 2 |
-| `0x77858131d1E0eAaAe2c38c2cce508c358C9b58ee` | Recipient B. Holds 40 KPCN and passes policy 2 |
-| `$TAKE_B_SUBJECT` | Optional take B, pre-issued through `/verify`; passes policy 2 after the cut |
-| `0x00000000000000000000000000000000DeaDBeef` | Unissued control; the gate refuses it and both policies fail |
+| `0x4816B6e3Acb775f65Da888f185f708E2C8D7a3e2` | Holder A. Passes policy 2, fails policy 1, holds KPCN. Revoked in scene 7 |
+| `0x77858131d1E0eAaAe2c38c2cce508c358C9b58ee` | Recipient B. Passes policy 2, holds KPCN |
+| `0x00000000000000000000000000000000DeaDBeef` | Unissued control. The gate refuses it; both policies fail |
+| throwaway wallet | Scene 3 only. Any address you do not mind publishing |
 
 ## Frame notes
 
-- 1920×1080, 30fps. Terminal at a font size that survives a laptop screen: aim for 24 lines visible,
-  not 50.
-- Browser in a clean profile — no bookmarks bar, no extensions, no other tabs.
-- The `/verify` flow shows a resident registration number field. Use the PREFLIGHT test values and
-  keep the field out of frame while typing if the screen recorder captures keystrokes.
-- Cut the dead RPC latency between `cast` calls; it is not an edit that changes a claim, and it buys
-  the seconds scene 6 needs.
+- 1920×1080, 30 fps. Terminal font large enough for a laptop: about 24 visible lines, not 50.
+- Browser in a clean profile: no bookmarks bar, no extensions, no other tabs, no autofill.
+- The `/verify` flow has a resident registration number field. Use the synthetic sample preset and
+  keep keystroke overlays off.
+- Cut the RPC latency between `cast` calls. It changes no claim and buys the seconds scene 7 needs.
+- Captions in the product's type: Inter, white on black, lower third, held for the whole cut.
+- Music under, never over: the narration carries every number.

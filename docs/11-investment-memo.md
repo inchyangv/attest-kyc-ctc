@@ -3,6 +3,8 @@
 > 2026-09-02 · Creditcoin ecosystem / hackathon diligence view
 > This is a product and investment assessment, not legal advice. Revenue, pilots and funding described below are targets unless explicitly marked live.
 
+> Updated 2026-09-08. Test counts are now 118 Solidity and 583 TypeScript. The September security review found two v1 defects (denial ordering, roster non-membership); both are fixed in tree and the v2 redeploy is tranche 1. Synthetic pilot economics: [43-unit-economics.md](43-unit-economics.md).
+
 ## Decision
 
 **Recommendation: conditional milestone investment, not an unconditional seed check.** Proofmark is one of the stronger Creditcoin-native infrastructure builds technically: it uses Attestcoin for a necessary trust-minimization property, has a real policy-gated asset path, and now closes the obvious policy, ordering, replay and non-inclusion gaps. The investable wedge is not “another KYC provider.” It is the Creditcoin compliance gateway that normalizes credentials from established issuers and gives each Creditcoin application a frozen, auditable policy surface.
@@ -14,7 +16,7 @@ The reason to fund a pilot is technical differentiation and ecosystem fit. The r
 | Dimension | Weight | Score | Diligence view |
 |---|---:|---:|---|
 | Creditcoin / Attestcoin necessity | 20 | 19 | Source events are verified through BlockProver; replacing Attestcoin would reintroduce a trusted oracle |
-| Technical execution | 20 | 18 | Live contracts, worker, policy-gated note, roster mode, 57 Solidity and 123 TypeScript tests |
+| Technical execution | 20 | 18 | Live contracts, worker, policy-gated note, roster mode, 118 Solidity and 583 TypeScript tests |
 | Security and correctness | 20 | 16 | Same-block ordering, denial precedence, replay protection, policy freeze and bound non-inclusion proofs are implemented; no external audit yet |
 | Product clarity | 15 | 12 | Verify → prove → enforce is coherent; the public sandbox still requires explanation and cannot show a live vendor |
 | Go-to-market evidence | 15 | 5 | Buyer and pricing hypotheses are credible, but there is no LOI, paid pilot, vendor contract or revenue |

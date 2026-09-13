@@ -1,4 +1,5 @@
 import 'server-only';
+import { createHash } from 'node:crypto';
 
 type GuardOptions = {
   bucket: string;
@@ -8,8 +9,10 @@ type GuardOptions = {
   sameOrigin?: boolean;
 };
 
-type Counter = { startedAt: number; count: number };
+type Counter = { expiresAt: number; count: number };
 const counters = new Map<string, Counter>();
+export const MAX_LOCAL_BUCKETS = 10_000;
+let nextSweepAt = 0;
 
 export class RequestGuardError extends Error {
   constructor(message: string, readonly status: number, readonly retryAfter?: number) {
@@ -18,13 +21,22 @@ export class RequestGuardError extends Error {
   }
 }
 
+/** Header hints can reject early, but callers must also bound actual streamed bytes. */
+export function assertBodyHeaders(req: Request, maxBytes: number): number | undefined {
+  const encoding = req.headers.get('content-encoding');
+  if (encoding && encoding.toLowerCase() !== 'identity') throw new RequestGuardError('encoded request bodies are not supported', 415);
+  const rawLength = req.headers.get('content-length');
+  if (rawLength === null) return;
+  if (!/^\d+$/.test(rawLength) || !Number.isSafeInteger(Number(rawLength))) throw new RequestGuardError('invalid content-length', 400);
+  const length = Number(rawLength);
+  if (length > maxBytes) throw new RequestGuardError('request body is too large', 413);
+  return length;
+}
+
 /** Per-instance protection for public Route Handlers. Host-level distributed limits are still
  * required in production because serverless instances do not share this map. */
 export function guardRequest(req: Request, options: GuardOptions): void {
-  const contentLength = Number(req.headers.get('content-length') ?? '0');
-  if (options.maxBodyBytes && Number.isFinite(contentLength) && contentLength > options.maxBodyBytes) {
-    throw new RequestGuardError('request body is too large', 413);
-  }
+  if (options.maxBodyBytes) assertBodyHeaders(req, options.maxBodyBytes);
 
   if (options.sameOrigin) {
     const origin = req.headers.get('origin');
@@ -34,15 +46,21 @@ export function guardRequest(req: Request, options: GuardOptions): void {
   }
 
   const now = Date.now();
-  if (counters.size > 10_000) {
-    for (const [key, value] of counters) if (now - value.startedAt >= options.windowMs) counters.delete(key);
+  if (now >= nextSweepAt) {
+    for (const [key, value] of counters) if (now >= value.expiresAt) counters.delete(key);
+    nextSweepAt = now + 1000;
   }
   const forwarded = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim();
   const client = forwarded || req.headers.get('x-real-ip') || 'unknown';
-  const key = `${options.bucket}|${client}`;
+  // This header is trustworthy only behind a proxy that strips/rewrites inbound forwarding
+  // headers. Hashing bounds stored key size; it does not authenticate the client's identity.
+  const key = `${options.bucket}|${createHash('sha256').update(client).digest('hex')}`;
   const prior = counters.get(key);
-  const counter = !prior || now - prior.startedAt >= options.windowMs
-    ? { startedAt: now, count: 0 }
+  if (!prior && counters.size >= MAX_LOCAL_BUCKETS) {
+    throw new RequestGuardError('local request capacity reached', 429, 1);
+  }
+  const counter = !prior || now >= prior.expiresAt
+    ? { expiresAt: now + options.windowMs, count: 0 }
     : prior;
   counter.count += 1;
   counters.set(key, counter);
@@ -50,13 +68,13 @@ export function guardRequest(req: Request, options: GuardOptions): void {
     throw new RequestGuardError(
       'rate limit exceeded',
       429,
-      Math.max(1, Math.ceil((counter.startedAt + options.windowMs - now) / 1000)),
+      Math.max(1, Math.ceil((counter.expiresAt - now) / 1000)),
     );
   }
 }
 
 export function guardError(e: unknown): Response | null {
   if (!(e instanceof RequestGuardError)) return null;
-  const headers = e.retryAfter ? { 'Retry-After': String(e.retryAfter) } : undefined;
+  const headers = { 'Cache-Control': 'no-store', ...(e.retryAfter ? { 'Retry-After': String(e.retryAfter) } : {}) };
   return Response.json({ error: e.message }, { status: e.status, headers });
 }

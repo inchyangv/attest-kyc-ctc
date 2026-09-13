@@ -3,6 +3,9 @@
  * The issuance pipeline calls through this interface and nothing else.
  */
 
+import type { IdentityComparison } from './identity.js';
+import type { ListProvenance } from './provenance.js';
+
 export interface ScreeningSubject {
   fullName: string;
   romanizedName?: string;   // the engine expands it when absent
@@ -17,20 +20,26 @@ export type MatchType = 'exact' | 'fuzzy' | 'alias' | 'romanized' | 'wallet';
 
 export interface ScreeningHit {
   listId: ListId;
-  listVersion: number;   // first 8 bytes of the source file hash, identifying the edition
+  listVersion: number;   // first 32 bits of SHA-256; full hashes are in sourceSnapshot
   entryId: string;
   matchedName: string;
   score: number;               // 0..1
   matchType: MatchType;
-  /** Whether this hit justifies blocking on its own.
-   *  Romanised expansion is our inference, so it is false without a date of birth or country. */
+  /** Positive supplied identity descriptors with no explicit conflict/invalid comparison.
+   * Not a legal match determination or proof of identity; year/country support alone does not block. */
   corroborated: boolean;
   corroboration?: ('dob' | 'nationality' | 'wallet')[];
+  /** Absent on legacy/provider fixtures; the built-in engine emits it for every name hit. */
+  identityComparison?: IdentityComparison;
+  /** Preserve both paths when an inferred expansion has a higher score than a supplied name. */
+  directNameScore?: number;
+  inferredNameScore?: number;
 }
 
 export type Decision = 'ALLOW' | 'BLOCK' | 'REVIEW';
 export type ReviewReason =
-  | 'NAME_SIMILARITY' | 'DOB_MISSING' | 'HIGH_RISK_JURISDICTION'
+  | 'NAME_SIMILARITY' | 'IDENTITY_CONFLICT' | 'DOB_MISSING' | 'HIGH_RISK_JURISDICTION'
+  | 'SCREENING_UNAVAILABLE' | 'SCREENING_INPUT_INVALID'
   | 'ONCHAIN_EXPOSURE' | 'MANUAL_FLAG';
 
 export interface ScreeningResult {
@@ -56,13 +65,15 @@ export interface ScreeningResult {
  * confirm a candidate, which is the point. Without the key the digest yields nothing.
  */
 export interface ScreeningEvidence {
+  sourceSnapshot?: ListProvenance; // Absent for historical/provider/synthetic fixtures; no freshness claim.
   engineVersion: string;
   listVersions: Record<string, number>;
   keyId: string;   // which evidence key produced this, for rotation
   nameDigest: string;   // HMAC(key, normalised name)
   tokenDigests: string[];   // per-token HMAC, keeping matching reproducible
   variantDigests: string[];   // per-expansion HMAC
-  checks: { id: string; applied: boolean; passed: boolean; note?: string }[];
+  checks: { id: string; applied: boolean; passed: boolean; note?: string;
+    status?: 'completed' | 'skipped' | 'unavailable'; provider?: string; version?: string }[];
   hitDigests: string[];   // listId:entryId:matchType:score to 3 places
 }
 

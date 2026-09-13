@@ -7,6 +7,8 @@ import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step
 interface IProofmarkRegistry {
     function isVerified(address subject, uint256 policyId) external view returns (bool);
     function policyFrozen(uint256 policyId) external view returns (bool);
+    function policyRequiresRoster(uint256 policyId) external view returns (bool);
+    function ROSTER_WITNESS_VERSION() external view returns (uint256);
 }
 
 /// @title GatedRwaNote
@@ -15,13 +17,17 @@ interface IProofmarkRegistry {
 ///      becomes visible: the gate stops working.
 ///
 /// Tokenised assets carry a legal requirement to screen holders. This contract enforces that at
-/// transfer time. What backs the decision is a mark issued on Ethereum, verified through Attestcoin
-/// and materialised on Creditcoin, rather than a signing server we operate.
+/// transfer time. New deployments require a frozen fresh-roster policy and a verified current
+/// roster witness for each holder. Source issuer approvals are proved through Attestcoin; the
+/// roster's completeness and screening quality remain issuer/publisher trust assumptions.
 ///
 /// The policy is fixed in the constructor because which policy gates the token is a property of the
 /// token. Deploy one instance under a KR policy and another under an EU policy and the same mark
 /// gets two different answers.
 contract GatedRwaNote is ERC20, Ownable2Step {
+    uint256 public constant RECOVERY_GOVERNANCE_VERSION = 1;
+    uint40 public constant MIN_RECOVERY_DELAY = 1 hours;
+
     IProofmarkRegistry public immutable REGISTRY;
 
     /// @notice The compliance policy this token requires. Immutable.
@@ -29,9 +35,62 @@ contract GatedRwaNote is ERC20, Ownable2Step {
 
     bool private complianceBypass;
 
+    enum RecoveryKind {
+        Transfer,
+        Burn
+    }
+
+    struct RecoveryRequest {
+        address from;
+        address to;
+        uint256 amount;
+        bytes32 reasonHash;
+        address proposer;
+        address approver;
+        uint40 executeAfter;
+        RecoveryKind kind;
+        bool executed;
+    }
+
+    address public recoveryProposer;
+    address public recoveryApprover;
+    uint256 public nextRecoveryId = 1;
+    mapping(uint256 => RecoveryRequest) public recoveryRequests;
+
     error SenderNotVerified(address from, uint256 policyId);
     error RecipientNotVerified(address to, uint256 policyId);
     error PolicyMustBeFrozen(uint256 policyId);
+    error PolicyMustRequireRoster(uint256 policyId);
+    error RecoveryGovernanceAlreadyConfigured();
+    error InvalidRecoveryGovernance();
+    error NotRecoveryProposer(address caller);
+    error NotRecoveryApprover(address caller);
+    error InvalidRecoveryRequest();
+    error RecoveryNotApproved(uint256 recoveryId);
+    error RecoveryDelayActive(uint256 recoveryId, uint40 executeAfter);
+
+    event RecoveryGovernanceConfigured(address indexed proposer, address indexed approver, uint40 minimumDelay);
+    event RecoveryProposed(
+        uint256 indexed recoveryId,
+        RecoveryKind indexed kind,
+        address indexed from,
+        address to,
+        uint256 amount,
+        bytes32 reasonHash,
+        address proposer,
+        uint40 executeAfter
+    );
+    event RecoveryApproved(uint256 indexed recoveryId, address indexed approver, bytes32 indexed reasonHash);
+    event RecoveryExecuted(
+        uint256 indexed recoveryId,
+        RecoveryKind indexed kind,
+        address indexed from,
+        address to,
+        uint256 amount,
+        bytes32 reasonHash,
+        address proposer,
+        address approver
+    );
 
     constructor(string memory name_, string memory symbol_, address registry, uint256 policyId, address initialOwner)
         ERC20(name_, symbol_)
@@ -39,6 +98,8 @@ contract GatedRwaNote is ERC20, Ownable2Step {
     {
         require(registry != address(0), "zero registry");
         if (!IProofmarkRegistry(registry).policyFrozen(policyId)) revert PolicyMustBeFrozen(policyId);
+        require(IProofmarkRegistry(registry).ROSTER_WITNESS_VERSION() == 1, "unsupported roster witness");
+        if (!IProofmarkRegistry(registry).policyRequiresRoster(policyId)) revert PolicyMustRequireRoster(policyId);
         REGISTRY = IProofmarkRegistry(registry);
         POLICY_ID = policyId;
     }
@@ -53,19 +114,87 @@ contract GatedRwaNote is ERC20, Ownable2Step {
         _burn(msg.sender, amount);
     }
 
-    /// @notice Compliance recovery from a holder who can no longer initiate a transfer. The
-    ///         destination still has to pass policy; use forceBurn for redemption/seizure.
-    function forceTransfer(address from, address to, uint256 amount) external onlyOwner {
-        complianceBypass = true;
-        _transfer(from, to, amount);
-        complianceBypass = false;
+    /// @notice Configures distinct proposal and approval authorities exactly once. The owner may
+    ///         nominate itself as one side, but can never satisfy both sides of a recovery alone.
+    /// @dev The one-hour floor is a technical review window, not a claim that it satisfies any
+    ///      asset, customer or jurisdiction-specific notice requirement.
+    function configureRecoveryGovernance(address proposer, address approver) external onlyOwner {
+        if (recoveryProposer != address(0)) revert RecoveryGovernanceAlreadyConfigured();
+        if (proposer == address(0) || approver == address(0) || proposer == approver) {
+            revert InvalidRecoveryGovernance();
+        }
+        recoveryProposer = proposer;
+        recoveryApprover = approver;
+        emit RecoveryGovernanceConfigured(proposer, approver, MIN_RECOVERY_DELAY);
     }
 
-    /// @notice Forced redemption/seizure path for a blocked holder.
-    function forceBurn(address from, uint256 amount) external onlyOwner {
+    /// @notice Proposes an exact forced transfer or burn with an opaque case/reason commitment.
+    ///         Cleartext case material must remain off chain.
+    function proposeRecovery(RecoveryKind kind, address from, address to, uint256 amount, bytes32 reasonHash)
+        external
+        returns (uint256 recoveryId)
+    {
+        if (msg.sender != recoveryProposer) revert NotRecoveryProposer(msg.sender);
+        if (
+            from == address(0) || amount == 0 || reasonHash == bytes32(0)
+                || (kind == RecoveryKind.Transfer && to == address(0))
+                || (kind == RecoveryKind.Burn && to != address(0))
+        ) revert InvalidRecoveryRequest();
+        if (kind == RecoveryKind.Transfer && !REGISTRY.isVerified(to, POLICY_ID)) {
+            revert RecipientNotVerified(to, POLICY_ID);
+        }
+        recoveryId = nextRecoveryId++;
+        uint40 executeAfter = uint40(block.timestamp + MIN_RECOVERY_DELAY);
+        recoveryRequests[recoveryId] = RecoveryRequest({
+            from: from,
+            to: to,
+            amount: amount,
+            reasonHash: reasonHash,
+            proposer: msg.sender,
+            approver: address(0),
+            executeAfter: executeAfter,
+            kind: kind,
+            executed: false
+        });
+        emit RecoveryProposed(recoveryId, kind, from, to, amount, reasonHash, msg.sender, executeAfter);
+    }
+
+    function approveRecovery(uint256 recoveryId) external {
+        if (msg.sender != recoveryApprover) revert NotRecoveryApprover(msg.sender);
+        RecoveryRequest storage request = recoveryRequests[recoveryId];
+        if (request.proposer == address(0) || request.approver != address(0) || request.executed) {
+            revert InvalidRecoveryRequest();
+        }
+        request.approver = msg.sender;
+        emit RecoveryApproved(recoveryId, msg.sender, request.reasonHash);
+    }
+
+    /// @notice Executes a sealed, independently approved request after the review window.
+    ///         Anyone may submit execution; authority is carried by the stored proposal/approval.
+    function executeRecovery(uint256 recoveryId) external {
+        RecoveryRequest storage request = recoveryRequests[recoveryId];
+        if (request.proposer == address(0) || request.executed) revert InvalidRecoveryRequest();
+        if (request.approver == address(0)) revert RecoveryNotApproved(recoveryId);
+        if (block.timestamp < request.executeAfter) revert RecoveryDelayActive(recoveryId, request.executeAfter);
+        if (request.kind == RecoveryKind.Transfer && !REGISTRY.isVerified(request.to, POLICY_ID)) {
+            revert RecipientNotVerified(request.to, POLICY_ID);
+        }
+
+        request.executed = true;
         complianceBypass = true;
-        _burn(from, amount);
+        if (request.kind == RecoveryKind.Transfer) _transfer(request.from, request.to, request.amount);
+        else _burn(request.from, request.amount);
         complianceBypass = false;
+        emit RecoveryExecuted(
+            recoveryId,
+            request.kind,
+            request.from,
+            request.to,
+            request.amount,
+            request.reasonHash,
+            request.proposer,
+            request.approver
+        );
     }
 
     /// @dev OpenZeppelin 5.x routes mint (from == 0), burn (to == 0) and transfer through this hook.

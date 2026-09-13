@@ -38,4 +38,4 @@ aws ec2 wait instance-running --instance-ids "$ID"
 IP=$(aws ec2 describe-instances --instance-ids "$ID" \
      --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)
 echo "instance=$ID ip=$IP sg=$SG ami=$AMI"
-echo "next: deploy/worker/sync.sh $IP"
+echo "next: deploy/worker/sync.sh $IP <private-worker-env-file>"

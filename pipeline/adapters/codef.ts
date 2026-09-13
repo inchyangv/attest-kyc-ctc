@@ -1,4 +1,5 @@
 import { publicEncrypt, constants as cryptoConstants } from 'node:crypto';
+import { VendorHttp, VendorTokenCache, VendorTransportError, VENDOR_HTTP_LIMITS, jsonObject, vendorTimeouts } from './vendor-http.js';
 import {
   docHashOf, isoDate, validateIdInput, VendorError,
   type BankAccountVendor, type IdDocType, type IdDocumentInput, type IdDocumentOutcome,
@@ -47,6 +48,9 @@ export interface CodefClientOptions {
   env: CodefEnv;
   fetch?: typeof fetch;
   now?: () => number;
+  /** Local/test policy overrides may only shorten the fixed deadlines. */
+  tokenTimeoutMs?: number;
+  productTimeoutMs?: number;
 }
 
 export interface CodefResult { code: string; message: string; extraMessage?: string; transactionId?: string }
@@ -54,33 +58,32 @@ export interface CodefResponse<T = Record<string, unknown>> { result: CodefResul
 
 export class CodefClient {
   readonly env: CodefEnv;
-  private readonly fetchImpl: typeof fetch;
-  private readonly now: () => number;
-  private token: { value: string; expiresAt: number } | null = null;
+  private readonly http: VendorHttp;
+  private readonly tokens: VendorTokenCache;
+  private readonly timeouts: ReturnType<typeof vendorTimeouts>;
 
   constructor(private readonly opts: CodefClientOptions) {
     if (!opts.clientId || !opts.clientSecret) throw new Error('CodefClient: clientId and clientSecret are required');
+    if (!Object.hasOwn(HOSTS, opts.env)) throw new Error('CodefClient: invalid environment');
     this.env = opts.env;
-    this.fetchImpl = opts.fetch ?? fetch;
-    this.now = opts.now ?? Date.now;
+    this.http = new VendorHttp(opts.fetch ?? fetch);
+    this.tokens = new VendorTokenCache(opts.now ?? Date.now, 604_800);
+    this.timeouts = vendorTimeouts(opts);
   }
 
   get host(): string { return HOSTS[this.env]; }
 
   async accessToken(force = false): Promise<string> {
-    if (!force && this.token && this.token.expiresAt > this.now() + 60_000) return this.token.value;
     const basic = Buffer.from(`${this.opts.clientId}:${this.opts.clientSecret}`).toString('base64');
-    const res = await this.fetchImpl(OAUTH_URL, {
-      method: 'POST',
-      headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded', Authorization: `Basic ${basic}` },
-      body: 'grant_type=client_credentials&scope=read',
-    });
-    const text = await res.text();
-    if (!res.ok) throw new VendorError(`CODEF token request failed: HTTP ${res.status}`, 'TOKEN');
-    const j = parseCodefBody(text) as { access_token?: string; expires_in?: number };
-    if (!j.access_token) throw new VendorError('CODEF token response carried no access_token', 'TOKEN');
-    this.token = { value: j.access_token, expiresAt: this.now() + (j.expires_in ?? 604_800) * 1000 };
-    return this.token.value;
+    return this.tokens.get(async () => {
+      const text = await this.http.text(OAUTH_URL, {
+        method: 'POST',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded', Authorization: `Basic ${basic}` },
+        body: 'grant_type=client_credentials&scope=read',
+      }, { timeoutMs: this.timeouts.token, maxBytes: VENDOR_HTTP_LIMITS.tokenBytes });
+      try { return jsonObject(parseCodefBody(text)); }
+      catch { throw new VendorTransportError('VENDOR_BAD_RESPONSE'); }
+    }, force);
   }
 
   /** RSA/PKCS#1 v1.5 with the account public key, base64. What the guide calls "RSA encryption". */
@@ -92,38 +95,37 @@ export class CodefClient {
     return publicEncrypt({ key: pem, padding: cryptoConstants.RSA_PKCS1_PADDING }, Buffer.from(plain, 'utf8')).toString('base64');
   }
 
-  /** A product request: URL-encoded JSON in, URL-encoded JSON out. Retries once on an expired token. */
+  /** No automatic replay of a paid check or transfer, including after HTTP 401. */
   async request<T = Record<string, unknown>>(path: string, body: Record<string, unknown>): Promise<CodefResponse<T>> {
-    const send = async (token: string) => this.fetchImpl(`${this.host}${path}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json', Authorization: `Bearer ${token}` },
-      body: encodeURIComponent(JSON.stringify(body)),
-    });
-    let res = await send(await this.accessToken());
-    if (res.status === 401) res = await send(await this.accessToken(true));
-    return this.parse<T>(res, path);
+    return this.product<T>(path, { headers: { 'Content-Type': 'application/json' }, body: encodeURIComponent(JSON.stringify(body)) });
   }
 
   /** multipart upload, used by the OCR products. */
   async upload<T = Record<string, unknown>>(path: string, file: Uint8Array, filename: string, mime: string): Promise<CodefResponse<T>> {
+    if (file.byteLength > 5 * 1024 * 1024) throw new VendorTransportError('VENDOR_REQUEST_LIMIT');
     const form = new FormData();
     form.append('file', new Blob([file as BlobPart], { type: mime }), filename);
-    const send = async (token: string) => this.fetchImpl(`${this.host}${path}`, {
-      method: 'POST', headers: { Accept: 'application/json', Authorization: `Bearer ${token}` }, body: form,
-    });
-    let res = await send(await this.accessToken());
-    if (res.status === 401) res = await send(await this.accessToken(true));
-    return this.parse<T>(res, path);
+    return this.product<T>(path, { body: form });
   }
 
-  private async parse<T>(res: Response, path: string): Promise<CodefResponse<T>> {
-    const text = await res.text();
-    let j: CodefResponse<T>;
-    try { j = parseCodefBody(text) as CodefResponse<T>; } catch {
-      throw new VendorError(`CODEF ${path}: unreadable response (HTTP ${res.status})`, 'BAD_RESPONSE');
+  private async product<T>(path: string, init: RequestInit): Promise<CodefResponse<T>> {
+    if (!/^\/v1\/[A-Za-z0-9/_-]+$/.test(path)) throw new Error('invalid CODEF product path');
+    const token = await this.accessToken();
+    let text: string;
+    try {
+      text = await this.http.text(`${this.host}${path}`, { ...init, method: 'POST',
+        headers: { ...init.headers, Accept: 'application/json', Authorization: `Bearer ${token}` },
+      }, { timeoutMs: this.timeouts.product, maxBytes: VENDOR_HTTP_LIMITS.productBytes });
+    } catch (e) {
+      if (e instanceof VendorTransportError && e.upstreamStatus === 401) this.tokens.invalidate(token);
+      throw e;
     }
-    if (!j || typeof j !== 'object' || !j.result) throw new VendorError(`CODEF ${path}: no result envelope (HTTP ${res.status})`, 'BAD_RESPONSE');
-    return j;
+    try {
+      const j = jsonObject(parseCodefBody(text)); const result = jsonObject(j.result);
+      if (typeof result.code !== 'string' || !/^CF-\d{5}$/.test(result.code) || typeof result.message !== 'string') throw new Error();
+      if (j.data !== undefined && j.data !== null) jsonObject(j.data);
+      return j as unknown as CodefResponse<T>;
+    } catch { throw new VendorTransportError('VENDOR_BAD_RESPONSE'); }
   }
 }
 
@@ -205,6 +207,7 @@ export interface CodefSimpleLogin {
 export type CodefLogin = CodefCertLogin | CodefSimpleLogin;
 
 export class CodefIdDocumentVendor implements IdDocumentVendor {
+  readonly biometricChecks = [] as const;
   readonly name: string;
 
   constructor(private readonly client: CodefClient, private readonly login: CodefLogin) {
@@ -265,7 +268,10 @@ export class CodefIdDocumentVendor implements IdDocumentVendor {
 
   async ocr(image: Uint8Array, docType: IdDocType): Promise<OcrFields> {
     const path = docType === 'RRC' ? '/v1/kr/etc/a/kyc/registration-card' : '/v1/kr/etc/a/kyc/drivers-license';
-    const r = await this.client.upload<Record<string, string>>(path, image, 'document.jpg', 'image/jpeg');
+    // The web intake already fully decodes the original. Preserve its format at the vendor hop.
+    const png = image.length >= 8 && Buffer.from(image.subarray(0, 8)).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+    if (!png && !(image[0] === 255 && image[1] === 216 && image[2] === 255)) throw new VendorError('OCR requires JPEG or PNG input', 'INVALID_IMAGE');
+    const r = await this.client.upload<Record<string, string>>(path, image, png ? 'document.png' : 'document.jpg', png ? 'image/png' : 'image/jpeg');
     if (r.result.code !== CODEF_OK) throw new VendorError(`OCR: ${r.result.message}`, r.result.code, r.result.transactionId);
     const d = r.data ?? {};
     const rrn = (d.resUserIdentity ?? '').replace(/\D/g, '') || undefined;

@@ -13,8 +13,17 @@
     ]
   },
   "include": [
+    "aml/**/*.ts",
     "worker/**/*.ts",
     "script/**/*.ts",
-    "pipeline/**/*.ts"
+    "pipeline/**/*.ts",
+    "examples/**/*.ts",
+    "test/cross-chain-gate.integration.ts",
+    "test/sumsub-redis.integration.ts",
+    "test/worker-crash.integration.ts",
+    "test/epoch-publication.integration.ts",
+    "test/epoch-publish-cli.integration.ts",
+    "test/vault-recovery.integration.ts",
+    "test/fixtures/epoch-publication-crash.ts"
   ]
 }

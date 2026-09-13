@@ -5,12 +5,12 @@ type Size = 'md' | 'sm';
 
 const VARIANT: Record<Variant, string> = {
   primary: 'bg-mint text-mint-fg font-semibold hover:bg-mint-hover disabled:hover:bg-mint',
-  secondary: 'border border-line-strong bg-transparent text-fg-strong hover:bg-surface-2',
+  secondary: 'border border-line-strong bg-surface text-fg-strong hover:border-mint hover:bg-mint-tint',
   ghost: 'text-fg-muted hover:bg-surface-2 hover:text-fg-strong',
 };
 const SIZE: Record<Size, string> = {
-  md: 'h-9 px-3.5 text-sm',
-  sm: 'h-7 px-2.5 text-xs',
+  md: 'h-11 px-5 text-sm',
+  sm: 'h-9 px-3 text-xs',
 };
 
 const base = 'inline-flex shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40';

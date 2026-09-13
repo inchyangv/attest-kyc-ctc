@@ -34,6 +34,9 @@
       ],
       "ethers": [
         "./node_modules/ethers"
+      ],
+      "saxes": [
+        "./node_modules/saxes"
       ]
     }
   },

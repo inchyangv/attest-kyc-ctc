@@ -20,7 +20,7 @@ export const Methods = {
   PEP_SCREENED:        1 << 17,
   ADVERSE_MEDIA:       1 << 18,
   JURISDICTION_CHECK:  1 << 19,
-  ONCHAIN_EXPOSURE:    1 << 20,
+  ONCHAIN_EXPOSURE:    1 << 20, // not earned by exact wallet-list lookup; built-in engine leaves unset
 } as const;
 
 export type MethodName = keyof typeof Methods;

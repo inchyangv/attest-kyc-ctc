@@ -25,6 +25,7 @@ const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 export class DemoIdDocumentVendor implements IdDocumentVendor {
   readonly name = 'demo:id';
   readonly live = false;
+  readonly biometricChecks = [] as const;
 
   constructor(private readonly latencyMs = 400) {}
 

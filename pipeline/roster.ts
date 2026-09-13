@@ -27,6 +27,7 @@ export interface RosterEntry {
 }
 
 export interface RosterTree {
+  formatVersion: 2;
   /** Real entries sorted by subjectKey, sentinels excluded */
   entries: RosterEntry[];
   /** All keys including sentinels. `keys[i+1]` corresponds to `entries[i]` */
@@ -44,6 +45,7 @@ export function leafIndexOf(i: number): number { return i + 1; }
 
 /** Leaves room for non-EVM subjects, CAIP-10 style. Fixed to the EVM namespace for now. */
 export const EVM_NAMESPACE = 'eip155';
+export const ROSTER_FORMAT_VERSION = 2 as const;
 
 export function subjectKey(subject: string, namespace: string = EVM_NAMESPACE): string {
   return ethers.keccak256(
@@ -61,14 +63,21 @@ export function markHash(e: RosterEntry): string {
 }
 
 export function rosterLeaf(e: RosterEntry, namespace: string = EVM_NAMESPACE): string {
-  return ethers.keccak256(
-    ethers.solidityPacked(['bytes32', 'bytes32'], [subjectKey(e.subject, namespace), markHash(e)]),
-  );
+  return leafOf(subjectKey(e.subject, namespace), markHash(e));
+}
+
+export function leafOf(key: string, mark: string): string {
+  return ethers.keccak256(ethers.solidityPacked(['bytes1', 'bytes32', 'bytes32'], ['0x00', key, mark]));
 }
 
 /** Positional internal node. Left and right are not sorted. */
 function hashNode(left: string, right: string): string {
-  return ethers.keccak256(ethers.solidityPacked(['bytes32', 'bytes32'], [left, right]));
+  return ethers.keccak256(ethers.solidityPacked(['bytes1', 'bytes32', 'bytes32'], ['0x01', left, right]));
+}
+
+export function rosterRoot(treeRoot: string, leafCount: number): string {
+  if (!Number.isSafeInteger(leafCount) || leafCount < 2) throw new Error('invalid roster leaf count');
+  return ethers.keccak256(ethers.solidityPacked(['bytes1', 'uint256', 'bytes32'], ['0x02', leafCount, treeRoot]));
 }
 
 /**
@@ -84,8 +93,10 @@ export const MIN_KEY = '0x' + '00'.repeat(32);
 export const MAX_KEY = '0x' + 'ff'.repeat(32);
 
 const SENTINEL_MARK = '0x' + '00'.repeat(32);
-const sentinelLeaf = (key: string) =>
-  ethers.keccak256(ethers.solidityPacked(['bytes32', 'bytes32'], [key, SENTINEL_MARK]));
+
+function canonicalBytes32(value: string): string | undefined {
+  return /^0x[0-9a-fA-F]{64}$/.test(value) ? value.toLowerCase() : undefined;
+}
 
 export function buildRoster(entries: readonly RosterEntry[], namespace: string = EVM_NAMESPACE): RosterTree {
   const withKeys = entries.map((e) => ({ e, k: subjectKey(e.subject, namespace) }));
@@ -105,9 +116,7 @@ export function buildRoster(entries: readonly RosterEntry[], namespace: string =
   const sorted = withKeys.map((x) => x.e);
   const keys = [MIN_KEY, ...withKeys.map((x) => x.k), MAX_KEY];
   const marks = [SENTINEL_MARK, ...sorted.map(markHash), SENTINEL_MARK];
-  const leaves = keys.map((key, i) =>
-    ethers.keccak256(ethers.solidityPacked(['bytes32', 'bytes32'], [key, marks[i]])),
-  );
+  const leaves = keys.map((key, i) => leafOf(key, marks[i]));
 
   const layers: string[][] = [leaves];
   while (layers[layers.length - 1].length > 1) {
@@ -120,35 +129,45 @@ export function buildRoster(entries: readonly RosterEntry[], namespace: string =
     layers.push(next);
   }
 
-  return { entries: sorted, keys, marks, leaves, layers, root: layers[layers.length - 1][0] };
+  return { formatVersion: ROSTER_FORMAT_VERSION, entries: sorted, keys, marks, leaves, layers,
+    root: rosterRoot(layers[layers.length - 1][0], leaves.length) };
 }
 
 export interface InclusionProof {
   index: number;
+  leafCount: number;
   siblings: string[];
 }
 
 export function inclusionProof(tree: RosterTree, index: number): InclusionProof {
-  if (index < 0 || index >= tree.leaves.length) throw new Error('inclusionProof: index out of range');
+  if (!Number.isSafeInteger(index) || index < 0 || index >= tree.leaves.length) throw new Error('inclusionProof: index out of range');
   const siblings: string[] = [];
   let idx = index;
   for (let l = 0; l < tree.layers.length - 1; l++) {
     const layer = tree.layers[l];
-    const pair = idx ^ 1;
+    const pair = idx % 2 === 0 ? idx + 1 : idx - 1;
     siblings.push(pair < layer.length ? layer[pair] : layer[idx]);   // an odd tail pairs with itself
-    idx >>= 1;
+    idx = Math.floor(idx / 2);
   }
-  return { index, siblings };
+  return { index, leafCount: tree.leaves.length, siblings };
 }
 
 export function verifyInclusion(root: string, leaf: string, proof: InclusionProof): boolean {
+  if (!Number.isSafeInteger(proof.index) || !Number.isSafeInteger(proof.leafCount)
+    || proof.leafCount < 2 || proof.index < 0 || proof.index >= proof.leafCount
+    || proof.siblings.length > 256) return false;
   let acc = leaf;
   let idx = proof.index;
+  let width = proof.leafCount;
   for (const s of proof.siblings) {
+    if (width <= 1) return false;
+    const pair = idx % 2 === 0 ? idx + 1 : idx - 1;
+    if (pair >= width && s.toLowerCase() !== acc.toLowerCase()) return false;
     acc = idx % 2 === 0 ? hashNode(acc, s) : hashNode(s, acc);
-    idx >>= 1;
+    idx = Math.floor(idx / 2);
+    width = Math.ceil(width / 2);
   }
-  return acc.toLowerCase() === root.toLowerCase();
+  return width === 1 && idx === 0 && rosterRoot(acc, proof.leafCount).toLowerCase() === root.toLowerCase();
 }
 
 /**
@@ -182,18 +201,18 @@ export function verifyNonInclusion(
   root: string, target: string, proof: NonInclusionProof, namespace: string = EVM_NAMESPACE,
 ): boolean {
   const tk = subjectKey(target, namespace);
+  const leftKey = canonicalBytes32(proof.leftKey);
+  const rightKey = canonicalBytes32(proof.rightKey);
+  if (leftKey === undefined || rightKey === undefined) return false;
   // 1. does the target fall between the two keys
-  if (!(proof.leftKey < tk && tk < proof.rightKey)) return false;
+  if (!(leftKey < tk && tk < rightKey)) return false;
   // 2. are the leaves consecutive. Without this a forged gap that skips entries passes.
   if (proof.right.index !== proof.left.index + 1) return false;
+  if (proof.left.leafCount !== proof.right.leafCount || proof.left.siblings.length !== proof.right.siblings.length) return false;
   // 3. bind each ordering key to the leaf it claims. The old shape accepted keys and leaves
   // independently, allowing real adjacent leaves to be relabelled around a present target.
-  const leftLeaf = ethers.keccak256(
-    ethers.solidityPacked(['bytes32', 'bytes32'], [proof.leftKey, proof.leftMark]),
-  );
-  const rightLeaf = ethers.keccak256(
-    ethers.solidityPacked(['bytes32', 'bytes32'], [proof.rightKey, proof.rightMark]),
-  );
+  const leftLeaf = leafOf(leftKey, proof.leftMark);
+  const rightLeaf = leafOf(rightKey, proof.rightMark);
   return verifyInclusion(root, leftLeaf, proof.left)
       && verifyInclusion(root, rightLeaf, proof.right);
 }

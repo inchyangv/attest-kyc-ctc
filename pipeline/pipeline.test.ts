@@ -8,6 +8,7 @@ import { claimsRoot, claimLeaf, discloseClaim, verifyDisclosure, newSalt, type C
 import { reconcile, normalizeName } from './reconcile.js';
 import { packAttrs, unpackAttrs } from './attrs.js';
 import { Methods, describeMethods } from './methods.js';
+import { SYNTHETIC_INDIVIDUAL_NONFACE_POLICY } from './identity-policy.js';
 import { MockAmlEngine, EXPIRY_DAYS_BY_BAND } from './aml.js';
 import {
   KrAdapter, Regime, VendorError,
@@ -196,7 +197,7 @@ const ID_OK: IdDocumentResult = {
 const BANK_OK: BankAccountResult = {
   bankCode: '004', holderName: '\uD64D\uAE38\uB3D9', holderVerified: true, oneWonVerified: true, vendor: 'fake', live: true,
 };
-const fakeId: IdDocumentVendor = { name: 'fake', live: true, async verify() { return { kind: 'verified', ...ID_OK }; } };
+const fakeId: IdDocumentVendor = { name: 'fake', live: true, biometricChecks: [], async verify() { return { kind: 'verified', ...ID_OK }; } };
 const fakeBank: BankAccountVendor = {
   name: 'fake',
   live: true,
@@ -309,6 +310,7 @@ describe('runIssuance', () => {
     walletControlProven: true,
     jurisdiction: 410,
     assurance: 3,
+    identityPolicy: SYNTHETIC_INDIVIDUAL_NONFACE_POLICY,
   };
 
   const liveId = fakeId;

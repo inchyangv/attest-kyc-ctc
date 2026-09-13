@@ -44,9 +44,49 @@ preflight() {
   need CREDITCOIN_RPC_URL
   need SOURCE_CHAIN_RPC_URL
   need DEPLOYER_PRIVATE_KEY
+  need GOVERNANCE_OWNER_PRIVATE_KEY
+  need ASSET_OWNER_PRIVATE_KEY
+  need SOURCE_ISSUER_ADDRESS
+  need RESCREEN_SIGNER_ADDRESS
+  need EPOCH_PUBLISHER_ADDRESS
+  need WORKER_PAYER_ADDRESS
+  need PROOFMARK_ISSUER_MODE
+  need DENIAL_CORRECTION_APPROVER_ADDRESS
+  need ASSET_RECOVERY_PROPOSER_ADDRESS
+  need ASSET_RECOVERY_APPROVER_ADDRESS
 
-  local addr; addr=$(cast wallet address --private-key "$DEPLOYER_PRIVATE_KEY")
-  echo "deployer: $addr"
+  local addr governance_owner asset_owner
+  addr=$(cast wallet address --private-key "$DEPLOYER_PRIVATE_KEY")
+  governance_owner=$(cast wallet address --private-key "$GOVERNANCE_OWNER_PRIVATE_KEY")
+  asset_owner=$(cast wallet address --private-key "$ASSET_OWNER_PRIVATE_KEY")
+  echo "deployer        : $addr"
+  echo "governance owner: $governance_owner"
+  echo "asset owner     : $asset_owner"
+
+  local -a role_names=(deployer governance-owner source-issuer source-rescreener epoch-publisher worker-payer asset-owner denial-correction-approver asset-recovery-proposer asset-recovery-approver)
+  local -a role_addresses=("$addr" "$governance_owner" "$SOURCE_ISSUER_ADDRESS" "$RESCREEN_SIGNER_ADDRESS" "$EPOCH_PUBLISHER_ADDRESS" "$WORKER_PAYER_ADDRESS" "$asset_owner" "$DENIAL_CORRECTION_APPROVER_ADDRESS" "$ASSET_RECOVERY_PROPOSER_ADDRESS" "$ASSET_RECOVERY_APPROVER_ADDRESS")
+  local i j normalized_i normalized_j
+  for ((i=0; i<${#role_addresses[@]}; i++)); do
+    [[ "${role_addresses[$i]}" =~ ^0x[0-9a-fA-F]{40}$ && ! "${role_addresses[$i]}" =~ ^0x0{40}$ ]] \
+      || { red "x invalid ${role_names[$i]} address"; exit 1; }
+    normalized_i=$(echo "${role_addresses[$i]}" | tr 'A-F' 'a-f')
+    for ((j=i+1; j<${#role_addresses[@]}; j++)); do
+      normalized_j=$(echo "${role_addresses[$j]}" | tr 'A-F' 'a-f')
+      [ "$normalized_i" != "$normalized_j" ] \
+        || { red "x runtime roles ${role_names[$i]} and ${role_names[$j]} must use different principals"; exit 1; }
+    done
+  done
+  npx --no-install tsx "$ROOT/script/check-runtime-roles.ts" "${role_addresses[@]}" >/dev/null
+  grn "  ok runtime role principals are distinct"
+
+  # T-06: this contract family stores lifecycle state by subject, not issuer scope. Require an
+  # explicit product decision and refuse to label/deploy it as an isolated multi-issuer release.
+  if npx --no-install tsx "$ROOT/script/check-issuer-mode.ts" "$PROOFMARK_ISSUER_MODE" "$SOURCE_ISSUER_ADDRESS"; then
+    grn "  ok issuer release mode verified"
+  else
+    red "x issuer release mode is unsafe or undecided. Stopping before any transaction."
+    exit 1
+  fi
 
   local ccid; ccid=$(cast chain-id --rpc-url "$CREDITCOIN_RPC_URL")
   local spid; spid=$(cast chain-id --rpc-url "$SOURCE_CHAIN_RPC_URL")
@@ -64,6 +104,9 @@ preflight() {
   # Print nonces so concurrent use by another session is visible
   echo "CC3 nonce    : $(cast nonce "$addr" --rpc-url "$CREDITCOIN_RPC_URL")"
   echo "Sepolia nonce: $(cast nonce "$addr" --rpc-url "$SOURCE_CHAIN_RPC_URL")"
+  echo "governance CC3 nonce    : $(cast nonce "$governance_owner" --rpc-url "$CREDITCOIN_RPC_URL")"
+  echo "governance Sepolia nonce: $(cast nonce "$governance_owner" --rpc-url "$SOURCE_CHAIN_RPC_URL")"
+  echo "asset-owner CC3 nonce   : $(cast nonce "$asset_owner" --rpc-url "$CREDITCOIN_RPC_URL")"
 
   echo
   echo "Reading supported chains to verify the chainKey for configureSource($SOURCE_CHAIN_KEY, ...):"
@@ -87,7 +130,10 @@ deploy() {
   sleep 5
 
   cd "$ROOT"
-  local addr; addr=$(cast wallet address --private-key "$DEPLOYER_PRIVATE_KEY")
+  local addr governance_owner asset_owner
+  addr=$(cast wallet address --private-key "$DEPLOYER_PRIVATE_KEY")
+  governance_owner=$(cast wallet address --private-key "$GOVERNANCE_OWNER_PRIVATE_KEY")
+  asset_owner=$(cast wallet address --private-key "$ASSET_OWNER_PRIVATE_KEY")
 
   # 1. EvmV1Decoder library on CC3
   # The documented pre-deployed Decoder (0x731c34...F9f) has a different runtime size from
@@ -107,7 +153,7 @@ deploy() {
   asc=$(forge create --broadcast --rpc-url "$CREDITCOIN_RPC_URL" \
       --private-key "$DEPLOYER_PRIVATE_KEY" \
       --libraries "${DECODER_PATH}:${decoder}" \
-      src/ProofmarkASC.sol:ProofmarkASC --constructor-args "$addr" \
+      src/ProofmarkASC.sol:ProofmarkASC --constructor-args "$governance_owner" \
       | awk '/Deployed to:/{print $3}')
   [ -n "$asc" ] || { red "x ASC deployment failed. Check the library link."; exit 1; }
   grn "   ProofmarkASC = $asc"
@@ -123,26 +169,32 @@ deploy() {
 
   # ── 4. ComplianceSource (Sepolia) ─────────────────────────────────
   echo "── 4/8  ComplianceSource → Sepolia"
-  local srcaddr
-  srcaddr=$(forge create --broadcast --rpc-url "$SOURCE_CHAIN_RPC_URL" \
+  local srcaddr srctx srcoutput
+  srcoutput=$(forge create --broadcast --rpc-url "$SOURCE_CHAIN_RPC_URL" \
       --private-key "$DEPLOYER_PRIVATE_KEY" \
-      src/ComplianceSource.sol:ComplianceSource --constructor-args "$addr" \
-      | awk '/Deployed to:/{print $3}')
+      src/ComplianceSource.sol:ComplianceSource --constructor-args "$governance_owner")
+  srcaddr=$(printf '%s\n' "$srcoutput" | awk '/Deployed to:/{print $3}')
+  srctx=$(printf '%s\n' "$srcoutput" | awk '/Transaction hash:/{print $3}')
+  [[ "$srcaddr" =~ ^0x[0-9a-fA-F]{40}$ && "$srctx" =~ ^0x[0-9a-fA-F]{64}$ ]] || { red "x source deployment address/transaction missing; preserve deployment output and reconcile before continuing"; exit 1; }
   grn "   ComplianceSource = $srcaddr"
 
   # 5. Cross-registration
   # The ASC rejects every proof until configureSource runs. Fail closed by design.
   echo "── 5/8  asc.configureSource(chainKey=$SOURCE_CHAIN_KEY, $srcaddr)"
   cast send "$asc" "configureSource(uint64,address)" "$SOURCE_CHAIN_KEY" "$srcaddr" \
-      --rpc-url "$CREDITCOIN_RPC_URL" --private-key "$DEPLOYER_PRIVATE_KEY" >/dev/null
+      --rpc-url "$CREDITCOIN_RPC_URL" --private-key "$GOVERNANCE_OWNER_PRIVATE_KEY" >/dev/null
   grn "   configureSource done"
 
-  echo "── 6/8  src.setIssuer($addr, true) / setEpochPublisher"
-  cast send "$srcaddr" "setIssuer(address,bool)" "$addr" true \
-      --rpc-url "$SOURCE_CHAIN_RPC_URL" --private-key "$DEPLOYER_PRIVATE_KEY" >/dev/null
-  cast send "$srcaddr" "setEpochPublisher(address,bool)" "$addr" true \
-      --rpc-url "$SOURCE_CHAIN_RPC_URL" --private-key "$DEPLOYER_PRIVATE_KEY" >/dev/null
-  grn "   issuer and epoch publisher registered"
+  echo "── 6/8  source issuer, epoch publisher and denial-correction approver"
+  cast send "$srcaddr" "setIssuer(address,bool)" "$SOURCE_ISSUER_ADDRESS" true \
+      --rpc-url "$SOURCE_CHAIN_RPC_URL" --private-key "$GOVERNANCE_OWNER_PRIVATE_KEY" >/dev/null
+  cast send "$srcaddr" "setIssuer(address,bool)" "$RESCREEN_SIGNER_ADDRESS" true \
+      --rpc-url "$SOURCE_CHAIN_RPC_URL" --private-key "$GOVERNANCE_OWNER_PRIVATE_KEY" >/dev/null
+  cast send "$srcaddr" "setEpochPublisher(address,bool)" "$EPOCH_PUBLISHER_ADDRESS" true \
+      --rpc-url "$SOURCE_CHAIN_RPC_URL" --private-key "$GOVERNANCE_OWNER_PRIVATE_KEY" >/dev/null
+  cast send "$srcaddr" "setDenialCorrectionApprover(address,bool)" "$DENIAL_CORRECTION_APPROVER_ADDRESS" true \
+      --rpc-url "$SOURCE_CHAIN_RPC_URL" --private-key "$GOVERNANCE_OWNER_PRIVATE_KEY" >/dev/null
+  grn "   issuer, epoch publisher and separate correction approver registered"
 
   # 7. Policies. Production pins live regime 1; pilot pins sandbox regime 2. Both pin KR
   # jurisdiction and this issuer, and are frozen before an asset can bind to them.
@@ -150,21 +202,21 @@ deploy() {
   #   ID_DOC_AUTHENTICITY(1<<2) | BANK_ACCOUNT(1<<5) | SANCTIONS_SCREENED(1<<16) = 0x10024
   echo "-- 7/8  register and freeze KR production + pilot policies -> Registry"
   local krmask=$((1<<2 | 1<<5 | 1<<16))
-  cast send "$reg" "registerPolicy((uint32,uint8,uint40,uint16,uint16,address,bool,bool))" \
-      "($krmask,2,2592000,1,410,$addr,false,false)" \
-      --rpc-url "$CREDITCOIN_RPC_URL" --private-key "$DEPLOYER_PRIVATE_KEY" >/dev/null
+  cast send "$reg" "registerPolicyForKind((uint32,uint8,uint40,uint16,uint16,address,bool,bool),uint8)" \
+      "($krmask,2,2592000,1,410,$SOURCE_ISSUER_ADDRESS,true,false)" 1 \
+      --rpc-url "$CREDITCOIN_RPC_URL" --private-key "$GOVERNANCE_OWNER_PRIVATE_KEY" >/dev/null
   local productionpolicy; productionpolicy=$(cast call "$reg" "nextPolicyId()(uint256)" --rpc-url "$CREDITCOIN_RPC_URL")
   productionpolicy=$(( ${productionpolicy%% *} - 1 ))
   cast send "$reg" "freezePolicy(uint256)" "$productionpolicy" \
-      --rpc-url "$CREDITCOIN_RPC_URL" --private-key "$DEPLOYER_PRIVATE_KEY" >/dev/null
+      --rpc-url "$CREDITCOIN_RPC_URL" --private-key "$GOVERNANCE_OWNER_PRIVATE_KEY" >/dev/null
 
-  cast send "$reg" "registerPolicy((uint32,uint8,uint40,uint16,uint16,address,bool,bool))" \
-      "($krmask,2,604800,2,410,$addr,false,false)" \
-      --rpc-url "$CREDITCOIN_RPC_URL" --private-key "$DEPLOYER_PRIVATE_KEY" >/dev/null
+  cast send "$reg" "registerPolicyForKind((uint32,uint8,uint40,uint16,uint16,address,bool,bool),uint8)" \
+      "($krmask,2,604800,2,410,$SOURCE_ISSUER_ADDRESS,true,false)" 1 \
+      --rpc-url "$CREDITCOIN_RPC_URL" --private-key "$GOVERNANCE_OWNER_PRIVATE_KEY" >/dev/null
   local pilotpolicy; pilotpolicy=$(cast call "$reg" "nextPolicyId()(uint256)" --rpc-url "$CREDITCOIN_RPC_URL")
   pilotpolicy=$(( ${pilotpolicy%% *} - 1 ))
   cast send "$reg" "freezePolicy(uint256)" "$pilotpolicy" \
-      --rpc-url "$CREDITCOIN_RPC_URL" --private-key "$DEPLOYER_PRIVATE_KEY" >/dev/null
+      --rpc-url "$CREDITCOIN_RPC_URL" --private-key "$GOVERNANCE_OWNER_PRIVATE_KEY" >/dev/null
   grn "   production policyId = $productionpolicy (regime 1, 30d)"
   grn "   pilot policyId      = $pilotpolicy (regime 2, 7d)"
 
@@ -174,8 +226,11 @@ deploy() {
   note=$(forge create --broadcast --rpc-url "$CREDITCOIN_RPC_URL" \
       --private-key "$DEPLOYER_PRIVATE_KEY" \
       src/GatedRwaNote.sol:GatedRwaNote \
-      --constructor-args "KR Pilot Credit Note" "KPCN" "$reg" "$pilotpolicy" "$addr" \
+      --constructor-args "KR Pilot Credit Note" "KPCN" "$reg" "$pilotpolicy" "$asset_owner" \
       | awk '/Deployed to:/{print $3}')
+  cast send "$note" "configureRecoveryGovernance(address,address)" \
+      "$ASSET_RECOVERY_PROPOSER_ADDRESS" "$ASSET_RECOVERY_APPROVER_ADDRESS" \
+      --rpc-url "$CREDITCOIN_RPC_URL" --private-key "$ASSET_OWNER_PRIVATE_KEY" >/dev/null
   grn "   GatedRwaNote = $note"
 
   # Record
@@ -183,7 +238,22 @@ deploy() {
 {
   "network": { "hub": "cc3-testnet", "hubChainId": 102031, "source": "sepolia", "sourceChainId": 11155111 },
   "sourceChainKey": $SOURCE_CHAIN_KEY,
+  "issuerMode": "$PROOFMARK_ISSUER_MODE",
+  "sourceDeployment": { "transactionHash": "$srctx" },
   "deployer": "$addr",
+  "roles": {
+    "governanceOwner": "$governance_owner",
+    "sourceIssuer": "$SOURCE_ISSUER_ADDRESS",
+    "sourceRescreener": "$RESCREEN_SIGNER_ADDRESS",
+    "epochPublisher": "$EPOCH_PUBLISHER_ADDRESS",
+    "workerPayer": "$WORKER_PAYER_ADDRESS",
+    "assetOwner": "$asset_owner"
+  },
+  "governance": {
+    "denialCorrectionApprover": "$DENIAL_CORRECTION_APPROVER_ADDRESS",
+    "assetRecoveryProposer": "$ASSET_RECOVERY_PROPOSER_ADDRESS",
+    "assetRecoveryApprover": "$ASSET_RECOVERY_APPROVER_ADDRESS"
+  },
   "contracts": {
     "EvmV1Decoder":      "$decoder",
     "ProofmarkASC":      "$asc",
@@ -210,7 +280,13 @@ JSON
   echo -n "note.POLICY_ID       : "; cast call "$note" "POLICY_ID()(uint256)"       --rpc-url "$CREDITCOIN_RPC_URL"
   echo -n "reg.policyFrozen(1) : "; cast call "$reg" "policyFrozen(uint256)(bool)" 1 --rpc-url "$CREDITCOIN_RPC_URL"
   echo -n "reg.policyFrozen(2) : "; cast call "$reg" "policyFrozen(uint256)(bool)" 2 --rpc-url "$CREDITCOIN_RPC_URL"
-  echo -n "src.isIssuer(deployer): "; cast call "$srcaddr" "isIssuer(address)(bool)" "$addr" --rpc-url "$SOURCE_CHAIN_RPC_URL"
+  echo -n "asc.owner              : "; cast call "$asc" "owner()(address)" --rpc-url "$CREDITCOIN_RPC_URL"
+  echo -n "source.owner           : "; cast call "$srcaddr" "owner()(address)" --rpc-url "$SOURCE_CHAIN_RPC_URL"
+  echo -n "note.owner             : "; cast call "$note" "owner()(address)" --rpc-url "$CREDITCOIN_RPC_URL"
+  echo -n "src.isIssuer(deployer) : "; cast call "$srcaddr" "isIssuer(address)(bool)" "$addr" --rpc-url "$SOURCE_CHAIN_RPC_URL"
+  echo -n "src.isIssuer(dedicated): "; cast call "$srcaddr" "isIssuer(address)(bool)" "$SOURCE_ISSUER_ADDRESS" --rpc-url "$SOURCE_CHAIN_RPC_URL"
+  echo -n "src.isIssuer(rescreener): "; cast call "$srcaddr" "isIssuer(address)(bool)" "$RESCREEN_SIGNER_ADDRESS" --rpc-url "$SOURCE_CHAIN_RPC_URL"
+  echo -n "src.publisher(dedicated): "; cast call "$srcaddr" "isEpochPublisher(address)(bool)" "$EPOCH_PUBLISHER_ADDRESS" --rpc-url "$SOURCE_CHAIN_RPC_URL"
 
   # Same deployer and same nonce give the same CREATE address on different chains.
   # When that happens, passing the wrong address to configureSource looks identical,
@@ -249,7 +325,7 @@ JSON
   fi
 
   echo
-  grn "Deployed and verified. Next: issue on Sepolia, let the worker submit the proof, then isVerified turns true and note.mint succeeds."
+  grn "Deployed with a closed fresh-roster gate. Next: issue, publish an issuer-authorized bounded epoch, relay it, then cache each holder's current roster witness. Direct issuance alone cannot open note.mint."
   ylw "When reproducing: always pass --from to cast call. Without it onlyOwner fires first and you draw the wrong conclusion."
   ylw "The 'missing field mixHash' errors from forge/cast on CC3 come from the Substrate block format and are harmless."
 }

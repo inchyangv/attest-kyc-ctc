@@ -8,35 +8,97 @@ permissions:
   contents: read
 
 jobs:
+  zk-experimental:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.15.0
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            zk/package-lock.json
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1
+        with:
+          version: v1.7.1
+      - run: npm ci
+      - run: npm --prefix zk ci
+      # Residual low-severity proving-tool advisories are documented in zk/SECURITY.md.
+      # Fail on newly introduced moderate/high/critical issues; no force downgrades.
+      - run: npm --prefix zk audit --omit=dev --audit-level=moderate
+      - run: npm run test:zk
+
   solidity:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: recursive
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 24
+          node-version: 24.15.0
           cache: npm
-      - uses: foundry-rs/foundry-toolchain@v1
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1
+        with:
+          version: v1.7.1
       - run: npm ci
       - run: forge fmt --check
       - run: forge test -vv
+      - run: npx tsx --test test/roster-abi.test.ts
+      - run: npx tsx --test test/schema-abi.test.ts
+      - run: npx tsx --test test/epoch-abi.test.ts
+      - run: npx tsx --test test/roster-authorization-abi.test.ts
+      - run: npx tsx --test test/roster-witness-abi.test.ts
+      - run: npx tsx --test test/onchain-state-abi.test.ts
+      - run: npx tsx --test test/issuer-key-abi.test.ts
+      - run: npx tsx --test test/roster-source-abi.test.ts
+      - run: npx tsx --test test/roster-bundle-abi.test.ts
+      - run: npx tsx --test test/issuance-evm.integration.ts
+      - run: npx tsx --test test/cross-chain-gate.integration.ts
+      - run: npx tsx --test test/relay-evm.integration.ts
+      - run: npx tsx --test test/source-reorg.integration.ts
+      - run: npx tsx --test test/t16-recovery.integration.ts
+      - run: npx tsx --test test/worker-crash.integration.ts
+      - run: npx tsx --test test/epoch-publication.integration.ts test/epoch-publish-cli.integration.ts
 
   typescript:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          node-version: 24
+          submodules: recursive
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.15.0
           cache: npm
       - run: npm ci
       - run: npm audit --omit=dev
       - run: npm run typecheck
+      # Documentation lint is distinct from test execution and public release readiness.
+      - run: npm run check:submission -- --docs-only
       - run: bash aml/fetch-lists.sh
-      - run: npm run test:ts
-      - run: npx tsx aml/eval.ts
+      - run: npx tsx aml/build-index.ts
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1
+        with:
+          version: v1.7.1
+      - run: npm run test:evidence
+      - run: npm run check:submission
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: local-test-evidence-${{ github.sha }}
+          path: artifacts/test-evidence/
+          if-no-files-found: error
+          retention-days: 14
+      - run: npm run test:bank-redis
+      - run: npm run test:providers-redis
+      - run: npm run test:issuance-redis
+      - run: npm run test:issuance-budget
+      # Frozen internal regression gate. Approved independent holdout data is evaluated separately
+      # with eval:aml:holdout and is never committed or relabelled as this CI corpus.
+      - run: npm run eval:aml
 
   web:
     runs-on: ubuntu-latest
@@ -44,15 +106,21 @@ jobs:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 24
+          node-version: 24.15.0
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci
+        working-directory: .
+      - run: npm ci
       - run: npm audit --omit=dev
       - run: npm run lint
+      - run: npm run test:api
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1
+        with:
+          version: v1.7.1
       - run: npm run build
         env:
           NEXT_PUBLIC_CC3_RPC: https://rpc.cc3-testnet.creditcoin.network
@@ -61,3 +129,37 @@ jobs:
           NEXT_PUBLIC_REGISTRY: "0x2F4E5e1270f90E51251651caf08547393e3C0572"
           NEXT_PUBLIC_SOURCE: "0xA9A34586303b9fD92e090F9bb1D332DC854c72B9"
           NEXT_PUBLIC_NOTE: "0xa74aB3De359a55A729f9185Fe4Afe90526E585CA"
+      # ID decoder must survive output-file tracing before a deployment is considered usable.
+      - run: npm run test:id-image-build
+      - run: npx playwright install --with-deps chromium
+        working-directory: .
+      # Built browser -> real local API/Redis/vault/EVM and the freshly fetched artifact;
+      # injected wallet/native proof and all identity/bank inputs remain synthetic fixtures.
+      - run: npm run test:issuance-e2e
+        working-directory: .
+      - run: npm run test:onchain-ui
+        working-directory: .
+      - run: npm run test:synthetic-ui
+        working-directory: .
+      - run: npm run test:training-ui
+        working-directory: .
+      - run: npm run test:winning-ui
+        working-directory: .
+
+  supply-chain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.15.0
+      - run: npm ci --ignore-scripts
+      - run: npm run supply-chain -- --write --audit
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: supply-chain-${{ github.sha }}
+          path: artifacts/supply-chain/
+          if-no-files-found: error
+          retention-days: 14

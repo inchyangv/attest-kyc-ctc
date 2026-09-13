@@ -1,6 +1,6 @@
 import type { InputHTMLAttributes, ReactNode } from 'react';
 
-const inputCls = 'h-9 w-full rounded-sm border border-line bg-sunk px-3 text-[13px] text-fg-strong placeholder:text-fg-subtle transition-colors hover:border-line-strong focus:border-mint disabled:opacity-50';
+const inputCls = 'h-11 w-full rounded-sm border border-line-strong bg-sunk px-3.5 text-sm text-fg-strong placeholder:text-fg-subtle transition-colors hover:border-fg-subtle focus:border-mint disabled:opacity-50';
 
 export function Input({ className = '', ...rest }: InputHTMLAttributes<HTMLInputElement>) {
   return <input className={`${inputCls} ${className}`} {...rest} />;

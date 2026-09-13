@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { VendorError, type BankAccountVendor } from './kr.js';
+import { VendorHttp, VendorTokenCache, VendorTransportError, VENDOR_HTTP_LIMITS, parseVendorJson, vendorTimeouts } from './vendor-http.js';
 
 /**
  * Korea Financial Telecommunications and Clearings Institute (KFTC) Open Banking connector,
@@ -42,6 +43,8 @@ export interface OpenBankingOptions {
   now?: () => Date;
   /** Random alphanumerics for bank_tran_id and the auth code. Injectable for tests. */
   random?: (n: number) => string;
+  tokenTimeoutMs?: number;
+  productTimeoutMs?: number;
 }
 
 const ALNUM = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
@@ -59,20 +62,24 @@ export function kstDtime(d: Date): string {
 
 export class OpenBankingAccountVendor implements BankAccountVendor {
   readonly name: string;
-  private readonly fetchImpl: typeof fetch;
+  private readonly http: VendorHttp;
   private readonly now: () => Date;
   private readonly random: (n: number) => string;
-  private token: { value: string; expiresAt: number } | null = null;
+  private readonly tokens: VendorTokenCache;
+  private readonly timeouts: ReturnType<typeof vendorTimeouts>;
 
   constructor(private readonly opts: OpenBankingOptions) {
     for (const k of ['clientId', 'clientSecret', 'clientUseCode', 'cntrAccountNum', 'wdPassPhrase'] as const) {
       if (!opts[k]) throw new Error(`OpenBankingAccountVendor: ${k} is required`);
     }
     if (!/^[A-Z0-9]{10}$/.test(opts.clientUseCode)) throw new Error('OpenBankingAccountVendor: clientUseCode must be 10 characters');
+    if (!Object.hasOwn(HOSTS, opts.env)) throw new Error('OpenBankingAccountVendor: invalid environment');
     this.name = `openbanking:${opts.env}`;
-    this.fetchImpl = opts.fetch ?? fetch;
+    this.http = new VendorHttp(opts.fetch ?? fetch);
     this.now = opts.now ?? (() => new Date());
     this.random = opts.random ?? randomAlnum;
+    this.tokens = new VendorTokenCache(() => this.now().getTime(), 7_775_999);
+    this.timeouts = vendorTimeouts(opts);
   }
 
   get host(): string { return HOSTS[this.opts.env]; }
@@ -81,31 +88,28 @@ export class OpenBankingAccountVendor implements BankAccountVendor {
   bankTranId(): string { return `${this.opts.clientUseCode}U${this.random(9)}`; }
 
   async accessToken(force = false): Promise<string> {
-    if (!force && this.token && this.token.expiresAt > this.now().getTime() + 60_000) return this.token.value;
     const form = new URLSearchParams({
       client_id: this.opts.clientId, client_secret: this.opts.clientSecret, scope: 'oob', grant_type: 'client_credentials',
     });
-    const res = await this.fetchImpl(`${this.host}/oauth/2.0/token`, {
+    return this.tokens.get(async () => parseVendorJson(await this.http.text(`${this.host}/oauth/2.0/token`, {
       method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' }, body: form.toString(),
-    });
-    const j = await res.json().catch(() => ({})) as { access_token?: string; expires_in?: number; rsp_code?: string; rsp_message?: string };
-    if (!res.ok || !j.access_token) {
-      throw new VendorError(`Open Banking token: ${j.rsp_message ?? `HTTP ${res.status}`}`, j.rsp_code ?? 'TOKEN');
-    }
-    this.token = { value: j.access_token, expiresAt: this.now().getTime() + (j.expires_in ?? 7_775_999) * 1000 };
-    return this.token.value;
+    }, { timeoutMs: this.timeouts.token, maxBytes: VENDOR_HTTP_LIMITS.tokenBytes })), force);
   }
 
   private async post<T>(path: string, body: Record<string, unknown>): Promise<T> {
-    const send = async (token: string) => this.fetchImpl(`${this.host}${path}`, {
+    const token = await this.accessToken();
+    let text: string;
+    try { text = await this.http.text(`${this.host}${path}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json; charset=UTF-8', Authorization: `Bearer ${token}` },
       body: JSON.stringify(body),
-    });
-    let res = await send(await this.accessToken());
-    if (res.status === 401) res = await send(await this.accessToken(true));
-    const j = await res.json().catch(() => null);
-    if (!j || typeof j !== 'object') throw new VendorError(`Open Banking ${path}: unreadable response (HTTP ${res.status})`, 'BAD_RESPONSE');
+    }, { timeoutMs: this.timeouts.product, maxBytes: VENDOR_HTTP_LIMITS.productBytes });
+    } catch (e) {
+      if (e instanceof VendorTransportError && e.upstreamStatus === 401) this.tokens.invalidate(token);
+      throw e;
+    }
+    const j = parseVendorJson(text);
+    if (typeof j.rsp_code !== 'string' || !/^[A-Z0-9]{5}$/.test(j.rsp_code) || typeof j.rsp_message !== 'string') throw new VendorTransportError('VENDOR_BAD_RESPONSE');
     return j as T;
   }
 

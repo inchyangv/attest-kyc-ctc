@@ -12,8 +12,23 @@ pragma solidity ^0.8.30;
 ///
 /// Why pack: the whole encoded transaction travels as calldata, so a smaller log costs less
 /// gas to verify. Keeping attrs indexed lets the ASC read it straight from topics with no
-/// abi.decode. The reserved 64 bits leave room to extend without changing the event signature.
+/// abi.decode. Schema 0 requires all reserved bits to be zero; extension requires a new decoder.
 library MarkAttrs {
+    // Schema 0 is the original eight-field layout. All 64 reserved bits MUST remain zero.
+    // A future version needs an explicit decoder/migration, not silent bit truncation.
+    uint256 internal constant SCHEMA_VERSION = 0;
+    uint32 internal constant SUPPORTED_METHODS = 0x001f07ff;
+
+    function validSchema(bytes32 a) internal pure returns (bool) {
+        return uint64(uint256(a)) == 0 && (kind(a) == 1 || kind(a) == 2) && assurance(a) >= 1 && assurance(a) <= 5
+            && (regime(a) == 1 || regime(a) == 2) && jurisdiction(a) >= 1 && jurisdiction(a) <= 999
+            && (methods(a) & ~SUPPORTED_METHODS) == 0 && issuedAt(a) != 0 && expiry(a) > issuedAt(a);
+    }
+
+    function validAtIssuance(bytes32 a, uint256 now_) internal pure returns (bool) {
+        return validSchema(a) && issuedAt(a) <= now_ && expiry(a) > now_;
+    }
+
     function pack(
         uint8 kind_,
         uint8 assurance_,

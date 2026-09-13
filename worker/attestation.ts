@@ -1,5 +1,6 @@
 import { log } from './log.js';
-import { Backoff, sleep, withRetry } from './retry.js';
+import { Backoff, sleep, withRetry, throwIfStopped } from './retry.js';
+import { proofJson } from './proof-http.js';
 
 /**
  * Attested-height polling.
@@ -21,20 +22,12 @@ export class AttestationWatcher {
     return withRetry(
       `attested-height(chainKey=${this.chainKey})`,
       async () => {
-        const ctl = new AbortController();
-        const timer = setTimeout(() => ctl.abort(), 15_000);
-        try {
-          const res = await fetch(
-            `${this.proofBuilderUrl}/api/v1/attested-height/${this.chainKey}`,
-            { signal: ctl.signal },
-          );
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          const body = (await res.json()) as { attestedHeight: number };
-          if (typeof body.attestedHeight !== 'number') throw new Error('attestedHeight field missing');
-          return body.attestedHeight;
-        } finally {
-          clearTimeout(timer);
+        const body = await proofJson(`${this.proofBuilderUrl}/api/v1/attested-height/${this.chainKey}`,
+          { signal, timeoutMs: 15_000, maxBytes: 64 * 1024 }) as { attestedHeight?: unknown } | null;
+        if (!body || typeof body.attestedHeight !== 'number' || !Number.isSafeInteger(body.attestedHeight) || body.attestedHeight < 0) {
+          throw new Error('ATTESTED_HEIGHT_INVALID');
         }
+        return body.attestedHeight;
       },
       { attempts: 5, backoff: new Backoff(500, 10_000), signal },
     );
@@ -47,15 +40,16 @@ export class AttestationWatcher {
   async waitFor(height: number, signal?: AbortSignal): Promise<void> {
     let logged = false;
     for (;;) {
-      if (signal?.aborted) throw new Error('waitFor: aborted');
+      throwIfStopped(signal);
 
       let latest: number;
       try {
         latest = await this.latestAttestedHeight(signal);
       } catch (e: any) {
+        throwIfStopped(signal);
         // Exhausting the retries is not giving up. The next poll cycle tries again.
         log.warn(`attested-height poll failed, retrying in ${this.pollMs}ms: ${e?.message ?? e}`);
-        await sleep(this.pollMs);
+        await sleep(this.pollMs, signal);
         continue;
       }
 
@@ -68,7 +62,7 @@ export class AttestationWatcher {
         log.info(`waiting for block ${height} to be attested. Latest ${latest}, ${behind} blocks behind (~${(behind * 12 / 60).toFixed(1)} min)`);
         logged = true;
       }
-      await sleep(this.pollMs);
+      await sleep(this.pollMs, signal);
     }
   }
 }

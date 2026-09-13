@@ -2,7 +2,7 @@ import { test, describe, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 
-import { loadLists } from '../aml/loader.js';
+import { loadHistoricalLists as loadLists } from '../aml/loader.js';
 import { ListBackedAmlEngine } from '../aml/engine.js';
 import { KrAdapter, Regime, type IdDocumentVendor, type BankAccountVendor } from './adapters/kr.js';
 import { runIssuance, type IssueRequest } from './issue.js';
@@ -10,6 +10,7 @@ import { unpackAttrs } from './attrs.js';
 import { Methods } from './methods.js';
 import type { AmlEngine } from './aml.js';
 import { containsPii } from './pii-guard.js';
+import { SYNTHETIC_SCREENING_ONLY_POLICY } from './identity-policy.js';
 
 /**
  * The real AML engine wired into the issuance pipeline.
@@ -20,16 +21,16 @@ import { containsPii } from './pii-guard.js';
  *   - and therefore which policies our own mark passes and which it fails
  */
 
-const HAVE_LISTS = existsSync('data/raw/ofac_sdn.xml');
+const HAVE_LISTS = existsSync('data/raw/current.json') || existsSync('data/raw/ofac_sdn.xml');
 
 /** Deployed policyId 1, KR VASP production */
 const POLICY_KR_VASP =
   Methods.ID_DOC_AUTHENTICITY | Methods.BANK_ACCOUNT | Methods.SANCTIONS_SCREENED;
 
-/** policyId 2, KR pilot. Built only from checks we actually perform. */
+/** Local screening-only fixture, NOT the content of an existing frozen deployed policy. */
 const POLICY_PILOT =
   Methods.WALLET_CONTROL | Methods.JURISDICTION_CHECK |
-  Methods.SANCTIONS_SCREENED | Methods.ONCHAIN_EXPOSURE;
+  Methods.SANCTIONS_SCREENED;
 
 describe('real AML engine with the issuance pipeline', { skip: HAVE_LISTS ? false : 'source lists missing from data/raw (run bash aml/fetch-lists.sh)' }, () => {
   let aml: AmlEngine;
@@ -47,7 +48,8 @@ describe('real AML engine with the issuance pipeline', { skip: HAVE_LISTS ? fals
     bankAccount: null,
     walletControlProven: true,
     jurisdiction: 410,
-    assurance: 3,
+    assurance: 1,
+    identityPolicy: SYNTHETIC_SCREENING_ONLY_POLICY,
   };
 
   test('with real lists, SANCTIONS_SCREENED is earned', async () => {
@@ -58,7 +60,7 @@ describe('real AML engine with the issuance pipeline', { skip: HAVE_LISTS ? fals
     const names = new Set(out.methodNames);
     assert.ok(names.has('SANCTIONS_SCREENED'), 'we read the real lists, so the bit belongs here');
     assert.ok(names.has('JURISDICTION_CHECK'));
-    assert.ok(names.has('ONCHAIN_EXPOSURE'), 'we compared against OFAC sanctioned wallets, so this belongs here');
+    assert.ok(!names.has('ONCHAIN_EXPOSURE'), 'exact listed-wallet lookup must not claim graph/exposure analysis');
     assert.ok(names.has('WALLET_CONTROL'));
   });
 
@@ -128,6 +130,7 @@ describe('real AML engine with the issuance pipeline', { skip: HAVE_LISTS ? fals
     const idVendor: IdDocumentVendor = {
       name: 'fake',
       live: true,
+      biometricChecks: [],
       async verify() {
         return { kind: 'verified', docType: 'RRC', fullName: '\uBC15\uC11C\uC900', dateOfBirth: '1988-03-14', docHash: '0xdoc',
                  authenticityChecked: true, authentic: true, faceMatched: false, livenessPassed: false, vendor: 'fake', live: true };

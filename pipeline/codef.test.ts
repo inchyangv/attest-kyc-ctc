@@ -78,7 +78,7 @@ describe('CodefClient wire format', () => {
     assert.equal(r.data.name, '\uD64D \uAE38\uB3D9');
   });
 
-  test('a 401 refreshes the token and retries once', async () => {
+  test('a 401 never replays the POST; the next explicit request obtains a fresh token', async () => {
     let tokens = 0;
     const { calls, fetch } = fakeFetch((c) => {
       if (isToken(c)) { tokens++; return { raw: true, body: JSON.stringify({ access_token: `tok-${tokens}`, expires_in: 100000 }) }; }
@@ -86,7 +86,10 @@ describe('CodefClient wire format', () => {
         ? { status: 401, body: { result: { code: 'CF-99997', message: 'expired' }, data: {} } }
         : ok({ fine: true });
     });
-    const r = await client(fetch).request<{ fine: boolean }>('/v1/x', {});
+    const cl = client(fetch);
+    await assert.rejects(cl.request('/v1/x', {}), (e: unknown) => e instanceof VendorError && e.code === 'VENDOR_HTTP');
+    assert.equal(calls.length, 2, 'no automatic refresh/replay');
+    const r = await cl.request<{ fine: boolean }>('/v1/x', {});
     assert.equal(r.data.fine, true);
     assert.equal(tokens, 2);
     assert.equal(calls.length, 4);
@@ -240,6 +243,15 @@ describe('CodefIdDocumentVendor', () => {
     assert.equal(calls[2].url, 'https://development.codef.io/v1/kr/etc/a/kyc/registration-card');
     assert.equal(g.rrn, '9001011234567');
     assert.equal(g.licenseNumber, undefined);
+  });
+
+  test('OCR preserves PNG MIME/filename and original bytes at the vendor hop', async () => {
+    const { calls, fetch } = fakeFetch(c => isToken(c) ? TOKEN : ok({}));
+    const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]); // wire fixture, not a decode test
+    await new CodefIdDocumentVendor(client(fetch), LOGIN).ocr(png, 'RRC');
+    const file = (calls[1].init.body as FormData).get('file') as File;
+    assert.equal(file.type, 'image/png'); assert.equal(file.name, 'document.png');
+    assert.deepEqual(new Uint8Array(await file.arrayBuffer()), new Uint8Array(png));
   });
 
   test('app-based login: no certificate, the approver\'s identity, and the simpleAuth second leg', async () => {

@@ -1,0 +1,52 @@
+{
+  "epoch": 2,
+  "root": "0xa347701c9d4fb1d02a253f0c7064ee6820ef21fe4855633aaedf9a0d053fe847",
+  "listVersion": 1,
+  "validUntil": 1794058373,
+  "validUntilIso": "2026-11-07T13:32:53Z",
+  "validDays": 60,
+  "entryCount": 2,
+  "entries": [
+    {
+      "subject": "0x4816B6e3Acb775f65Da888f185f708E2C8D7a3e2",
+      "attrs": "0x01030002019a00190027006a9ed424006c8007a4000000000000000000000000",
+      "claimsRoot": "0x699cb73a021a8aaf320a5d8416f89f236d6fcc7f0c987376e45713e4b0ca1e0b",
+      "evidenceHash": "0x04231241ab530a82caf5e5256ad9751ddad0f16d5cacef3481c1e5c28ae5baf1",
+      "issuer": "0xFD1222e35a536A62f180aA44826656940e86bD5E"
+    },
+    {
+      "subject": "0x77858131d1E0eAaAe2c38c2cce508c358C9b58ee",
+      "attrs": "0x01030002019a00190027006a9ed425006c8007a5000000000000000000000000",
+      "claimsRoot": "0xd892ccae92ea320ef76d833125df1c6906e00f2463854379388dd4e1b60373a3",
+      "evidenceHash": "0x956be99ddb836aa3951ccc208e7a646a9b44cf84457b16df2076f9eaf118d91a",
+      "issuer": "0xFD1222e35a536A62f180aA44826656940e86bD5E"
+    }
+  ],
+  "excluded": [],
+  "setEpochPublisherTx": null,
+  "publishEpochTx": "0xde9743af4f8895b152b49c0c67d2a0034ed392cd201a3f28d4f1bdbca4a7c3b9",
+  "sepoliaBlock": 11661380,
+  "sepoliaConfirmedAt": "2026-09-08T13:33:00Z",
+  "cc3AcceptedAt": "2026-09-08T13:41:15Z",
+  "propagationSeconds": 495,
+  "propagationMethod": "source block timestamp to CC3 EpochAccepted block timestamp",
+  "registryProofMode": true,
+  "checks": [
+    {
+      "label": "verifyWithRoster(0x4816B6e3…, policy 2 KR pilot)",
+      "expected": true,
+      "actual": true
+    },
+    {
+      "label": "verifyWithRoster(0x4816B6e3…, policy 1 KR VASP production)",
+      "expected": false,
+      "actual": false
+    },
+    {
+      "label": "proveNotInRoster(0x00000000…, never issued)",
+      "expected": true,
+      "actual": true
+    }
+  ],
+  "checkedAt": "2026-09-08T13:43:07.804Z"
+}

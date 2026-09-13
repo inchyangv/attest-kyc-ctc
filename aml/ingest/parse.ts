@@ -2,7 +2,7 @@
  * Source XML for OFAC SDN, UN Consolidated and EU FSF into one common entry shape.
  * The three schemas have nothing in common, so each gets its own parser.
  */
-import { createReadStream, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import * as sax from './saxlite.js';
 import { normalizeDob } from '../normalize.js';
@@ -52,11 +52,11 @@ export function toIso2(v: string): string {
 const CRYPTO_PREFIX = 'digital currency address';
 
 // ───────────────────────────── OFAC SDN ─────────────────────────────
-export async function parseOfac(path: string): Promise<SanctionEntry[]> {
+export async function parseOfac(path: sax.XmlInput): Promise<SanctionEntry[]> {
   const out: SanctionEntry[] = [];
   await sax.streamElements(path, 'sdnEntry', (el) => {
     const uid = sax.text(el, 'uid');
-    if (!uid) return;
+    if (!uid) throw new Error('OFAC entry missing uid');
     const first = sax.text(el, 'firstName'), last = sax.text(el, 'lastName');
     const primary = [first, last].filter(Boolean).join(' ').trim();
     const names = new Set<string>();
@@ -96,10 +96,10 @@ export async function parseOfac(path: string): Promise<SanctionEntry[]> {
 }
 
 // ────────────────────────── UN Consolidated ──────────────────────────
-export async function parseUn(path: string): Promise<SanctionEntry[]> {
+export async function parseUn(path: sax.XmlInput): Promise<SanctionEntry[]> {
   const out: SanctionEntry[] = [];
   const handle = (kind: 'individual' | 'entity') => (el: sax.El) => {
-    const id = sax.text(el, 'DATAID'); if (!id) return;
+    const id = sax.text(el, 'DATAID'); if (!id) throw new Error('UN entry missing DATAID');
     const parts = ['FIRST_NAME','SECOND_NAME','THIRD_NAME','FOURTH_NAME'].map(t => sax.text(el, t)).filter(Boolean);
     const primary = parts.join(' ').trim();
     const names = new Set<string>(); if (primary) names.add(primary);
@@ -130,11 +130,11 @@ export async function parseUn(path: string): Promise<SanctionEntry[]> {
 }
 
 // ─────────────────────────────  EU FSF  ─────────────────────────────
-export async function parseEu(path: string): Promise<SanctionEntry[]> {
+export async function parseEu(path: sax.XmlInput): Promise<SanctionEntry[]> {
   const out: SanctionEntry[] = [];
   await sax.streamElements(path, 'sanctionEntity', (el) => {
     const id = sax.attr(el, 'logicalId') || sax.attr(el, 'euReferenceNumber');
-    if (!id) return;
+    if (!id) throw new Error('EU entry missing identifier');
     const names = new Set<string>();
     for (const a of sax.direct(el, 'nameAlias')) {
       const whole = sax.attr(a, 'wholeName').trim();

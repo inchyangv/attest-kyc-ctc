@@ -1,7 +1,7 @@
 import { ethers } from 'ethers';
-import { proofProvider } from '@gluwa/usc-sdk';
 
 import { Backoff, withRetry } from './retry.js';
+import { proofJson } from './proof-http.js';
 
 export interface ProofData {
   chainKey: number;
@@ -12,8 +12,7 @@ export interface ProofData {
 }
 
 /**
- * Proof retrieval. The SDK's `getProof` is fine, so we keep it and wrap it in a retry.
- * (Only `waitUntilHeightAttested` was replaced. See attestation.ts.)
+ * Same GET route/raw JSON mapping as pinned SDK 0.18.0, with native cancellation and bounds.
  */
 export async function fetchProof(
   proofBuilderUrl: string,
@@ -21,14 +20,11 @@ export async function fetchProof(
   txHash: string,
   signal?: AbortSignal,
 ): Promise<ProofData> {
-  const builder = new proofProvider.service.ProofBuilder(chainKey, proofBuilderUrl);
-
   return withRetry(
     `getProof(${txHash.slice(0, 10)}…)`,
     async () => {
-      const res: any = await builder.getProof(txHash);
-      if (!res?.success) throw new Error(res?.error ?? 'proof generation failed with no reason given');
-      return res.data as ProofData;
+      return await proofJson(`${proofBuilderUrl.replace(/\/+$/, '')}/api/v1/proof-by-tx/${chainKey}/${txHash}`,
+        { signal, timeoutMs: 10_000, maxBytes: 8 * 1024 * 1024 }) as ProofData;
     },
     { attempts: 5, backoff: new Backoff(2_000, 30_000), signal },
   );

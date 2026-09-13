@@ -14,12 +14,11 @@ library RosterProof {
     bytes32 internal constant MIN_KEY = bytes32(0);
     bytes32 internal constant MAX_KEY = bytes32(type(uint256).max);
 
-    error NotAdjacent(uint256 leftIndex, uint256 rightIndex);
-    error TargetNotInGap();
-    error BadInclusion();
+    uint256 internal constant FORMAT_VERSION = 2;
 
     struct Inclusion {
         uint256 index;
+        uint256 leafCount; // Includes both sentinels; committed into the published root.
         bytes32[] siblings;
     }
 
@@ -46,22 +45,33 @@ library RosterProof {
     }
 
     function leafOf(bytes32 key, bytes32 mark) internal pure returns (bytes32) {
-        return keccak256(abi.encodePacked(key, mark));
+        return keccak256(abi.encodePacked(bytes1(0x00), key, mark));
     }
 
     /// @dev Positional. Left and right are not sorted.
     function _node(bytes32 l, bytes32 r) private pure returns (bytes32) {
-        return keccak256(abi.encodePacked(l, r));
+        return keccak256(abi.encodePacked(bytes1(0x01), l, r));
+    }
+
+    /// @notice The published commitment binds tree shape as well as leaf contents.
+    function rootOf(bytes32 treeRoot, uint256 leafCount) internal pure returns (bytes32) {
+        return keccak256(abi.encodePacked(bytes1(0x02), leafCount, treeRoot));
     }
 
     function verifyInclusion(bytes32 root, bytes32 leaf, Inclusion memory p) internal pure returns (bool) {
+        if (p.leafCount < 2 || p.index >= p.leafCount || p.siblings.length > 256) return false;
         bytes32 acc = leaf;
         uint256 idx = p.index;
+        uint256 width = p.leafCount;
         for (uint256 i = 0; i < p.siblings.length; i++) {
+            if (width <= 1) return false; // Too many levels.
+            // Odd tails are duplicated by the builder; no invented padding leaf is allowed.
+            if ((idx ^ 1) >= width && p.siblings[i] != acc) return false;
             acc = idx % 2 == 0 ? _node(acc, p.siblings[i]) : _node(p.siblings[i], acc);
             idx >>= 1;
+            width = width / 2 + width % 2;
         }
-        return acc == root;
+        return width == 1 && idx == 0 && rootOf(acc, p.leafCount) == root;
     }
 
     /// @notice Verifies the subject is absent from the roster.
@@ -69,7 +79,8 @@ library RosterProof {
         // 1. the subject falls between the two keys
         if (!(p.leftKey < targetKey && targetKey < p.rightKey)) return false;
         // 2. the leaves are consecutive. Without this a forged gap that skips entries passes.
-        if (p.right.index != p.left.index + 1) return false;
+        if (p.left.index == type(uint256).max || p.right.index != p.left.index + 1) return false;
+        if (p.left.leafCount != p.right.leafCount || p.left.siblings.length != p.right.siblings.length) return false;
         // 3. bind each claimed ordering key to the leaf proved in the tree. Accepting a caller-
         //    supplied leaf independently of its key lets an attacker relabel adjacent real leaves
         //    around a target that is actually present.

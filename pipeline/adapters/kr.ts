@@ -1,6 +1,7 @@
 import { ethers } from 'ethers';
 import { Methods } from '../methods.js';
 import { normalizeName } from '../reconcile.js';
+import { IdentityRequirement, type BiometricPolicyV1, type BiometricRequirement } from '../identity-policy.js';
 
 /**
  * Korean jurisdiction adapter.
@@ -147,6 +148,8 @@ export interface IdDocumentVendor {
   readonly name: string;
   /** Reaches the real issuing authority, as opposed to a vendor sandbox with sample data. */
   readonly live: boolean;
+  /** Must be declared before a vendor capable of collecting/processing biometrics is configured. */
+  readonly biometricChecks: readonly BiometricRequirement[];
   /** Read the fields off the image so the customer does not type them. Optional. */
   ocr?(image: Uint8Array, docType: IdDocType): Promise<OcrFields>;
   /** Query the issuing authority. May come back asking for a second leg. */
@@ -214,6 +217,8 @@ export interface KrAdapterOptions {
    * the rails were not real. Off by default; production never turns it on.
    */
   sandboxBits?: boolean;
+  /** Prior necessity/legal/approval decision. Omission is an explicit prohibition. */
+  biometrics?: BiometricPolicyV1;
 }
 
 export class KrAdapter {
@@ -221,10 +226,18 @@ export class KrAdapter {
     readonly idVendor: IdDocumentVendor | null,
     readonly bankVendor: BankAccountVendor | null,
     readonly opts: KrAdapterOptions = {},
-  ) {}
+  ) {
+    const biometrics = opts.biometrics;
+    if (biometrics?.mode === 'authorized') {
+      const refs = [biometrics.necessityRef, biometrics.legalBasisRef, biometrics.approvalRef];
+      if (!biometrics.checks.length || refs.some(ref => !/^[A-Za-z0-9][A-Za-z0-9._:/#-]{2,255}$/.test(ref))) {
+        throw new VendorError('biometric authorization is incomplete', 'BIOMETRIC_POLICY_INVALID');
+      }
+    }
+  }
 
   get connected(): boolean { return this.idVendor !== null && this.bankVendor !== null; }
-  /** Both vendors reach real institutions. A testbed or demo vendor on either axis makes it sandbox. */
+  /** Configuration capability, not the provenance of results consumed by run(). */
   get live(): boolean { return this.connected && this.idVendor!.live && this.bankVendor!.live; }
   get regime(): number { return this.live ? Regime.KR_FSC_NONFACE : Regime.KR_FSC_NONFACE_SANDBOX; }
   get sandboxBits(): boolean { return this.opts.sandboxBits === true; }
@@ -232,6 +245,19 @@ export class KrAdapter {
   /** Step 1. Hash the image, ask the issuing authority, normalise the answer. */
   async verifyIdDocument(input: IdDocumentInput): Promise<IdDocumentOutcome> {
     if (!this.idVendor) throw new VendorError('no ID document vendor configured', 'NO_VENDOR');
+    const declared = this.idVendor.biometricChecks;
+    if (!Array.isArray(declared)) throw new VendorError('ID vendor did not declare its biometric capabilities', 'BIOMETRIC_POLICY_REQUIRED');
+    if (declared.some(check => check !== IdentityRequirement.FACE_MATCH && check !== IdentityRequirement.LIVENESS)) {
+      throw new VendorError('ID vendor declared an unknown biometric capability', 'BIOMETRIC_POLICY_INVALID');
+    }
+    const authorization = this.opts.biometrics ?? { mode: 'prohibited' };
+    if (declared.length) {
+      if (authorization.mode !== 'authorized'
+        || declared.some(check => !authorization.checks.includes(check))
+        || !authorization.necessityRef || !authorization.legalBasisRef || !authorization.approvalRef) {
+        throw new VendorError('biometric processing is not authorized by prior necessity and legal-basis decisions', 'BIOMETRIC_NOT_AUTHORIZED');
+      }
+    }
     validateIdInput(input);
     return this.idVendor.verify(input);
   }
@@ -266,9 +292,15 @@ export class KrAdapter {
   async run(input: KrAdapterInput): Promise<KrAdapterResult> {
     let methods = 0;
     let rejected: string | null = null;
-    const evidence: Record<string, unknown> = { regime: this.regime, vendorsConnected: this.connected, sandboxBits: this.sandboxBits };
+    const realResults = input.idDocument?.live === true && input.idDocument.authenticityChecked === true && input.idDocument.authentic === true
+      && input.bankAccount?.live === true && input.bankAccount.holderVerified === true && input.bankAccount.oneWonVerified === true;
+    const regime = this.live && !this.sandboxBits && realResults ? Regime.KR_FSC_NONFACE : Regime.KR_FSC_NONFACE_SANDBOX;
+    const evidence: Record<string, unknown> = { regime, configuredRegime: this.regime, regimeRule: 'kr-results-v2',
+      vendorsConnected: this.connected, sandboxBits: this.sandboxBits, liveResultsComplete: realResults };
     // A result counts toward a bit when it came from real rails, or when the demo switch is on.
     const counts = (r: { live: boolean }) => r.live || this.sandboxBits;
+    const biometricAllowed = (check: BiometricRequirement) => this.opts.biometrics?.mode === 'authorized'
+      && this.opts.biometrics.checks.includes(check);
 
     // 0. wallet control. We do this ourselves, so it is always real.
     if (input.walletControlProven) methods |= Methods.WALLET_CONTROL;
@@ -282,8 +314,10 @@ export class KrAdapter {
       // The bit needs all three: the authority was asked, it said yes, and it was the real authority.
       if (counts(id) && id.authenticityChecked && id.authentic) methods |= Methods.ID_DOC_AUTHENTICITY;
       if (id.authenticityChecked && !id.authentic) rejected = 'the issuing authority did not confirm the document';
-      if (counts(id) && id.faceMatched)    methods |= Methods.FACE_MATCH;
-      if (counts(id) && id.livenessPassed) methods |= Methods.LIVENESS;
+      if (id.faceMatched && !biometricAllowed(IdentityRequirement.FACE_MATCH)) rejected = 'face match result was not authorized before biometric processing';
+      if (id.livenessPassed && !biometricAllowed(IdentityRequirement.LIVENESS)) rejected = 'liveness result was not authorized before biometric processing';
+      if (counts(id) && id.faceMatched && biometricAllowed(IdentityRequirement.FACE_MATCH)) methods |= Methods.FACE_MATCH;
+      if (counts(id) && id.livenessPassed && biometricAllowed(IdentityRequirement.LIVENESS)) methods |= Methods.LIVENESS;
       evidence.idDocument = {
         docType: id.docType,
         docHash: id.docHash,
@@ -318,7 +352,7 @@ export class KrAdapter {
       evidence.bankAccount = { skipped: true, reason: this.bankVendor ? 'no account verified' : 'no vendor connected' };
     }
 
-    return { regime: this.regime, methods, rejected, idDocument, bankAccount, evidence };
+    return { regime, methods, rejected, idDocument, bankAccount, evidence };
   }
 }
 

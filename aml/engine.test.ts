@@ -5,12 +5,12 @@
 import { test, before } from 'node:test';
 import assert from 'node:assert';
 import { existsSync } from 'node:fs';
-import { loadLists } from './loader.js';
+import { loadHistoricalLists as loadLists } from './loader.js';
 import { ListBackedAmlEngine, evidenceDigest } from './engine.js';
 import { nameScore } from './match.js';
 import { M } from './types.js';
 
-const HAVE_LISTS = existsSync('data/raw/ofac_sdn.xml');
+const HAVE_LISTS = existsSync('data/raw/current.json') || existsSync('data/raw/ofac_sdn.xml');
 let engine: ListBackedAmlEngine;
 let entries: Awaited<ReturnType<typeof loadLists>>['entries'];
 
@@ -22,6 +22,22 @@ before(async () => {
 });
 
 const clean = { dateOfBirth: '1985-03-14', nationality: 'KR', residence: 'KR', walletAddress: '0x' + '2'.repeat(40) };
+
+test('listed EVM wallet indexing is case-insensitive even when a corpus bypasses XML normalization', async () => {
+  const address = '0x' + 'aB'.repeat(20);
+  for (const listed of [address, address.toLowerCase(), '0x' + address.slice(2).toUpperCase()]) {
+    const local = new ListBackedAmlEngine({ entries: [{ listId: 'OFAC_SDN', entryId: 'FICTIONAL-MIXED-CASE',
+      primaryName: 'Zorvax Quenlith', names: ['Zorvax Quenlith'], dobs: [], countries: [], programs: [],
+      cryptoAddresses: [listed], type: 'individual' }], listVersions: { OFAC_SDN: 1 }, evidenceKey: 'synthetic-wallet-index-key' });
+    for (const walletAddress of [address, address.toLowerCase()]) {
+      const result = await local.screen({ ...clean, fullName: 'Unrelated Fictional Name', walletAddress });
+      assert.equal(result.decision, 'BLOCK');
+      assert.ok(result.hits.some(hit => hit.matchType === 'wallet'));
+      assert.equal(result.methodsApplied & M.ONCHAIN_EXPOSURE, 0);
+    }
+    assert.equal((await local.screen({ ...clean, fullName: 'Unrelated Fictional Name' })).decision, 'ALLOW');
+  }
+});
 
 test('no containment bonus for short names, the source of the 33% false positives', () => {
   assert.ok(nameScore(['ji'], ['ji']) <= 1);
@@ -98,7 +114,7 @@ test('a sanctioned wallet is blocked regardless of the name', { skip: !HAVE_LIST
 test('screening that did not run leaves its bit unset', { skip: !HAVE_LISTS }, async () => {
   const r = await engine.screen({ fullName: 'Test Person', ...clean });
   assert.ok((r.methodsApplied & M.SANCTIONS_SCREENED) !== 0, 'we screened against real lists, so this is set');
-  assert.ok((r.methodsApplied & M.ONCHAIN_EXPOSURE) !== 0);
+  assert.equal(r.methodsApplied & M.ONCHAIN_EXPOSURE, 0, 'listed wallet lookup is not exposure analysis');
   assert.equal(r.methodsApplied & M.PEP_SCREENED, 0, 'setting this bit without PEP data would be a lie');
   assert.equal(r.methodsApplied & M.ADVERSE_MEDIA, 0);
 });

@@ -6,11 +6,11 @@ import { Shell } from '@/components/shell/Shell';
 const inter = Inter({ subsets: ['latin'], variable: '--font-inter', display: 'swap' });
 
 export const metadata: Metadata = {
-  title: { default: 'Proofmark · KYC/AML attestation for Creditcoin', template: '%s · Proofmark' },
-  description: 'A Creditcoin compliance gateway: external KYC/AML credentials normalized, proven through Attestcoin, and enforced by frozen on-chain policy with no cleartext PII.',
+  title: { default: 'Proofmark · Verify once. Keep moving.', template: '%s · Proofmark' },
+  description: 'Verify your identity, check a wallet, and review digital asset eligibility with Proofmark.',
 };
 
-export const viewport: Viewport = { themeColor: '#0d0e11', colorScheme: 'dark' };
+export const viewport: Viewport = { themeColor: '#10285a', colorScheme: 'light' };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (

@@ -1,0 +1,7 @@
+{
+  "maxBytes": 5242880,
+  "maxPixels": 12000000,
+  "maxDimension": 8192,
+  "maxConcurrent": 2,
+  "timeoutMs": 3000
+}

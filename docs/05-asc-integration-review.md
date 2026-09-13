@@ -120,8 +120,10 @@ lastAppliedTxIndex[subject] = txIndex;
 ```
 
 `txIndex` is derived from the same proof verified by BlockProver, so opposing transactions inside
-one source block are ordered without trusting the relayer. C1 still requires one event kind per
-source transaction because an Attestcoin query is transaction-scoped, not log-scoped.
+one source block are ordered without trusting the relayer. The snippet above is the historical
+two-coordinate implementation. Working-tree v2 adds receipt-local log index and processes all
+trusted lifecycle logs atomically; separate source functions did not enforce the old C1 rule.
+See [the v2 specification](23-atomic-receipts.md). Historical design tables below are not release evidence.
 
 ---
 

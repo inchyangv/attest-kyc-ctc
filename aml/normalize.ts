@@ -4,7 +4,7 @@
  * Change a rule and ENGINE_VERSION must go up, or evidence stops being reproducible.
  */
 
-export const ENGINE_VERSION = 'aml-1.0.0';
+export const ENGINE_VERSION = 'aml-1.4.0';
 
 /** Invisible characters, slipped between letters to break matching. An old trick. */
 const INVISIBLE = /[​-‏‪-‮⁠-⁤﻿­͏]/g;

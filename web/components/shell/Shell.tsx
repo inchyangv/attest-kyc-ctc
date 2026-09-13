@@ -1,16 +1,25 @@
 import type { ReactNode } from 'react';
-import { Sidebar, MobileNav } from './Sidebar';
+import { Header } from './Sidebar';
+import { CreditcoinMark } from '@/components/ui/Icon';
+import { CC3_EXPLORER } from '@/lib/links';
 
 export function Shell({ children }: { children: ReactNode }) {
   return (
     <div className="flex min-h-screen flex-col">
-      <MobileNav />
-      <div className="flex flex-1">
-        <Sidebar />
-        <main className="min-w-0 flex-1 px-4 pb-20 pt-6 sm:px-6 lg:px-10 lg:pt-8">
-          <div className="mx-auto max-w-[1120px]">{children}</div>
-        </main>
-      </div>
+      <a href="#main-content" className="skip-link">Skip to content</a>
+      <Header />
+      <main id="main-content" className="site-main" tabIndex={-1}>{children}</main>
+      <footer className="site-footer">
+        <div className="site-footer-inner">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+            <span className="font-semibold text-fg-strong">Proofmark</span>
+            <span>Identity verification for digital assets.</span>
+          </div>
+          <a href={CC3_EXPLORER} target="_blank" rel="noreferrer" className="flex items-center gap-2 hover:text-mint">
+            <CreditcoinMark size={15} /> Creditcoin <span className="network-label">Testnet</span>
+          </a>
+        </div>
+      </footer>
     </div>
   );
 }

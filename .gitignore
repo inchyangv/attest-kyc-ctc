@@ -37,7 +37,12 @@ state/
 # deck render cache
 docs/deck/.DS_Store
 
+# IDE state
+.idea/
+
 # Internal working notes — local only
 /REVIEW.md
 /TICKETS.md
 /internal/
+/ENHANCE.md
+.env*.local

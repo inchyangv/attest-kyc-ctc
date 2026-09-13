@@ -1,4 +1,8 @@
 import { log } from './log.js';
+import { setTimeout as delay } from 'node:timers/promises';
+
+export class WorkerStoppedError extends Error { constructor() { super('WORKER_STOPPED'); } }
+export function throwIfStopped(signal?: AbortSignal): void { if (signal?.aborted) throw new WorkerStoppedError(); }
 
 export class Backoff {
   constructor(
@@ -14,7 +18,11 @@ export class Backoff {
   }
 }
 
-export const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+export async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  throwIfStopped(signal);
+  try { await delay(ms, undefined, { signal }); }
+  catch (error) { throwIfStopped(signal); throw error; }
+}
 
 /**
  * Retry with exponential backoff.
@@ -34,16 +42,17 @@ export async function withRetry<T>(
   let last: unknown;
 
   for (let i = 0; i < attempts; i++) {
-    if (opts.signal?.aborted) throw new Error(`${label}: aborted`);
+    throwIfStopped(opts.signal);
     try {
-      return await fn();
+      const result = await fn(); throwIfStopped(opts.signal); return result;
     } catch (e: any) {
+      throwIfStopped(opts.signal);
       last = e;
       const msg = e?.shortMessage ?? e?.message ?? String(e);
       if (i === attempts - 1) break;
       const d = backoff.delayFor(i);
       log.warn(`${label} failed (${i + 1}/${attempts}): ${msg}. Retrying in ${d}ms.`);
-      await sleep(d);
+      await sleep(d, opts.signal);
     }
   }
   throw last;

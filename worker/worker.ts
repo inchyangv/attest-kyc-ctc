@@ -1,12 +1,22 @@
 import { ethers } from 'ethers';
+import { dirname, join, resolve } from 'node:path';
 
 import { cfg } from './config.js';
 import { log } from './log.js';
-import { Store, jobsReadyForDispatch, type Job } from './store.js';
+import { Store, StoreWriteError, SourceSafetyError, HubSafetyError, jobsReadyForDispatch, type Job } from './store.js';
 import { AttestationWatcher } from './attestation.js';
 import { fetchProof, computeQueryId, txIndexFromProof } from './proof.js';
-import { COMPLIANCE_SOURCE_ABI, PROOFMARK_ASC_ABI, EVENT_TO_ACTION, WATCHED_EVENTS } from './abi.js';
-import { sleep } from './retry.js';
+import { COMPLIANCE_SOURCE_ABI, PROOFMARK_ASC_ABI, requireIssuerKeyProvenance, requireDenialCorrection } from './abi.js';
+import { requireAtomicReceipts } from './source-events.js';
+import { requireEpochV2 } from '../pipeline/epoch.js';
+import { requireRosterAuthorization } from '../pipeline/roster-authorization.js';
+import { scanSourceStep } from './source-scan.js';
+import { sleep, throwIfStopped } from './retry.js';
+import { BoundedPool } from './pool.js';
+import { RelaySender, RelayBusy, EvmRelayTransport } from './relay.js';
+import { acquireWorkerLease } from './lease.js';
+import { WorkerHealth, serveWorkerHealth } from './health.js';
+import { EvmHubRecoveryReader, reconcileHubRecovery } from './recovery.js';
 
 export class ProofmarkWorker {
   private readonly store: Store;
@@ -15,63 +25,103 @@ export class ProofmarkWorker {
   private readonly hub: ethers.JsonRpcProvider;
   private readonly src: ethers.JsonRpcProvider;
   private readonly watcher: AttestationWatcher;
-  private readonly inFlight = new Set<string>();
+  private readonly wallet: ethers.Wallet;
+  private readonly sender: RelaySender;
+  private readonly hubRecovery: EvmHubRecoveryReader;
+  private fatalError: unknown;
+  private readonly pool = new BoundedPool(cfg.concurrency, error => {
+    this.fatalError = error; this.stop();
+    log.error('dispatch persistence/reporting failed; stopping for reconciliation');
+  });
   private readonly abort = new AbortController();
   private stopping = false;
+  private readonly health = cfg.health ? new WorkerHealth(cfg.health.maxScanAgeMs) : undefined;
 
   constructor() {
     this.store = new Store(cfg.statePath);
-    this.src = new ethers.JsonRpcProvider(cfg.sourceRpc);
-    this.hub = new ethers.JsonRpcProvider(cfg.hubRpc);
-    const wallet = new ethers.Wallet(cfg.privateKey, this.hub);
+    const provider = (url: string) => { const request = new ethers.FetchRequest(url); request.timeout = 15_000; return new ethers.JsonRpcProvider(request, undefined, { cacheTimeout: -1 }); };
+    this.src = provider(cfg.sourceRpc);
+    this.hub = provider(cfg.hubRpc);
+    this.wallet = new ethers.Wallet(cfg.privateKey, this.hub);
 
     this.source = new ethers.Contract(cfg.sourceAddress, COMPLIANCE_SOURCE_ABI, this.src);
-    this.asc = new ethers.Contract(cfg.ascAddress, PROOFMARK_ASC_ABI, wallet);
+    this.asc = new ethers.Contract(cfg.ascAddress, PROOFMARK_ASC_ABI, this.wallet);
+    this.hubRecovery = new EvmHubRecoveryReader(this.hub, this.asc);
+    this.sender = new RelaySender(this.store, new EvmRelayTransport(this.hub, this.wallet, this.asc, cfg.hubConfirmations), async id => {
+      throwIfStopped(this.abort.signal);
+      const job = this.store.get(id);
+      if (!job) throw new SourceSafetyError('SOURCE_JOB_NOT_RUNNABLE');
+      await this.assertCanonicalJob(job);
+    }, this.abort.signal, () => reconcileHubRecovery(this.store, this.hubRecovery, cfg.hubConfirmations));
     this.watcher = new AttestationWatcher(cfg.proofBuilder, cfg.chainKey);
   }
 
   stop(): void {
+    this.health?.stopping();
     this.stopping = true;
+    this.pool.stop();
     this.abort.abort();
   }
 
   async run(): Promise<void> {
+    const releases: (() => void)[] = [];
+    let healthServer: Awaited<ReturnType<typeof serveWorkerHealth>> | undefined;
+    try {
+      const path = resolve(cfg.statePath);
+      releases.push(acquireWorkerLease(`${path}.lock`));
+      releases.push(acquireWorkerLease(join(dirname(path), `relay-102031-${this.wallet.address.toLowerCase()}.lock`)));
+      this.store.reload();
+      if (this.health && cfg.health) healthServer = await serveWorkerHealth(this.health, cfg.health.port, () => this.pool.size);
+      await this.runLoop();
+    } finally {
+      this.stop(); await this.pool.drain();
+      this.src.destroy(); this.hub.destroy();
+      try { await healthServer?.close(); }
+      finally { for (const release of releases.reverse()) release(); }
+    }
+  }
+
+  private async runLoop(): Promise<void> {
     await this.preflight();
+    this.health?.running();
 
-    if (this.store.cursor === 0) {
-      const head = cfg.startBlock || (await this.src.getBlockNumber());
-      this.store.setCursor(head - 1);
-      log.info(`cursor initialised at block ${head - 1}`);
-    } else {
-      log.info(`cursor restored at block ${this.store.cursor} (resuming)`);
-    }
-
-    // On restart, requeue unfinished jobs first. The example worker drops these.
-    const resumed = this.store.pending();
-    if (resumed.length) {
-      log.info(`restored ${resumed.length} unfinished job(s)`);
-      for (const j of resumed) void this.dispatch(j);
-    }
+    // Validate/reconcile source checkpoints before starting any restored job or signed replay.
+    await reconcileHubRecovery(this.store, this.hubRecovery, cfg.hubConfirmations);
+    await this.scan();
 
     while (!this.stopping) {
       try {
+        await reconcileHubRecovery(this.store, this.hubRecovery, cfg.hubConfirmations);
         await this.scan();
       } catch (e: any) {
+        if (e instanceof StoreWriteError || e instanceof SourceSafetyError || e instanceof HubSafetyError) { this.stop(); throw e; }
         log.error(`scan failed, retrying next cycle: ${e?.shortMessage ?? e?.message ?? e}`);
       }
       // A failed dispatch stays persisted as pending. Requeue on every cycle, including cycles
       // with no new blocks; startup-only requeue would otherwise strand it until a restart.
-      for (const job of jobsReadyForDispatch(this.store, this.inFlight)) void this.dispatch(job);
-      await sleep(cfg.pollMs);
+      this.schedulePending();
+      try { await sleep(cfg.pollMs, this.abort.signal); }
+      catch (error) { if (!this.stopping) throw error; }
     }
 
     log.info('waiting for in-flight work...');
-    while (this.inFlight.size > 0) await sleep(200);
+    await this.pool.drain();
+    if (this.fatalError) throw this.fatalError;
     log.info(`worker stopped. State: ${JSON.stringify(this.store.counts())}`);
   }
 
   private async preflight(): Promise<void> {
+    await requireAtomicReceipts(() => this.asc.TRANSACTION_PROCESSING_VERSION());
+    await requireEpochV2(() => this.source.EPOCH_SCHEMA_VERSION(), () => this.asc.EPOCH_SCHEMA_VERSION());
+    await requireRosterAuthorization(() => this.source.ROSTER_AUTH_VERSION(), () => this.asc.ROSTER_AUTH_VERSION());
+    await requireIssuerKeyProvenance(
+      () => this.source.ISSUER_KEY_PROVENANCE_VERSION(), () => this.asc.ISSUER_KEY_PROVENANCE_VERSION(),
+    );
+    await requireDenialCorrection(
+      () => this.source.DENIAL_CORRECTION_VERSION(), () => this.asc.DENIAL_CORRECTION_VERSION(),
+    );
     const [sNet, hNet] = await Promise.all([this.src.getNetwork(), this.hub.getNetwork()]);
+    if (sNet.chainId !== 11155111n || hNet.chainId !== 102031n || cfg.chainKey !== 1) throw new Error('unsupported worker source/hub chain binding');
     log.info(`source chainId=${sNet.chainId} hub chainId=${hNet.chainId} chainKey=${cfg.chainKey}`);
 
     // Check the ASC actually trusts the source we watch.
@@ -86,95 +136,74 @@ export class ProofmarkWorker {
     if (srcAddr.toLowerCase() !== cfg.sourceAddress.toLowerCase()) {
       throw new Error(`ASC sourceContract (${srcAddr}) does not match worker config (${cfg.sourceAddress})`);
     }
+    this.store.bindScope({ sourceChainId: 11155111, hubChainId: 102031, chainKey: cfg.chainKey,
+      source: cfg.sourceAddress.toLowerCase(), asc: cfg.ascAddress.toLowerCase(), signer: this.wallet.address.toLowerCase(), startBlock: cfg.startBlock });
     log.ok('ASC configuration matches');
   }
 
   // Scan
 
   private async scan(): Promise<void> {
-    const head = await this.src.getBlockNumber();
-    const safeHead = head - cfg.confirmations;   // reorg headroom
-    let from = this.store.cursor + 1;
-    if (from > safeHead) return;
-
-    while (from <= safeHead && !this.stopping) {
-      const to = Math.min(from + cfg.scanChunk - 1, safeHead);
-      const found = await this.scanRange(from, to);
-      // Advance the cursor only after every job in the range is persisted.
-      // Advance it first and a crash loses those events for good.
-      this.store.setCursor(to);
-      if (found) log.info(`scanned blocks ${from}-${to}: ${found} new`);
-      from = to + 1;
-    }
+    try {
+      while (!this.stopping) {
+        const result = await scanSourceStep(this.store, this.src, this.source.interface, {
+          address: cfg.sourceAddress, startBlock: cfg.startBlock, confirmations: cfg.confirmations, chunk: cfg.scanChunk,
+          beforeRewind: () => {
+            if (this.pool.size) { this.stop(); throw new SourceSafetyError('SOURCE_REORG_DRAIN_AND_RESTART_REQUIRED'); }
+          },
+        });
+        if (this.store.checkpoints.length) this.health?.scanCompleted();
+        if (result.rewound) log.warn(`discarded ${result.rewound} unsigned orphan job(s); rescanning source history`);
+        this.schedulePending();
+        if (!result.scanned) break;
+        log.info(`source checkpoint ${this.store.cursor}: ${result.jobs} job(s)`);
+      }
+    } catch (error) { this.health?.scanError(); throw error; }
   }
 
-  private async scanRange(from: number, to: number): Promise<number> {
-    // getLogs by contract address, then parse with the interface. No topic filter, so a newly
-    // added event is not silently missed.
-    const raw = await this.src.getLogs({ address: cfg.sourceAddress, fromBlock: from, toBlock: to });
-
-    // Group logs per transaction. queryId is per transaction, so a job is too.
-    const byTx = new Map<string, { name: string; blockNumber: number }[]>();
-    for (const l of raw) {
-      let parsed: ethers.LogDescription | null = null;
-      try {
-        parsed = this.source.interface.parseLog({ topics: [...l.topics], data: l.data });
-      } catch {
-        continue;   // ignore logs outside our ABI
-      }
-      if (!parsed || !WATCHED_EVENTS.includes(parsed.name)) continue;
-      const arr = byTx.get(l.transactionHash) ?? [];
-      arr.push({ name: parsed.name, blockNumber: l.blockNumber });
-      byTx.set(l.transactionHash, arr);
+  private async assertCanonicalJob(job: Job): Promise<void> {
+    this.store.assertSourceReady();
+    if (!job.blockHash || !Number.isSafeInteger(job.transactionIndex)) throw new SourceSafetyError('SOURCE_JOB_MISSING_HASH_COORDINATES');
+    const [block, finalized] = await Promise.all([this.src.getBlock(job.blockNumber), this.src.getBlock('finalized')]);
+    if (!block?.hash || block.number !== job.blockNumber || !finalized?.hash || finalized.number < job.blockNumber) {
+      throw new SourceSafetyError('SOURCE_JOB_CANONICALITY_UNCONFIRMED');
     }
-
-    let created = 0;
-    for (const [txHash, evs] of byTx) {
-      if (this.store.has(txHash)) continue;
-
-      const names = new Set(evs.map((e) => e.name));
-      if (names.size > 1) {
-        // C1 violation. Mixed event kinds in one tx mean only one gets processed and the rest are
-        // sealed forever. Our ComplianceSource never emits such a tx, so this signals a design breach.
-        log.error(`tx ${txHash} carries mixed event kinds (${[...names].join(', ')}). C1 violation, needs a human.`);
-        this.store.add({
-          txHash, blockNumber: evs[0].blockNumber, action: -1,
-          eventName: [...names].join('+'), logCount: evs.length,
-          state: 'dead', attempts: 0,
-          // multiple event kinds in one tx (docs/04 section 0, C1)
-        });
-        continue;
-      }
-
-      const name = evs[0].name;
-      const job = this.store.add({
-        txHash,
-        blockNumber: evs[0].blockNumber,
-        action: EVENT_TO_ACTION[name],
-        eventName: name,
-        logCount: evs.length,
-        state: 'discovered',
-        attempts: 0,
-      });
-      created++;
-      log.info(`found ${name} x${evs.length} in tx ${txHash.slice(0, 10)}... (block ${job.blockNumber})`);
-      void this.dispatch(job);
+    if (block.hash !== job.blockHash) {
+      if (job.ascTxHash) this.store.holdSource('SOURCE_REORG_TOUCHES_RELAYED_JOB');
+      throw new SourceSafetyError('SOURCE_JOB_NOT_CANONICAL_FINALIZED');
     }
-    return created;
+    throwIfStopped(this.abort.signal);
   }
 
   // Processing
 
-  /** Each job runs on its own. One failure does not stop the rest. */
-  private async dispatch(job: Job): Promise<void> {
-    if (this.inFlight.has(job.txHash)) return;
-    while (this.inFlight.size >= cfg.concurrency && !this.stopping) await sleep(250);
-    if (this.stopping) return;
+  private schedulePending(): void {
+    for (const job of jobsReadyForDispatch(this.store, this.pool, this.pool.available)) this.dispatch(job);
+  }
 
-    this.inFlight.add(job.txHash);
+  /** Repeated scans never create capacity waiters. Unreserved jobs remain solely in Store. */
+  private dispatch(job: Job): void {
+    if (this.stopping) return;
+    this.pool.tryRun(job.txHash, async () => {
+      const current = this.store.get(job.txHash);
+      // State may have changed since discovery/reservation. Do not execute terminal snapshots.
+      if (!current || ['done', 'dead', 'skipped'].includes(current.state) || this.stopping) return;
+      await this.processReserved(current);
+    });
+  }
+
+  private async processReserved(job: Job): Promise<void> {
     try {
       await this.process(job);
     } catch (e: any) {
+      if (e instanceof StoreWriteError || e instanceof SourceSafetyError) { this.stop(); throw e; }
+      if (this.stopping) return;
+      if (e instanceof RelayBusy) return;
+      if (this.store.relay?.sourceTxHash === job.txHash) {
+        this.store.update(job.txHash, { state: 'submitted', lastError: 'RELAY_RECONCILIATION_PENDING' });
+        log.warn(`relay receipt unresolved for ${job.txHash.slice(0, 10)}; no new signer nonce will be allocated`);
+        return;
+      }
       const msg = e?.shortMessage ?? e?.message ?? String(e);
       const attempts = (this.store.get(job.txHash)?.attempts ?? 0) + 1;
       if (attempts >= cfg.maxAttempts) {
@@ -185,32 +214,34 @@ export class ProofmarkWorker {
         log.warn(`job failed, tx ${job.txHash.slice(0, 10)}... (${attempts}/${cfg.maxAttempts}): ${msg}. Retrying next cycle.`);
         // run() picks it up on the next polling cycle, even if no new source block arrives
       }
-    } finally {
-      this.inFlight.delete(job.txHash);
     }
   }
 
   private async process(job: Job): Promise<void> {
     const short = job.txHash.slice(0, 10);
+    if (this.store.relay?.sourceTxHash === job.txHash) {
+      await this.sender.step(job.txHash); return;
+    }
+    if (this.store.relay) throw new RelayBusy();
+    if (job.state === 'submitted' || job.ascTxHash) throw new Error('LEGACY_SUBMISSION_REQUIRES_RECONCILIATION');
+    await this.assertCanonicalJob(job);
 
     // 1. wait for attestation, absorbing poll failures. This is where we replace the SDK.
     if (job.state === 'discovered') {
       await this.watcher.waitFor(job.blockNumber, this.abort.signal);
+      await this.assertCanonicalJob(job);
       this.store.update(job.txHash, { state: 'attested' });
       job.state = 'attested';
     }
 
     // 2. fetch the proof
     const proof = await fetchProof(cfg.proofBuilder, cfg.chainKey, job.txHash, this.abort.signal);
+    if (proof.chainKey !== cfg.chainKey || proof.headerNumber !== job.blockNumber) throw new Error('SOURCE_PROOF_COORDINATE_CHANGED');
 
-    // 3. idempotence: skip an already-processed query rather than burn gas on it
+    // 3. Recover the query identity; only the sender's depth/hash-bound path may skip it.
     const txIndex = txIndexFromProof(proof.merkleProof.siblings);
+    if (txIndex !== BigInt(job.transactionIndex!)) throw new SourceSafetyError('SOURCE_PROOF_TX_INDEX_CHANGED');
     const queryId = computeQueryId(proof.chainKey, proof.headerNumber, txIndex);
-    if (await this.asc.processedQueries(queryId)) {
-      this.store.update(job.txHash, { state: 'skipped', queryId });
-      log.ok(`already processed, skipping tx ${short}... queryId ${queryId.slice(0, 10)}...`);
-      return;
-    }
 
     // 4. submit
     const args = [
@@ -225,15 +256,9 @@ export class ProofmarkWorker {
     ] as const;
 
     const gasLimit = await this.estimateGas(args, proof.continuityProof.roots?.length ?? 1);
-    const resp = await this.asc.execute(...args, { gasLimit });
-    this.store.update(job.txHash, { state: 'submitted', ascTxHash: resp.hash, queryId });
-    log.info(`submitted tx ${short}... to ASC ${resp.hash.slice(0, 10)}... (gasLimit ${gasLimit})`);
-
-    const receipt = await resp.wait();
-    if (receipt?.status !== 1) throw new Error(`ASC transaction failed: ${resp.hash}`);
-
-    this.store.update(job.txHash, { state: 'done' });
-    log.ok(`applied ${job.eventName} x${job.logCount}, tx ${short}... gas ${receipt.gasUsed}`);
+    if (this.stopping) return;
+    await this.sender.step(job.txHash, { queryId, data: this.asc.interface.encodeFunctionData('execute', args), gasLimit });
+    log.info(`relay ${short}... state=${this.store.get(job.txHash)?.state}`);
   }
 
   private async estimateGas(args: readonly unknown[], continuityBlocks: number): Promise<bigint> {
